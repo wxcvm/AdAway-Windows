@@ -8,7 +8,7 @@
 # 幂等：目标已存在就直接跳过，因此可以在多个步骤里安全调用。
 set -euo pipefail
 
-PIN="147f9a108c14b8d13b7786014aad3a507fb987ef"
+PIN="4470606366e614abdb308fdfe94734d28167439c"
 BRANCH="feat/win11-webserver-release"
 UPSTREAM="https://github.com/wxcvm/AdAway.git"
 
