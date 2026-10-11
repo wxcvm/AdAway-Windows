@@ -111,7 +111,9 @@ jobs:
             rm -rf .upstream && mkdir -p .upstream
             git -C .upstream init -q
             git -C .upstream remote add origin https://github.com/wxcvm/AdAway.git
-            git -C .upstream fetch -q --depth 1 origin 147f9a1
+            git -C .upstream fetch -q --depth 1 origin feat/win11-webserver-release
+          # 断言取到的正是被 pin 的提交：分支一旦前移就大声失败，而不是悄悄用别的代码
+          test "$(git -C .upstream rev-parse FETCH_HEAD)" = "147f9a1"
             git -C .upstream checkout -q FETCH_HEAD -- webserver/jni app/src/main/assets
             rm -rf jni app/src/main/assets
             mv .upstream/webserver/jni jni
@@ -180,7 +182,8 @@ jobs:
           PIN="147f9a108c14b8d13b7786014aad3a507fb987ef"
           git init -q adaway-src
           git -C adaway-src remote add origin https://github.com/wxcvm/AdAway.git
-          git -C adaway-src fetch -q --depth 1 origin "$PIN"
+          git -C adaway-src fetch -q --depth 1 origin feat/win11-webserver-release
+          test "$(git -C adaway-src rev-parse FETCH_HEAD)" = "147f9a1"
           git -C adaway-src checkout -q FETCH_HEAD -- webserver/jni
           rm -rf jni && mv adaway-src/webserver/jni jni
           rm -rf adaway-src
