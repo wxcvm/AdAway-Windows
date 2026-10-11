@@ -192,6 +192,7 @@ jobs:
       # C 服务端核心不在本仓库：从 AdAway 仓库的**固定提交**取出 webserver/jni，避免复制两份后漂移。
       # 提交号写死在这里，升级是有意识的动作（配合 docs/windows-core-contract.md 的契约）。
       - name: Fetch native server core (pinned)
+        shell: bash
         run: |
           set -euo pipefail
           PIN="147f9a108c14b8d13b7786014aad3a507fb987ef"
