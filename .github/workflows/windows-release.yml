@@ -104,6 +104,24 @@ jobs:
       - name: Prepare resources (convert block placeholder images to webp)
         shell: bash
         run: |
+          # 上游资源不在本仓库：按固定提交从 AdAway 取出 C 核心与 webroot 资源。
+          # 注意目的路径保持和 AdAway 一致（jni/ 与 app/src/main/assets/），这样本工作流
+          # 其余步骤无需改动；只取一次，已存在则跳过。
+          if [ ! -f jni/webserver.c ] || [ ! -f app/src/main/assets/test.html ]; then
+            rm -rf .upstream && mkdir -p .upstream
+            git -C .upstream init -q
+            git -C .upstream remote add origin https://github.com/wxcvm/AdAway.git
+            git -C .upstream fetch -q --depth 1 origin 147f9a1
+            git -C .upstream checkout -q FETCH_HEAD -- webserver/jni app/src/main/assets
+            rm -rf jni app/src/main/assets
+            mv .upstream/webserver/jni jni
+            mkdir -p app/src/main
+            mv .upstream/app/src/main/assets app/src/main/assets
+            rm -rf .upstream
+          fi
+          test -f jni/webserver.c
+          test -f app/src/main/assets/test.html
+          echo "upstream: webserver.c=$(wc -c < jni/webserver.c) bytes, test.html=$(wc -c < app/src/main/assets/test.html) bytes"
           # Only install when Pillow is really missing: this step used to pay
           # ~10 s of pip resolution on every run.
           python3 -c "import PIL" 2>/dev/null \
