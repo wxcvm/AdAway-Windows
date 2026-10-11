@@ -162,24 +162,6 @@ jobs:
 
       # C 服务端核心不在本仓库：从 AdAway 仓库的**固定提交**取出 webserver/jni，避免复制两份后漂移。
       # 提交号写死在这里，升级是有意识的动作（配合 docs/windows-core-contract.md 的契约）。
-      - name: Fetch native server core (pinned)
-        shell: bash
-        run: |
-          set -euo pipefail
-          PIN="147f9a108c14b8d13b7786014aad3a507fb987ef"
-          git init -q adaway-src
-          git -C adaway-src remote add origin https://github.com/wxcvm/AdAway.git
-          git -C adaway-src fetch -q --depth 1 origin feat/win11-webserver-release
-          test "$(git -C adaway-src rev-parse FETCH_HEAD)" = "$PIN"
-          git -C adaway-src checkout -q FETCH_HEAD -- webserver/jni
-          rm -rf jni && mv adaway-src/webserver/jni jni
-          rm -rf adaway-src
-          test -f jni/webserver.c
-          test -f jni/mongoose/mongoose.c
-          echo "jni/webserver.c 大小：$(wc -c < jni/webserver.c) 字节"
-          # 断言：核心文件必须像样（历史上出现过"空文件"导致构建失败但报错莫名其妙）
-          [ "$(wc -c < jni/webserver.c)" -gt 100000 ]
-
       - name: Build webserver.exe (mingw64 + OpenSSL)
         shell: msys2 {0}
         run: |
