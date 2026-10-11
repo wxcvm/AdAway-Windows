@@ -107,23 +107,37 @@ jobs:
           # 上游资源不在本仓库：按固定提交从 AdAway 取出 C 核心与 webroot 资源。
           # 注意目的路径保持和 AdAway 一致（jni/ 与 app/src/main/assets/），这样本工作流
           # 其余步骤无需改动；只取一次，已存在则跳过。
+          set -x
           if [ ! -f jni/webserver.c ] || [ ! -f app/src/main/assets/test.html ]; then
-            rm -rf .upstream && mkdir -p .upstream
-            git -C .upstream init -q
+            rm -rf .upstream
+            mkdir -p .upstream
+            git -C .upstream init
             git -C .upstream remote add origin https://github.com/wxcvm/AdAway.git
-            git -C .upstream fetch -q --depth 1 origin feat/win11-webserver-release
-          # 断言取到的正是被 pin 的提交：分支一旦前移就大声失败，而不是悄悄用别的代码
-          test "$(git -C .upstream rev-parse FETCH_HEAD)" = "147f9a1"
-            git -C .upstream checkout -q FETCH_HEAD -- webserver/jni app/src/main/assets
+            git -C .upstream fetch --depth 1 origin feat/win11-webserver-release
+            got=$(git -C .upstream rev-parse FETCH_HEAD)
+            echo "fetched commit: $got"
+            if [ "$got" != "147f9a1" ]; then
+              echo "::error::上游提交与 pin 不一致：$got != 147f9a1（分支前移了？请有意识地更新 pin）"
+              exit 1
+            fi
+            git -C .upstream checkout FETCH_HEAD -- webserver/jni app/src/main/assets
             rm -rf jni app/src/main/assets
             mv .upstream/webserver/jni jni
             mkdir -p app/src/main
             mv .upstream/app/src/main/assets app/src/main/assets
             rm -rf .upstream
+          else
+            echo "upstream already present, skip fetch"
           fi
-          test -f jni/webserver.c
-          test -f app/src/main/assets/test.html
-          echo "upstream: webserver.c=$(wc -c < jni/webserver.c) bytes, test.html=$(wc -c < app/src/main/assets/test.html) bytes"
+          ls -la jni/webserver.c app/src/main/assets/test.html 2>&1 || true
+          if [ ! -f jni/webserver.c ]; then
+            echo "::error::jni/webserver.c 不存在（取上游失败）"; exit 1
+          fi
+          if [ ! -f app/src/main/assets/test.html ]; then
+            echo "::error::app/src/main/assets/test.html 不存在（取上游失败）"; exit 1
+          fi
+          echo "upstream ok: webserver.c=$(wc -c < jni/webserver.c) bytes, test.html=$(wc -c < app/src/main/assets/test.html) bytes"
+          set +x
           # Only install when Pillow is really missing: this step used to pay
           # ~10 s of pip resolution on every run.
           python3 -c "import PIL" 2>/dev/null \
