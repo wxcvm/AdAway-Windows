@@ -60,6 +60,8 @@ jobs:
       - name: Check wide-printf specifiers (%ls for wide strings)
         shell: bash
         run: |
+          # 该检查要读 C 核心（jni/webserver.c），所以先取出上游；脚本幂等，后面再调不会重复取。
+          bash fetch-upstream.sh
           python3 - <<'PYEOF'
           import re, sys
           files = ['jni/webserver.c',
@@ -107,38 +109,7 @@ jobs:
           # 上游资源不在本仓库：按固定提交从 AdAway 取出 C 核心与 webroot 资源。
           # 注意目的路径保持和 AdAway 一致（jni/ 与 app/src/main/assets/），这样本工作流
           # 其余步骤无需改动；只取一次，已存在则跳过。
-          set -x
-          if [ ! -f jni/webserver.c ] || [ ! -f app/src/main/assets/test.html ]; then
-            rm -rf .upstream
-            mkdir -p .upstream
-            git -C .upstream init
-            git -C .upstream remote add origin https://github.com/wxcvm/AdAway.git
-            git -C .upstream fetch --depth 1 origin feat/win11-webserver-release
-            got=$(git -C .upstream rev-parse FETCH_HEAD)
-            want="147f9a108c14b8d13b7786014aad3a507fb987ef"
-            echo "fetched commit: $got"
-            if [ "$got" != "$want" ]; then
-              echo "::error::上游提交与 pin 不一致：$got != $want（分支前移了？请有意识地更新 pin）"
-              exit 1
-            fi
-            git -C .upstream checkout FETCH_HEAD -- webserver/jni app/src/main/assets
-            rm -rf jni app/src/main/assets
-            mv .upstream/webserver/jni jni
-            mkdir -p app/src/main
-            mv .upstream/app/src/main/assets app/src/main/assets
-            rm -rf .upstream
-          else
-            echo "upstream already present, skip fetch"
-          fi
-          ls -la jni/webserver.c app/src/main/assets/test.html 2>&1 || true
-          if [ ! -f jni/webserver.c ]; then
-            echo "::error::jni/webserver.c 不存在（取上游失败）"; exit 1
-          fi
-          if [ ! -f app/src/main/assets/test.html ]; then
-            echo "::error::app/src/main/assets/test.html 不存在（取上游失败）"; exit 1
-          fi
-          echo "upstream ok: webserver.c=$(wc -c < jni/webserver.c) bytes, test.html=$(wc -c < app/src/main/assets/test.html) bytes"
-          set +x
+          bash fetch-upstream.sh
           # Only install when Pillow is really missing: this step used to pay
           # ~10 s of pip resolution on every run.
           python3 -c "import PIL" 2>/dev/null \
