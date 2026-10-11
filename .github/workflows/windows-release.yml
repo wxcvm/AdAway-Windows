@@ -3,9 +3,9 @@ name: Windows 11 webserver release
 on:
   workflow_dispatch:
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
   push:
-    branches: [ master, feat/win11-webserver-release ]
+    branches: [ main ]
     paths:
       - 'webserver/**'
       - 'app/src/main/assets/**'
