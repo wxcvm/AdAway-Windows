@@ -115,9 +115,10 @@ jobs:
             git -C .upstream remote add origin https://github.com/wxcvm/AdAway.git
             git -C .upstream fetch --depth 1 origin feat/win11-webserver-release
             got=$(git -C .upstream rev-parse FETCH_HEAD)
+            want="147f9a108c14b8d13b7786014aad3a507fb987ef"
             echo "fetched commit: $got"
-            if [ "$got" != "147f9a1" ]; then
-              echo "::error::上游提交与 pin 不一致：$got != 147f9a1（分支前移了？请有意识地更新 pin）"
+            if [ "$got" != "$want" ]; then
+              echo "::error::上游提交与 pin 不一致：$got != $want（分支前移了？请有意识地更新 pin）"
               exit 1
             fi
             git -C .upstream checkout FETCH_HEAD -- webserver/jni app/src/main/assets
@@ -197,7 +198,7 @@ jobs:
           git init -q adaway-src
           git -C adaway-src remote add origin https://github.com/wxcvm/AdAway.git
           git -C adaway-src fetch -q --depth 1 origin feat/win11-webserver-release
-          test "$(git -C adaway-src rev-parse FETCH_HEAD)" = "147f9a1"
+          test "$(git -C adaway-src rev-parse FETCH_HEAD)" = "$PIN"
           git -C adaway-src checkout -q FETCH_HEAD -- webserver/jni
           rm -rf jni && mv adaway-src/webserver/jni jni
           rm -rf adaway-src
