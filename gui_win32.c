@@ -35,6 +35,7 @@
 #include "gui_win32.h"
 #include "traffic_mode_policy.h"
 #include "traffic_observer_win32.h"
+#include "adguard_home_plan.h"
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
    system) while the rest of the code treats such strings as UTF-8, which made
@@ -1452,6 +1453,7 @@ bool win32_autostart_installed(void) {
 #define IDM_UPDATE   1007
 #define IDC_FIXPORT  1107
 #define IDC_DIAG     1108
+#define IDC_ADGUARD_HOME 1150 /* Manual AdGuard Home cooperation guide */
 #define IDC_HTTP_EDIT 1101
 #define IDC_HTTPS_EDIT 1102
 #define IDC_BIND_CHK  1103
@@ -2141,11 +2143,109 @@ static void tray_remove(void) {
     }
 }
 
+
+/* A read-only/manual AdGuard Home setup wizard. No settings are pushed into
+ * another application, no firewall rules changed, and no successful DNS
+ * interception is inferred from process presence or open listeners. */
+static void adguard_home_wizard(HWND hwnd) {
+    int answer = MessageBoxW(hwnd,
+        L"请选择 AdGuard Home DNS 客户端与本程序的关系：\n\n"
+        L"【是】AdGuard Home 与本程序运行在同一台 Windows 电脑\n"
+        L"【否】AdGuard Home 的 DNS 客户端包含其他设备（手机、路由器等）\n\n"
+        L"此向导只检查配置、给出提示，不会修改 AdGuard、路由或证书。",
+        L"AdGuard Home · 协同配置", MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (answer != IDYES && answer != IDNO) return;
+
+    const bool remote = (answer == IDNO);
+    char lan[64] = {0};
+    const bool has_lan = (first_lan_ip(lan, sizeof(lan)) == 0);
+    wchar_t ipv4[80] = L"不可用：尚未找到合适的局域网 IPv4";
+    if (!remote) {
+        wcscpy(ipv4, L"127.0.0.1");
+    } else if (has_lan) {
+        MultiByteToWideChar(CP_UTF8, 0, lan, -1, ipv4,
+                            (int)(sizeof(ipv4) / sizeof(ipv4[0])));
+        ipv4[(sizeof(ipv4) / sizeof(ipv4[0])) - 1] = 0;
+    }
+    const struct adguard_home_inputs input = {
+        .remote_clients = remote,
+        .bind_all = g_bind_all,
+        .listener_responding = (g_sn != NULL && g_sn->valid),
+        .lan_address_available = has_lan,
+        .ca_trusted_for_user = (g_cert_trusted_flag != 0),
+        .http_port = g_http_port,
+        .https_port = g_https_port
+    };
+    unsigned warnings = adguard_home_preflight(&input);
+    wchar_t report[4096];
+    swprintf(report, sizeof(report) / sizeof(report[0]),
+        L"仅适用于 AdGuard Home，不适用于 AdGuard Windows/Android 客户端。\n\n"
+        L"建议在 AdGuard Home 的 DNS 阻断设置中选择 custom_ip：\n"
+        L"blocking_ipv4 = %ls\n"
+        L"当前本程序 HTTP 端口：%d（DNS 目标一般需要 80）\n"
+        L"当前本程序 HTTPS 端口：%d（DNS 目标一般需要 443）\n"
+        L"监听所有网卡：%ls\n\n"
+        L"检查结果：%ls\n",
+        ipv4, g_http_port, g_https_port, g_bind_all ? L"是" : L"否",
+        (warnings & ADGUARD_HOME_SERVER_UNVERIFIED)
+            ? L"本地管理服务暂不可达" : L"本地管理服务可达（不是 DNS 验证）");
+
+    size_t remaining = sizeof(report) / sizeof(report[0]) - wcslen(report) - 1;
+    wchar_t *tail = report + wcslen(report);
+    if (warnings & (ADGUARD_HOME_HTTP_PORT | ADGUARD_HOME_HTTPS_PORT)) {
+        swprintf(tail, remaining,
+            L"· DNS 返回 IP 不包含端口，请配置 HTTP 80 / HTTPS 443 并验证端口可用。\n");
+        tail = report + wcslen(report);
+        remaining = sizeof(report) / sizeof(report[0]) - wcslen(report) - 1;
+    }
+    if (warnings & ADGUARD_HOME_LAN_BIND) {
+        swprintf(tail, remaining,
+            L"· 跨设备访问需要显式允许局域网监听，并评估防火墙和代理暴露风险。\n");
+        tail = report + wcslen(report);
+        remaining = sizeof(report) / sizeof(report[0]) - wcslen(report) - 1;
+    }
+    if (warnings & ADGUARD_HOME_LAN_IP) {
+        swprintf(tail, remaining,
+            L"· 未找到合适的局域网 IPv4，不要使用 127.0.0.1 给其他设备作目标。\n");
+        tail = report + wcslen(report);
+        remaining = sizeof(report) / sizeof(report[0]) - wcslen(report) - 1;
+    }
+    if (warnings & ADGUARD_HOME_CA_TRUST) {
+        swprintf(tail, remaining,
+            L"· 本机当前用户的 CA 信任尚未验证；其他设备需分别信任对应 CA。\n");
+        tail = report + wcslen(report);
+        remaining = sizeof(report) / sizeof(report[0]) - wcslen(report) - 1;
+    }
+    swprintf(tail, remaining,
+        L"· 尚未验证 DNS → 本服务的端到端路径；HTTPS 还可能受到证书固定限制。\n"
+        L"· 不要为跨设备协同暴露未经鉴权的通用代理。\n\n"
+        L"是否复制建议的 IPv4 地址到剪贴板？");
+    int copy = MessageBoxW(hwnd, report, L"AdGuard Home 配置检查",
+                           MB_YESNO | MB_ICONINFORMATION);
+    if (copy != IDYES || (remote && !has_lan)) return;
+
+    const size_t bytes = (wcslen(ipv4) + 1) * sizeof(wchar_t);
+    HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!data) return;
+    void *ptr = GlobalLock(data);
+    if (!ptr) { GlobalFree(data); return; }
+    memcpy(ptr, ipv4, bytes);
+    GlobalUnlock(data);
+    if (!OpenClipboard(hwnd)) { GlobalFree(data); return; }
+    if (!EmptyClipboard() || !SetClipboardData(CF_UNICODETEXT, data)) {
+        CloseClipboard();
+        GlobalFree(data);
+        return;
+    }
+    CloseClipboard();  /* Clipboard now owns the allocation. */
+}
+
 static void tray_menu(HWND hwnd) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3001, L"打开仪表盘");
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3002, L"开机自启动");
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3004, L"检查更新");
+    AppendMenuW(m, MF_STRING | MF_ENABLED, 3005, L"AdGuard Home 协同向导");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3003, L"退出");
     POINT pt;
@@ -2167,6 +2267,8 @@ static void tray_menu(HWND hwnd) {
         SendMessageW(chk, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
         swprintf(g_status, 4096, L"开机自启动已%ls", on ? L"启用" : L"关闭");
         InvalidateRect(hwnd, NULL, FALSE);
+    } else if (cmd == 3005) {
+        adguard_home_wizard(hwnd);
     } else if (cmd == 3004) {
             swprintf(g_status, 4096, L"正在检查更新…");
             update_check_async(hwnd);
@@ -2181,6 +2283,7 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_HTTP_EDIT,  300, 54, 80, 24, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
     { IDC_HTTPS_EDIT, 590, 54, 80, 24, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
     { IDC_BIND_CHK,   210, 96, 260, 22, L"BUTTON", L"监听所有网卡（局域网）", BS_AUTOCHECKBOX },
+    { IDC_ADGUARD_HOME, 680, 96, 280, 26, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
     { IDC_SAVE,       210, 130, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
     { IDC_RESTART,    330, 130, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
     { IDC_FIXPORT,    460, 130, 190, 28, L"BUTTON", L"改用备用端口 18080/18443", BS_PUSHBUTTON },
@@ -3222,6 +3325,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 swprintf(g_status, 4096, L"正在检查更新…");
                 update_check_async(hwnd);
                 InvalidateRect(hwnd, NULL, FALSE);
+            } else if (id == IDC_ADGUARD_HOME) {
+                adguard_home_wizard(hwnd);
             } else if (id == IDM_TEST) {
                 wchar_t url[256];
                 swprintf(url, 256, L"https://localhost:%d/internal-test", g_https_port);
