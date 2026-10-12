@@ -7,13 +7,16 @@
 - `traffic_mode_policy.h/.c`：独立、无副作用的运行模式决策器。
 - `traffic_mode_policy_test.c`：13 组固定测试输入；在 Windows CI 中运行。
 - `traffic_observer_win32.h/.c`：只读 AdGuard 进程探测。进程存在只是一条弱证据，不能证明流量接管冲突。
+- `adguard_home_plan.h/.c`：AdGuard Home 自定义阻断 IP 的端口、绑定、CA 和 DNS 验证前置检查（10 项 C 测试）。
+- Windows 设置页与托盘的“AdGuard Home 协同向导”：可选同机/远程客户端，给出候选 IPv4 并复制；所有配置需要用户自己在 AdGuard Home 中确认。
+- Windows CI 的完整构建、监听冒烟和新单元测试已通过（参见 PR #1）。
 - GUI 侧边栏显示“过滤范围：本地监听”“全局接管：尚未实现”和 AdGuard 进程提示，不把监听端口正常显示为全局覆盖。
 
 ## 未实现
 
 - Windows TUN/WFP 接管、DNS 接管、IPv4/IPv6 TCP/UDP 流量转发与按应用过滤。
 - AdGuard 活动 WFP/代理/路由接管的可信识别。
-- AdGuard Home 自定义阻断 IP、80/443 可达性、HTTPS CA 信任的端到端验证。
+- AdGuard Home 的 **DNS 实际应答与外部客户端 80/443、TLS 握手** 端到端验证（目前只有静态检查与本机管理服务探测）。
 - 自动模式切换、系统路由备份/恢复和网络故障回滚执行器。
 
 ## 决策约束
