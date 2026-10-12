@@ -45,7 +45,8 @@ gcc \
   -I"$MINGW_PREFIX/include" \
   -o "$OUT/webserver.exe" \
   "$JNI/webserver.c" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/update_win32.c" \
-  "$HERE/traffic_mode_policy.c" "$HERE/traffic_observer_win32.c" "$HERE/app_res.o" \
+  "$HERE/traffic_mode_policy.c" "$HERE/traffic_observer_win32.c" \
+  "$HERE/adguard_home_plan.c" "$HERE/app_res.o" \
   -L"$MINGW_PREFIX/lib" \
   -lssl -lcrypto -lws2_32 -lwinmm -lpthread \
   -lgdi32 -luser32 -lshell32 -ladvapi32 -lcrypt32 -liphlpapi \
