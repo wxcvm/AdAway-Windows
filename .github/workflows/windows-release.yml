@@ -57,6 +57,14 @@ jobs:
           print("All Windows update paths point at AdAway-Windows")
           PYEOF
 
+      - name: Test AdGuard Home coexistence preflight
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            adguard_home_plan.c adguard_home_plan_test.c \
+            -o adguard_home_plan_test.exe
+          ./adguard_home_plan_test.exe
+
       - name: Test traffic mode decisions (no network changes)
         shell: msys2 {0}
         run: |
