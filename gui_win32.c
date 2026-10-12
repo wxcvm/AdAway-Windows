@@ -33,6 +33,8 @@
 #include <openssl/pem.h>
 
 #include "gui_win32.h"
+#include "traffic_mode_policy.h"
+#include "traffic_observer_win32.h"
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
    system) while the rest of the code treats such strings as UTF-8, which made
@@ -1503,6 +1505,11 @@ static int g_http_port = 8080;
 static int g_https_port = 8443;
 static bool g_bind_all = false;
 static bool g_start_minimized = false;
+/* Read-only AdGuard process presence, refreshed at most every 30 seconds.
+ * It is NOT proof of an active network interception conflict. */
+static enum adguard_process_signal g_adguard_signal = ADGUARD_PROCESS_UNKNOWN;
+static DWORD g_adguard_probe_tick = 0;
+
 static int g_tab = 0;               /* 0 = statistics, 1 = 应用日志, 2 = settings */
 /*
  * 打开窗口第一眼就能看到"装的是哪一版、这版有什么"：状态栏（底部常驻一行，见
@@ -1951,6 +1958,42 @@ static void draw_sidebar(HDC hdc) {
     SelectObject(hdc, old);
     DeleteObject(lf);
     DeleteObject(sf);
+
+    /* Capture coverage status: the current Windows build has a request listener,
+     * but no TUN/WFP global capture backend. Never label bind() success as
+     * machine-wide protection or automatically switch mode on process presence. */
+    {
+        const struct traffic_evidence evidence = {
+            .preference = TRAFFIC_PREFERENCE_AUTO,
+            .capture_owner = TRAFFIC_OWNER_NONE,
+            .adguard_process_present = (g_adguard_signal == ADGUARD_PROCESS_PRESENT),
+            .adguard_capture_confirmed = false,
+            .listener_path_verified = false,
+            .capture_backend_supported = false,
+            .capture_authorized = false,
+            .capture_failed = false
+        };
+        const struct traffic_decision decision = traffic_mode_decide(&evidence);
+        const wchar_t *coverage =
+            decision.reason == TRAFFIC_REASON_CAPTURE_UNAVAILABLE
+                ? L"全局接管：尚未实现" : L"全局接管：未验证";
+        const wchar_t *adguard =
+            g_adguard_signal == ADGUARD_PROCESS_PRESENT
+                ? L"AdGuard：进程运行"
+                : (g_adguard_signal == ADGUARD_PROCESS_ABSENT
+                    ? L"AdGuard：未检测到" : L"AdGuard：状态未知");
+        HFONT info = mfont(11, FW_NORMAL);
+        HFONT prev = (HFONT)SelectObject(hdc, info);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(143, 163, 192));
+        TextOutW(hdc, S(22), S(371), L"过滤范围：本地监听", (int)wcslen(L"过滤范围：本地监听"));
+        TextOutW(hdc, S(22), S(392), coverage, (int)wcslen(coverage));
+        TextOutW(hdc, S(22), S(423), adguard, (int)wcslen(adguard));
+        if (g_adguard_signal == ADGUARD_PROCESS_PRESENT)
+            TextOutW(hdc, S(22), S(444), L"不代表已发生拦截冲突", (int)wcslen(L"不代表已发生拦截冲突"));
+        SelectObject(hdc, prev);
+        DeleteObject(info);
+    }
 
     /* nav items */
     for (int t = 0; t < 5; t++) {
@@ -2961,10 +3004,17 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (pthread_create(&g_poll_thread, NULL, stats_poll_thread, hwnd) == 0)
             g_poll_started = 1;   /* else: WM_TIMER fallback below */
         SetTimer(hwnd, 1, 2000, NULL);
+        g_adguard_signal = adguard_process_probe();
+        g_adguard_probe_tick = GetTickCount();
         swprintf(g_status, 4096, L"等待首次统计（http://127.0.0.1:%d/internal-stats）...", g_http_port);
         return 0;
     }
     case WM_TIMER: {
+        DWORD probe_now = GetTickCount();
+        if (probe_now - g_adguard_probe_tick >= 30000) {
+            g_adguard_signal = adguard_process_probe();
+            g_adguard_probe_tick = probe_now;
+        }
         bool vis = IsWindowVisible(hwnd) != 0;
         g_ui_visible = vis ? 1 : 0;
         /* Keep the update button in sync with the updater pipeline. */
