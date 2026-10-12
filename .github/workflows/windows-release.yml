@@ -74,11 +74,11 @@ jobs:
       - name: Test shared native rule and core contracts from the pinned source
         shell: msys2 {0}
         run: |
-          bash fetch-upstream.sh
-          gcc -std=c11 -Wall -Wextra -Werror -pedantic jni/traffic_core_contract_test.c -o core_contract_test.exe
-          ./core_contract_test.exe jni/traffic_core_vectors.txt
-          gcc -std=c11 -Wall -Wextra -Werror -pedantic jni/rule_norm_test.c -o rule_norm_test.exe
-          ./rule_norm_test.exe jni/rule_vectors.txt
+          bash fetch-core-contract.sh
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
+          ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
+          ./rule_norm_test.exe shared-contract/rule_vectors.txt
 
       - name: Test optional Wintun discovery does not execute DLL code
         shell: msys2 {0}

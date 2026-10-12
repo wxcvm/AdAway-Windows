@@ -1,4 +1,5 @@
 jni/
+shared-contract/
 app/src/main/assets/
 .adblock-upstream-manifest.json
 .upstream/
