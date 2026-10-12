@@ -84,7 +84,7 @@ if objdump -p "$OUT/webserver.exe" | grep -Eiq 'DLL Name: *(libssl|libcrypto)'; 
   echo "ERROR: webserver.exe still dynamically links an unpinned SSL DLL" >&2
   exit 1
 fi
-if ! strings "$OUT/webserver.exe" | grep -Fq 'OpenSSL 3.5.9'; then
+if ! strings "$OUT/webserver.exe" | grep -F 'OpenSSL 3.5.9' >/dev/null; then
   echo "ERROR: OpenSSL 3.5.9 version signature missing from webserver.exe" >&2
   exit 1
 fi
