@@ -2,8 +2,8 @@
 # 取出上游（AdAway 仓库）的 C 服务端核心与 webroot 资源。
 #
 # 为什么是"取出"而不是"复制进本仓库"：把同一份 C 代码复制两份，两边会各自漂移 —— 历史上正是这样
-# 分叉的。这里按**固定提交**取一次（并断言取到的就是被 pin 的那一个），分支前移会大声失败，
-# 迫使重新 pin；改 pin 时请同步更新 docs/windows-core-contract.md（在 AdAway 仓库里）。
+# 分叉的。这里按**固定提交对象**获取，移动分支前移不会改变被 pin 的源码。
+# 升级时必须主动改 pin，并同步 docs/windows-core-contract.md（在 AdAway 仓库里）。
 #
 # 幂等：目标已存在就直接跳过，因此可以在多个步骤里安全调用。
 set -euo pipefail

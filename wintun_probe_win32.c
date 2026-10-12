@@ -4,13 +4,15 @@
 /* Wintun is an optional third-party dependency. Use Windows 11 safe DLL
  * search flags. In particular, NEVER load a Wintun DLL from CWD or PATH.
  *
- * This module only validates exports/driver presence. The actual capture
+ * This module inspects exports WITHOUT DLL initialization or calling exports.
+ * No optional/unverified DLL may execute code during a status probe. The actual capture
  * backend cannot be enabled until TCP/UDP+DNS forwarding and rollback exist.
  */
 struct wintun_probe_result wintun_probe_local(void) {
     struct wintun_probe_result info = {WINTUN_PROBE_MISSING, 0, 0};
     HMODULE dll = LoadLibraryExW(L"wintun.dll", NULL,
-                    LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+                    LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32
+                    | DONT_RESOLVE_DLL_REFERENCES);
     if (!dll) {
         info.last_error = GetLastError();
         return info;
@@ -31,17 +33,9 @@ struct wintun_probe_result wintun_probe_local(void) {
             return info;
         }
     }
-    info.status = WINTUN_PROBE_DLL_READY_DRIVER_NOT_RUNNING;
-    typedef DWORD (WINAPI *get_running_version_fn)(void);
-    get_running_version_fn version =
-        (get_running_version_fn)(void *)GetProcAddress(
-            dll, "WintunGetRunningDriverVersion");
-    info.driver_version = version();
-    if (info.driver_version != 0) {
-        info.status = WINTUN_PROBE_DRIVER_RUNNING;
-    } else {
-        info.last_error = GetLastError();
-    }
+    info.status = WINTUN_PROBE_API_PRESENT_UNVERIFIED;
+    /* M3 must verify the official artifact/publisher before normal loading.
+     * DONT_RESOLVE modules are never callable and never prove a running driver. */
     FreeLibrary(dll);
     return info;
 }

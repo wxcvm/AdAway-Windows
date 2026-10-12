@@ -70,6 +70,15 @@ jobs:
         shell: bash
         run: bash tests/fetch-upstream-test.sh
 
+      - name: Test optional Wintun discovery does not execute DLL code
+        shell: msys2 {0}
+        run: |
+          test ! -e wintun.dll
+          trap 'rm -f wintun.dll wintun_probe_win32_test.exe' EXIT
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -shared tests/wintun_probe_fake.c -o wintun.dll
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic wintun_probe_win32.c wintun_probe_win32_test.c -o wintun_probe_win32_test.exe
+          ./wintun_probe_win32_test.exe
+
       - name: Test Windows network undo journal
         shell: msys2 {0}
         run: |

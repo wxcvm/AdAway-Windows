@@ -7,3 +7,4 @@ app_res.o
 app_build.rc
 app.ico
 *_test.exe
+wintun.dll

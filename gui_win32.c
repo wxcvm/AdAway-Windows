@@ -2004,7 +2004,7 @@ static void draw_sidebar(HDC hdc) {
                     ? L"Wintun：DLL 接口不完整"
                     : (g_wintun_probe.status == WINTUN_PROBE_DRIVER_RUNNING
                         ? L"Wintun：驱动存在（未接管）"
-                        : L"Wintun：DLL 就绪（未接管）"));
+                        : L"Wintun：接口可见（未验证/未接管）"));
         TextOutW(hdc, S(22), S(478), tun_hint, (int)wcslen(tun_hint));
         SelectObject(hdc, prev);
         DeleteObject(info);
