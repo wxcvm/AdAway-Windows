@@ -5,6 +5,8 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/bin" "$scratch/repo"
 cp "$root/fetch-upstream.sh" "$scratch/repo/"
+export ADBLOCK_TEST_EXPECTED_PIN=$(sed -n 's/^PIN="\([a-f0-9]*\)"/\1/p' "$root/fetch-upstream.sh")
+test "${#ADBLOCK_TEST_EXPECTED_PIN}" -eq 40
 cat > "$scratch/bin/git" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -14,8 +16,8 @@ case "$1" in
  init|remote) ;;
  fetch)
   [ "$2" = '--depth' ] && [ "$3" = 1 ] && [ "$4" = origin ]
-  [ "$5" = 4470606366e614abdb308fdfe94734d28167439c ] ;;
- rev-parse) echo 4470606366e614abdb308fdfe94734d28167439c ;;
+  [ "$5" = "$ADBLOCK_TEST_EXPECTED_PIN" ] ;;
+ rev-parse) echo "$ADBLOCK_TEST_EXPECTED_PIN" ;;
  checkout)
   mkdir -p "$directory/webserver/jni/mongoose" "$directory/app/src/main/assets"
   printf 'core\n' > "$directory/webserver/jni/webserver.c"

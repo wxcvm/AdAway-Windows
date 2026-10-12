@@ -3,7 +3,7 @@ name: Windows 11 webserver release
 on:
   workflow_dispatch:
   pull_request:
-    branches: [ main, feat/traffic-mode-foundation ]
+    branches: [ main, feat/traffic-mode-foundation, fix/windows-journal-p0 ]
   push:
     branches: [ main ]
     # 本仓库只放 Windows 端文件（12 个在根目录），因此不再用 paths 过滤：
@@ -69,6 +69,15 @@ jobs:
       - name: Test fixed upstream acquisition and local-cache preservation
         shell: bash
         run: bash tests/fetch-upstream-test.sh
+
+      - name: Test shared native rule and core contracts from the pinned source
+        shell: msys2 {0}
+        run: |
+          bash fetch-upstream.sh
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic jni/traffic_core_contract_test.c -o core_contract_test.exe
+          ./core_contract_test.exe jni/traffic_core_vectors.txt
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic jni/rule_norm_test.c -o rule_norm_test.exe
+          ./rule_norm_test.exe jni/rule_vectors.txt
 
       - name: Test optional Wintun discovery does not execute DLL code
         shell: msys2 {0}
