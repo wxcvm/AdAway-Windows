@@ -93,6 +93,12 @@ Windows SmartScreen / 杀毒软件：
 平台差异：
   * 透明代理（--proxy-filter，依赖 iptables 重定向）只在 Android/Linux 上
     生效，Windows 上不会启用。
+  * 当前 Windows 版本只有本地 HTTP/HTTPS 响应监听和接收到的请求过滤；
+    还没有 TUN/WFP 全局流量接管、系统 DNS 自动配置或 UDP/QUIC 拦截。
+    “服务器运行中”“端口绑定正常”不等于“电脑全部流量已过滤”。
+  * 已增加无副作用的流量模式决策器与 AdGuard 进程只读探测。
+    检测到 AdGuard 进程不代表确认冲突，目前不会自动修改其配置
+    或切换 Windows 系统代理、路由。实现进度见 docs/traffic-mode-foundation.md。
 
 故障排查：
   * 更新很慢或者一直失败：这条线路到 GitHub 资源节点（release-assets.githubusercontent.com）
