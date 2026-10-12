@@ -38,6 +38,7 @@
 #include "adguard_home_plan.h"
 #include "wintun_probe_win32.h"
 #include "windows_capture_plan.h"
+#include "windows_network_inventory_win32.h"
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
    system) while the rest of the code treats such strings as UTF-8, which made
@@ -2252,12 +2253,33 @@ static void adguard_home_wizard(HWND hwnd) {
     CloseClipboard();  /* Clipboard now owns the allocation. */
 }
 
+static void show_network_baseline(HWND hwnd) {
+    const struct windows_network_inventory v = windows_network_inventory_read();
+    wchar_t info[1024];
+    swprintf(info, sizeof(info)/sizeof(info[0]),
+        L"Windows 当前网络基线（只读）：\n\n"
+        L"路由总条数：%u\nIPv4 默认路由数：%u\nIPv6 默认路由数：%u\n"
+        L"已连接网卡：%u\n这些网卡列出的 DNS 服务器数：%u\n\n"
+        L"路由查询：%ls（错误码 %lu）\n网卡查询：%ls（错误码 %lu）\n\n"
+        L"这里只查看概况，不会修改配置。\n"
+        L"计数不是可恢复的路由/DNS 快照；\n"
+        L"全局接管及自动恢复仍未开放。",
+        v.route_count, v.default_ipv4, v.default_ipv6,
+        v.active_adapters, v.dns_servers,
+        v.route_error == NO_ERROR ? L"成功" : L"失败",
+        (unsigned long)v.route_error,
+        v.adapter_error == NO_ERROR ? L"成功" : L"失败",
+        (unsigned long)v.adapter_error);
+    MessageBoxW(hwnd, info, L"网络基线检查", MB_OK | MB_ICONINFORMATION);
+}
+
 static void tray_menu(HWND hwnd) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3001, L"打开仪表盘");
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3002, L"开机自启动");
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3004, L"检查更新");
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3005, L"AdGuard Home 协同向导");
+    AppendMenuW(m, MF_STRING | MF_ENABLED, 3006, L"查看网络基线（只读）");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3003, L"退出");
     POINT pt;
@@ -2281,6 +2303,8 @@ static void tray_menu(HWND hwnd) {
         InvalidateRect(hwnd, NULL, FALSE);
     } else if (cmd == 3005) {
         adguard_home_wizard(hwnd);
+    } else if (cmd == 3006) {
+        show_network_baseline(hwnd);
     } else if (cmd == 3004) {
             swprintf(g_status, 4096, L"正在检查更新…");
             update_check_async(hwnd);
