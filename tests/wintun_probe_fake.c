@@ -11,6 +11,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     return TRUE;
 }
 #define EXPORT(name) __declspec(dllexport) DWORD WINAPI name(void) { return 0; }
+#ifndef WINTUN_TEST_FORWARD_ONLY
 EXPORT(WintunOpenAdapter)
 EXPORT(WintunCloseAdapter)
 EXPORT(WintunCreateAdapter)
@@ -23,3 +24,7 @@ EXPORT(WintunReleaseReceivePacket)
 EXPORT(WintunAllocateSendPacket)
 EXPORT(WintunSendPacket)
 EXPORT(WintunGetRunningDriverVersion)
+#endif
+#ifdef WINTUN_TEST_DEPENDENCY
+EXPORT(WintunTestDependency)
+#endif

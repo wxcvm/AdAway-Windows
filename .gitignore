@@ -8,3 +8,4 @@ app_build.rc
 app.ico
 *_test.exe
 wintun.dll
+wintun_test_dependency.dll

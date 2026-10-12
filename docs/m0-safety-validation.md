@@ -7,7 +7,7 @@ Depends on draft PR #1 (`feat/traffic-mode-foundation`). No merge or release is 
 - Reject default routes for every capture input. Even a caller setting every readiness flag cannot activate scoped capture: no production recovery executor exists.
 - Seal journal **model** data with per-user DPAPI and a random sealed HMAC-SHA256 key authenticating the entire DPAPI blob, explicit current-user/SYSTEM file permissions, random exclusive temporary files, flush-before-replace, and an exclusive per-operation lock. Reject plaintext v1, corrupt/truncated ciphertext, reparse files and foreign-owned files.
 - Fetch the exact upstream Git object `4470606366e614abdb308fdfe94734d28167439c`, verify the object ID, and record/check all cached source hashes. Preserve unproven or locally edited caches by refusing replacement.
-- Optional Wintun export discovery maps the PE without DLL initialization and never calls any export. It reports unverified API presence, never a verified/running driver. A fake DLL regression trap confirms neither attach/detach entry points nor driver APIs execute. M3 must verify the official artifact, publisher and license before normal DLL loading or adapter creation.
+- Optional Wintun discovery reads bounded PE export metadata directly from the application directory, without entering the DLL loader, resolving forwarded exports or calling any function. It reports unverified API presence, never a verified/running driver. Direct and forwarded fake-DLL regression traps verify no entry point executes; malformed PE data is rejected. M3 must verify the official artifact, publisher and license before normal DLL loading or adapter creation.
 
 ## Checks
 

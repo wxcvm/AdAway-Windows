@@ -74,10 +74,18 @@ jobs:
         shell: msys2 {0}
         run: |
           test ! -e wintun.dll
-          trap 'rm -f wintun.dll wintun_probe_win32_test.exe' EXIT
+          test ! -e wintun_test_dependency.dll
+          trap 'rm -f wintun.dll wintun_test_dependency.dll wintun_probe_win32_test.exe' EXIT
           gcc -std=c11 -Wall -Wextra -Werror -pedantic -shared tests/wintun_probe_fake.c -o wintun.dll
           gcc -std=c11 -Wall -Wextra -Werror -pedantic wintun_probe_win32.c wintun_probe_win32_test.c -o wintun_probe_win32_test.exe
           ./wintun_probe_win32_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -shared -DWINTUN_TEST_FORWARD_ONLY \
+            tests/wintun_probe_fake.c tests/wintun_probe_forwarded.def -o wintun.dll
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -shared -DWINTUN_TEST_FORWARD_ONLY \
+            -DWINTUN_TEST_DEPENDENCY tests/wintun_probe_fake.c -o wintun_test_dependency.dll
+          ./wintun_probe_win32_test.exe
+          printf 'malformed' > wintun.dll
+          ./wintun_probe_win32_test.exe malformed
 
       - name: Test Windows network undo journal
         shell: msys2 {0}
