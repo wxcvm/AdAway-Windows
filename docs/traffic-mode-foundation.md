@@ -10,11 +10,15 @@
 - `adguard_home_plan.h/.c`：AdGuard Home 自定义阻断 IP 的端口、绑定、CA 和 DNS 验证前置检查（10 项 C 测试）。
 - Windows 设置页与托盘的“AdGuard Home 协同向导”：可选同机/远程客户端，给出候选 IPv4 并复制；所有配置需要用户自己在 AdGuard Home 中确认。
 - Windows CI 的完整构建、监听冒烟和新单元测试已通过（参见 PR #1）。
+- `wintun_probe_win32.c/.h`：使用 Windows 安全 DLL 搜索路径加载可选 `wintun.dll`，检查所需 API 与驱动版本；不会创建适配器、建立会话或改系统路由，侧边栏只显示“已发现 / 未发现 / 未接管”。
+- `windows_capture_plan.c/.h`：纯 C 接管前置条件检查及 8 项测试；未具备用户授权、可用驱动接口、完整 TCP/UDP+DNS 转发、回滚快照时禁止实际接管。
+- 不随构建自动下载或捆绑 Wintun DLL；后续正式集成必须独立核实 DLL 的来源、签名和分发许可证。
 - GUI 侧边栏显示“过滤范围：本地监听”“全局接管：尚未实现”和 AdGuard 进程提示，不把监听端口正常显示为全局覆盖。
 
 ## 未实现
 
 - Windows TUN/WFP 接管、DNS 接管、IPv4/IPv6 TCP/UDP 流量转发与按应用过滤。
+- Wintun 实际适配器生命周期、路由及 DNS 快照/恢复、完整 TCP/UDP 转发、权限提升、安全失败回退。目前只有安全的驱动接口发现与接管前置条件验证。
 - AdGuard 活动 WFP/代理/路由接管的可信识别。
 - AdGuard Home 的 **DNS 实际应答与外部客户端 80/443、TLS 握手** 端到端验证（目前只有静态检查与本机管理服务探测）。
 - 自动模式切换、系统路由备份/恢复和网络故障回滚执行器。
