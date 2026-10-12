@@ -63,7 +63,7 @@ jobs:
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
             windows_network_journal.c windows_network_journal_store_win32.c \
             windows_network_journal_store_win32_test.c \
-            -o windows_network_journal_store_win32_test.exe -lcrypt32 -ladvapi32 -lbcrypt
+            -o windows_network_journal_store_win32_test.exe -municode -lcrypt32 -ladvapi32 -lbcrypt
           ./windows_network_journal_store_win32_test.exe
 
       - name: Test fixed upstream acquisition and local-cache preservation
