@@ -13,7 +13,7 @@
 - `wintun_probe_win32.c/.h`：使用 Windows 安全 DLL 搜索路径加载可选 `wintun.dll`，检查所需 API 与驱动版本；不会创建适配器、建立会话或改系统路由，侧边栏只显示“已发现 / 未发现 / 未接管”。
 - `windows_capture_plan.c/.h`：纯 C 接管前置条件检查及 8 项测试；未具备用户授权、可用驱动接口、完整 TCP/UDP+DNS 转发、回滚快照时禁止实际接管。
 - 不随构建自动下载或捆绑 Wintun DLL；后续正式集成必须独立核实 DLL 的来源、签名和分发许可证。
-- `windows_network_inventory_win32.c`：利用 Windows IP Helper 读取当前 IPv4/IPv6 默认路由数量、活动网卡和 DNS 服务器计数（托盘右键“查看网络基线”），不更改配置，不采集或持久化具体 IP。
+- `windows_network_inventory_win32.c`：利用 Windows IP Helper 读取 IPv4 默认路由及 IPv6 网卡网关候选数、活动网卡和 DNS 服务器计数（托盘右键“查看网络基线”），不更改配置，不采集或持久化具体 IP。
 - `windows_network_journal.c`：纯 C 的内存撤销日志模型，测试逆序执行、失败保持待撤销与重复调用的幂等性。**它既没有持久化，也没有任何系统网络写操作，不足以作为真实路由恢复机制。**
 - GUI 侧边栏显示“过滤范围：本地监听”“全局接管：尚未实现”和 AdGuard 进程提示，不把监听端口正常显示为全局覆盖。
 
