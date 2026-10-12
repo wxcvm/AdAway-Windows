@@ -48,7 +48,8 @@ gcc \
   "$HERE/traffic_mode_policy.c" "$HERE/traffic_observer_win32.c" \
   "$HERE/adguard_home_plan.c" "$HERE/windows_capture_plan.c" \
   "$HERE/wintun_probe_win32.c" "$HERE/windows_network_inventory_win32.c" \
-  "$HERE/windows_network_journal.c" "$HERE/app_res.o" \
+  "$HERE/windows_network_journal.c" "$HERE/windows_network_journal_store_win32.c" \
+  "$HERE/app_res.o" \
   -L"$MINGW_PREFIX/lib" \
   -lssl -lcrypto -lws2_32 -lwinmm -lpthread \
   -lgdi32 -luser32 -lshell32 -ladvapi32 -lcrypt32 -liphlpapi \
