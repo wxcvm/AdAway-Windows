@@ -38,6 +38,14 @@ jobs:
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-pkg-config
 
+      - name: Test traffic mode decisions (no network changes)
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            traffic_mode_policy.c traffic_mode_policy_test.c \
+            -o traffic_mode_policy_test.exe
+          ./traffic_mode_policy_test.exe
+
       - name: Assert version consistency (header / installer / TAG)
         shell: bash
         run: |
