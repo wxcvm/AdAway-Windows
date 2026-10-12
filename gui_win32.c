@@ -36,6 +36,8 @@
 #include "traffic_mode_policy.h"
 #include "traffic_observer_win32.h"
 #include "adguard_home_plan.h"
+#include "wintun_probe_win32.h"
+#include "windows_capture_plan.h"
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
    system) while the rest of the code treats such strings as UTF-8, which made
@@ -1511,6 +1513,7 @@ static bool g_start_minimized = false;
  * It is NOT proof of an active network interception conflict. */
 static enum adguard_process_signal g_adguard_signal = ADGUARD_PROCESS_UNKNOWN;
 static DWORD g_adguard_probe_tick = 0;
+static struct wintun_probe_result g_wintun_probe;
 
 static int g_tab = 0;               /* 0 = statistics, 1 = 应用日志, 2 = settings */
 /*
@@ -1993,6 +1996,15 @@ static void draw_sidebar(HDC hdc) {
         TextOutW(hdc, S(22), S(423), adguard, (int)wcslen(adguard));
         if (g_adguard_signal == ADGUARD_PROCESS_PRESENT)
             TextOutW(hdc, S(22), S(444), L"不代表已发生拦截冲突", (int)wcslen(L"不代表已发生拦截冲突"));
+        const wchar_t *tun_hint =
+            g_wintun_probe.status == WINTUN_PROBE_MISSING
+                ? L"Wintun：尚未提供 DLL"
+                : (g_wintun_probe.status == WINTUN_PROBE_API_INCOMPLETE
+                    ? L"Wintun：DLL 接口不完整"
+                    : (g_wintun_probe.status == WINTUN_PROBE_DRIVER_RUNNING
+                        ? L"Wintun：驱动存在（未接管）"
+                        : L"Wintun：DLL 就绪（未接管）"));
+        TextOutW(hdc, S(22), S(478), tun_hint, (int)wcslen(tun_hint));
         SelectObject(hdc, prev);
         DeleteObject(info);
     }
@@ -3109,6 +3121,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetTimer(hwnd, 1, 2000, NULL);
         g_adguard_signal = adguard_process_probe();
         g_adguard_probe_tick = GetTickCount();
+        /* Probe DLL APIs only, never create an adapter or route. */
+        g_wintun_probe = wintun_probe_local();
         swprintf(g_status, 4096, L"等待首次统计（http://127.0.0.1:%d/internal-stats）...", g_http_port);
         return 0;
     }
