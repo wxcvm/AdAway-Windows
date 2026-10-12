@@ -77,6 +77,17 @@ ADBlock 拦截服务器 - Windows 11 (x64) 独立版
               -H "X-ADBlock-Token: <令牌>"）。
   * block_config.json  拦截策略（界面里勾选即时生效）。
 
+AdGuard Home 协同向导（只给出建议，不改第三方设置）：
+  * 在“设置”页点击“AdGuard Home 协同向导”，或右键托盘图标打开。
+  * 先选择 AdGuard Home 的客户端是否包含其他设备；向导会给出候选 IPv4、
+    检查 HTTP 80 / HTTPS 443、LAN 绑定、本地管理服务和当前用户 CA 信任。
+  * 在 AdGuard Home 中手工选择 DNS 自定义阻断 IP 模式（custom_ip），
+    再按验证结果设置 blocking_ipv4；其他设备不能使用本机的 127.0.0.1。
+  * DNS 不带端口、IPv6 需单独验证；还要测试被拦域名是否实际连到
+    本服务，以及目标客户端是否信任 CA。证书固定应用可能拒绝 HTTPS。
+  * 这不是 AdGuard for Windows/Android 客户端的通用设置入口；
+    不自动修改其配置，不自动启用全局路由或 TLS 中间人。
+
 使用 80/443 端口：
   需要管理员权限：以管理员身份运行终端，并加 --http-port 80 --https-port 443。
 
