@@ -34,9 +34,19 @@ jobs:
           update: false
           install: >-
             git
+            make
+            perl
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-pkg-config
+
+      - name: Check official OpenSSL pin and static link inputs
+        shell: bash
+        run: |
+          grep -Fq 'openssl-3.5.9' scripts/build-official-openssl.sh
+          grep -Fq '45e844fa2a14ec92d146bd8f5778ac130b6625fb' scripts/build-official-openssl.sh
+          grep -Fq 'libcrypto.a' build.sh
+          ! grep -Eq '^[[:space:]]*-lssl |^[[:space:]]*-lcrypto ' build.sh
 
       - name: Assert version consistency (header / installer / TAG)
         shell: bash
