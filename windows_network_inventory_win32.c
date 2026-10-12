@@ -2,6 +2,7 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <iphlpapi.h>
+#include <netioapi.h> /* mingw-w64 does not pull NetIO types from iphlpapi.h */
 #include <stdlib.h>
 #include <string.h>
 #include "windows_network_inventory_win32.h"
