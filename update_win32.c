@@ -6,9 +6,9 @@
  * extracts it and restarts through a small helper batch file - a running .exe
  * cannot replace itself.
  *
- * The feed is the public repository also used by the Android build, because the
- * app repository itself is private and its release API cannot be read without a
- * token.
+ * The Windows update feed belongs to wxcvm/AdAway-Windows, not to the
+ * Android parent repository. The fixed win11-latest manifest is fetched as
+ * a public release asset and the REST API is only a fallback.
  */
 #include "update_win32.h"
 #include "gui_win32.h"
@@ -28,10 +28,9 @@
 #include <wchar.h>
 
 #define UPDATE_API_HOST L"api.github.com"
-/* 100 instead of 30: the repository also carries the Android releases, and a
-   Windows release that fell outside the first page was simply "not found",
-   which the dashboard then reported as "already up to date". */
-#define UPDATE_API_PATH L"/repos/wxcvm/AdAway/releases?per_page=100"
+/* Query up to 100 releases so the fallback still finds Windows versions
+   after historical tags and auxiliary manifest releases accumulate. */
+#define UPDATE_API_PATH L"/repos/wxcvm/AdAway-Windows/releases?per_page=100"
 #define UPDATE_MAX_BYTES (8u * 1024u * 1024u)   /* API JSON answer only */
 /* Hard cap for the downloaded update package: without it a hostile or broken
    release could stream until the disk is full (phase-2 audit, item A). */
@@ -48,7 +47,7 @@ static HWND s_update_hwnd;
  * 302 points at, in one request (audit item 41). Defined here because the probe
  * is far above UPDATE_MANIFEST_PATH.
  */
-#define UPDATE_PROBE_PATH L"/wxcvm/AdAway/releases/download/win11-latest/windows-manifest.json"
+#define UPDATE_PROBE_PATH L"/wxcvm/AdAway-Windows/releases/download/win11-latest/windows-manifest.json"
 
 /*
  * ── update state (audit item 36) ───────────────────────────────────
@@ -453,7 +452,7 @@ static char *http_get(const wchar_t *host, const wchar_t *path, size_t *out_len,
  * one is reused for UPDATE_CACHE_TTL_SEC and a 403/429 is not repeated before
  * UPDATE_COOLDOWN_SEC. */
 #define UPDATE_MANIFEST_HOST L"github.com"
-#define UPDATE_MANIFEST_PATH L"/wxcvm/AdAway/releases/download/win11-latest/windows-manifest.json"
+#define UPDATE_MANIFEST_PATH L"/wxcvm/AdAway-Windows/releases/download/win11-latest/windows-manifest.json"
 #define UPDATE_CACHE_TTL_SEC   (6u * 3600u)
 #define UPDATE_COOLDOWN_SEC    (30u * 60u)
 
@@ -1064,7 +1063,7 @@ static int find_latest_update(struct release_pick *pick, DWORD *http_status) {
                     asset_id_from(a + 16, id, sizeof(id));
                     if (id[0])
                         snprintf(exe_api, sizeof(exe_api),
-                                 "https://api.github.com/repos/wxcvm/AdAway/releases/assets/%s", id);
+                                 "https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/%s", id);
                 } else if (is_zip && zip_url[0] == 0) {
                     char id[32] = "";
                     snprintf(zip_url, sizeof(zip_url), "%s", one);
@@ -1072,7 +1071,7 @@ static int find_latest_update(struct release_pick *pick, DWORD *http_status) {
                     asset_id_from(a + 16, id, sizeof(id));
                     if (id[0])
                         snprintf(zip_api, sizeof(zip_api),
-                                 "https://api.github.com/repos/wxcvm/AdAway/releases/assets/%s", id);
+                                 "https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/%s", id);
                 }
                 chunk = a + 16;
             }
@@ -1702,7 +1701,7 @@ stage_parent_ready:
                         L"如果一直失败，请检查代理设置，或改用浏览器手动下载。\n\n"
                         L"是否用浏览器打开下载页，手动下载安装？",
                         L"更新", MB_YESNO | MB_ICONWARNING) == IDYES) {
-            ShellExecuteW(NULL, L"open", L"https://github.com/wxcvm/AdAway/releases",
+            ShellExecuteW(NULL, L"open", L"https://github.com/wxcvm/AdAway-Windows/releases",
                           NULL, NULL, SW_SHOWNORMAL);
         }
         /*
