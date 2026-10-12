@@ -2258,13 +2258,13 @@ static void show_network_baseline(HWND hwnd) {
     wchar_t info[1024];
     swprintf(info, sizeof(info)/sizeof(info[0]),
         L"Windows 当前网络基线（只读）：\n\n"
-        L"路由总条数：%u\nIPv4 默认路由数：%u\nIPv6 默认路由数：%u\n"
+        L"IPv4 路由条数：%u\nIPv4 默认路由数：%u\nIPv6 网关候选数：%u（非路由表）\n"
         L"已连接网卡：%u\n这些网卡列出的 DNS 服务器数：%u\n\n"
         L"路由查询：%ls（错误码 %lu）\n网卡查询：%ls（错误码 %lu）\n\n"
         L"这里只查看概况，不会修改配置。\n"
         L"计数不是可恢复的路由/DNS 快照；\n"
         L"全局接管及自动恢复仍未开放。",
-        v.route_count, v.default_ipv4, v.default_ipv6,
+        v.route_count, v.default_ipv4, v.ipv6_gateway_candidates,
         v.active_adapters, v.dns_servers,
         v.route_error == NO_ERROR ? L"成功" : L"失败",
         (unsigned long)v.route_error,
