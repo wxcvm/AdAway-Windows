@@ -12,7 +12,8 @@
  * persistent recovery engine: it lacks original/new OS values, real rollback
  * commands, durable transaction ownership, startup replay and conflict checking.
  *
- * Format v2 wraps validated model data with current-user DPAPI authentication,
+ * Format v2 wraps model data and a random HMAC key with current-user DPAPI;
+ * HMAC-SHA256 covers the complete DPAPI blob including provider metadata,
  * a protected user/SYSTEM file DACL, exclusive per-operation file lock, and
  * atomic replace after FlushFileBuffers. Legacy plaintext v1 is rejected.
  * This protects model storage; it cannot make a model an OS recovery snapshot.

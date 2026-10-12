@@ -5,7 +5,7 @@ Depends on draft PR #1 (`feat/traffic-mode-foundation`). No merge or release is 
 ## Changes and capabilities
 
 - Reject default routes for every capture input. Even a caller setting every readiness flag cannot activate scoped capture: no production recovery executor exists.
-- Seal journal **model** data with per-user DPAPI, explicit current-user/SYSTEM file permissions, random exclusive temporary files, flush-before-replace, and an exclusive per-operation lock. Reject plaintext v1, corrupt/truncated ciphertext, reparse files and foreign-owned files.
+- Seal journal **model** data with per-user DPAPI and a random sealed HMAC-SHA256 key authenticating the entire DPAPI blob, explicit current-user/SYSTEM file permissions, random exclusive temporary files, flush-before-replace, and an exclusive per-operation lock. Reject plaintext v1, corrupt/truncated ciphertext, reparse files and foreign-owned files.
 - Fetch the exact upstream Git object `4470606366e614abdb308fdfe94734d28167439c`, verify the object ID, and record/check all cached source hashes. Preserve unproven or locally edited caches by refusing replacement.
 
 ## Checks
