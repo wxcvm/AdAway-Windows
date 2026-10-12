@@ -57,6 +57,15 @@ jobs:
           print("All Windows update paths point at AdAway-Windows")
           PYEOF
 
+      - name: Test persistent Windows network journal store
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            windows_network_journal.c windows_network_journal_store_win32.c \
+            windows_network_journal_store_win32_test.c \
+            -o windows_network_journal_store_win32_test.exe
+          ./windows_network_journal_store_win32_test.exe
+
       - name: Test Windows network undo journal
         shell: msys2 {0}
         run: |
