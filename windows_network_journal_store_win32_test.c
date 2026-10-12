@@ -17,6 +17,7 @@ int main(void) {
     DWORD len = GetTempPathW(MAX_PATH, folder);
     assert(len > 0 && len < MAX_PATH);
     assert(GetTempFileNameW(folder, L"adj", 0, path) != 0);
+    assert(DeleteFileW(path));
 
     struct network_journal original = {0}, recovered = {0};
     assert(network_journal_record(&original, NETWORK_ACTION_ADAPTER_CREATE, 123));
@@ -40,13 +41,16 @@ int main(void) {
     assert(!pending.entries[2].active);
 
     /* Manual corruption must never be read as a recoverable journal. */
-    HANDLE handle = CreateFileW(path, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE handle = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
     assert(handle != INVALID_HANDLE_VALUE);
     LARGE_INTEGER seek;
     seek.QuadPart = 20;
     assert(SetFilePointerEx(handle, seek, NULL, FILE_BEGIN));
-    BYTE invalid = 0xff;
+    BYTE invalid = 0;
     DWORD n = 0;
+    assert(ReadFile(handle, &invalid, 1, &n, NULL) && n == 1);
+    invalid ^= 0x80;
+    assert(SetFilePointerEx(handle, seek, NULL, FILE_BEGIN));
     assert(WriteFile(handle, &invalid, 1, &n, NULL) && n == 1);
     CloseHandle(handle);
     struct network_journal sentinel = {0};
@@ -59,11 +63,36 @@ int main(void) {
     assert(network_journal_load_file(path, &recovered));
     assert(recovered.count == 3);
 
+    /* Concurrent owners cannot overwrite/read a transaction mid-operation. */
+    wchar_t lockpath[MAX_PATH + 6];
+    swprintf(lockpath, MAX_PATH + 6, L"%ls.lock", path);
+    HANDLE lock = CreateFileW(lockpath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+            OPEN_EXISTING, 0, NULL);
+    assert(lock != INVALID_HANDLE_VALUE);
+    assert(!network_journal_save_file(path, &original));
+    sentinel.count = 7;
+    assert(!network_journal_load_file(path, &sentinel));
+    assert(sentinel.count == 7);
+    CloseHandle(lock);
+    assert(network_journal_load_file(path, &recovered));
+
+    /* A truncated write cannot replace the caller's current in-memory model. */
+    handle = CreateFileW(path, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    assert(handle != INVALID_HANDLE_VALUE);
+    seek.QuadPart = 16;
+    assert(SetFilePointerEx(handle, seek, NULL, FILE_BEGIN) && SetEndOfFile(handle));
+    CloseHandle(handle);
+    sentinel.count = 7;
+    assert(!network_journal_load_file(path, &sentinel));
+    assert(sentinel.count == 7);
+    assert(network_journal_save_file(path, &original));
+
     assert(!network_journal_save_file(NULL, &original));
     assert(!network_journal_load_file(NULL, &recovered));
     assert(!network_journal_save_file(path, NULL));
 
     DeleteFileW(path);
-    puts("Windows journal store: atomic replace, reload, corruption and retry passed");
+    DeleteFileW(lockpath);
+    puts("Windows model journal: DPAPI, lock contention, atomic replace, tampering and truncation passed");
     return 0;
 }

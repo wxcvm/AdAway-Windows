@@ -1,0 +1,9 @@
+jni/
+app/src/main/assets/
+.adblock-upstream-manifest.json
+.upstream/
+dist/
+app_res.o
+app_build.rc
+app.ico
+*_test.exe

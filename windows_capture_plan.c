@@ -5,6 +5,7 @@ enum windows_capture_decision windows_capture_preflight(
     if (!p || !p->user_authorized || p->foreign_interceptor_confirmed) {
         return WINDOWS_CAPTURE_DENY;
     }
+    if (p->route_is_default) return WINDOWS_CAPTURE_DENY;
     if (!p->driver_api_available || !p->rollback_snapshot_valid) {
         return WINDOWS_CAPTURE_DENY;
     }
@@ -15,5 +16,7 @@ enum windows_capture_decision windows_capture_preflight(
          */
         return WINDOWS_CAPTURE_DIAGNOSTIC_ONLY;
     }
-    return WINDOWS_CAPTURE_ROUTE_ALLOWED;
+    /* No real recovery executor exists; booleans supplied by a caller are not
+     * proof of an OS-restorable snapshot. Even scoped capture stays read-only. */
+    return WINDOWS_CAPTURE_DIAGNOSTIC_ONLY;
 }
