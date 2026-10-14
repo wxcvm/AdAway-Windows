@@ -24,7 +24,7 @@ case "$1" in
  rev-parse) cat "$directory/.fetch-pin" ;;
  show)
   case "$2" in
-   FETCH_HEAD:webserver/jni/traffic_core_contract.h|FETCH_HEAD:webserver/jni/traffic_core_contract_test.c|FETCH_HEAD:webserver/jni/traffic_core_vectors.txt|FETCH_HEAD:webserver/jni/traffic_core_contract.schema.json|FETCH_HEAD:webserver/jni/rule_norm.h|FETCH_HEAD:webserver/jni/rule_norm_test.c|FETCH_HEAD:webserver/jni/rule_vectors.txt)
+   FETCH_HEAD:webserver/jni/traffic_core_contract.h|FETCH_HEAD:webserver/jni/traffic_core_contract_test.c|FETCH_HEAD:webserver/jni/traffic_core_vectors.txt|FETCH_HEAD:webserver/jni/traffic_core_contract.schema.json|FETCH_HEAD:webserver/jni/rule_norm.h|FETCH_HEAD:webserver/jni/rule_norm_test.c|FETCH_HEAD:webserver/jni/rule_vectors.txt|FETCH_HEAD:webserver/jni/domain_rule_snapshot.h|FETCH_HEAD:webserver/jni/domain_allow_snapshot.h|FETCH_HEAD:webserver/jni/block_rule_snapshot.h|FETCH_HEAD:webserver/jni/subscription_import.h|FETCH_HEAD:webserver/jni/domain_rule_snapshot_test.c|FETCH_HEAD:webserver/jni/block_rule_snapshot_test.c|FETCH_HEAD:webserver/jni/source_loader_vectors.txt)
     printf 'fixture %s\n' "$2" ;;
    *) exit 98 ;;
   esac ;;

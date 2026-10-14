@@ -29,6 +29,9 @@ void update_check_async(HWND hwnd);
    detection, resume, retries). The dashboard's subscription updater uses this
    so the platform has one HTTP implementation, not two. Returns 1 on success. */
 int adblock_http_download(const wchar_t *url, const wchar_t *file);
+/* Fresh bounded subscription request: no unverified range-resume or partial success. */
+int adblock_http_download_bounded(const wchar_t *url, const wchar_t *file,
+                                 unsigned long long max_bytes, unsigned budget_ms);
 /* Download + extract the release and restart the executable afterwards. */
 void update_apply_async(HWND hwnd, const struct update_info *info);
 void update_info_free(struct update_info *info);

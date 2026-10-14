@@ -3,7 +3,7 @@ name: Windows 11 webserver release
 on:
   workflow_dispatch:
   pull_request:
-    branches: [ main, feat/traffic-mode-foundation, fix/windows-journal-p0 ]
+    branches: [ main, feat/traffic-mode-foundation, fix/windows-journal-p0, feat/core-contract-v1 ]
   push:
     branches: [ main ]
     # 本仓库只放 Windows 端文件（12 个在根目录），因此不再用 paths 过滤：
@@ -75,6 +75,13 @@ jobs:
         shell: msys2 {0}
         run: |
           bash fetch-core-contract.sh
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/domain_rule_snapshot_test.c -o domain_rule_snapshot_test.exe -lws2_32
+          directory=$(mktemp -d)
+          ./domain_rule_snapshot_test.exe shared-contract/source_loader_vectors.txt "$directory"
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/block_rule_snapshot_test.c -o block_rule_snapshot_test.exe -lws2_32
+          ./block_rule_snapshot_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -Ishared-contract subscription_update_win32.c subscription_update_win32_test.c -o subscription_update_win32_test.exe -lws2_32
+          ./subscription_update_win32_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
           ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
