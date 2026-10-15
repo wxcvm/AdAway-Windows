@@ -1503,7 +1503,11 @@ static void theme_apply(int dark) {
 #define C_GREEN      RGB(34, 197, 94)
 #define C_GREEN_TXT  RGB(22, 163, 74)
 
+#ifdef ADBLOCK_PREVIEW_BUILD
+static const wchar_t *g_title = L"ADBlock Preview v" ADBLOCK_APP_VERSION_W;
+#else
 static const wchar_t *g_title = L"ADBlock 拦截服务器 v" ADBLOCK_APP_VERSION_W;
+#endif
 
 static struct snapshot *g_sn = NULL;
 static char g_res[512] = {0};
@@ -1944,7 +1948,11 @@ static void draw_sidebar(HDC hdc) {
     HFONT old = (HFONT)SelectObject(hdc, lf);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(255, 255, 255));
+#ifdef ADBLOCK_PREVIEW_BUILD
+    TextOutW(hdc, S(22), S(24), L"ADBlock Preview", 15);
+#else
     TextOutW(hdc, S(22), S(24), L"ADBlock", 7);
+#endif
     SelectObject(hdc, sf);
     SetTextColor(hdc, RGB(143, 163, 192));
     wchar_t ver[64];

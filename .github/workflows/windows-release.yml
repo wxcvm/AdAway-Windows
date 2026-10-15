@@ -5,6 +5,7 @@ on:
   pull_request:
     branches: [ main, feat/traffic-mode-foundation, fix/windows-journal-p0, feat/core-contract-v1 ]
   push:
+    tags: ['progress-win-*']
     branches: [ main ]
     # 本仓库只放 Windows 端文件（12 个在根目录），因此不再用 paths 过滤：
     # 原先三条路径是 AdAway 仓库的布局，迁出后永远匹配不到，会让代码改动的推送完全不触发 CI。
@@ -20,6 +21,7 @@ jobs:
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
       TAG: win11-webserver-v1.74
+      ADBLOCK_PREVIEW_BUILD: ${{ startsWith(github.ref, 'refs/tags/progress-win-') && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -608,6 +610,16 @@ jobs:
             echo "::warning::could not extract the signing certificate for verification"
           fi
 
+      - name: Prepare isolated preview launchers and inspection documentation
+        if: env.ADBLOCK_PREVIEW_BUILD == '1'
+        shell: pwsh
+        run: |
+          $launcher = '@echo off' + "`r`n" + 'cd /d "%~dp0"' + "`r`n" + 'webserver.exe --resources "%~dp0resources" --bind loop --http-port 18080 --https-port 18443 --stats-port 18686' + "`r`n"
+          Set-Content -LiteralPath dist/start-preview.bat -Value $launcher -Encoding ascii
+          Set-Content -LiteralPath dist/start.bat -Value $launcher -Encoding ascii
+          Copy-Item -LiteralPath docs/preview-installation.md -Destination dist/README.txt -Force
+          Copy-Item -LiteralPath docs/m1-rule-loader-validation.md -Destination dist/IMPLEMENTATION-STATUS.md -Force
+
       - name: Package zip
         shell: bash
         run: |
@@ -660,7 +672,7 @@ jobs:
       # Publishing is push/dispatch only: a pull_request run must never create
       # or overwrite a public release.
       - name: Publish GitHub Release (Windows zip)
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
         shell: bash
         run: |
           : "${TAG:?TAG env var missing}"
@@ -681,7 +693,7 @@ jobs:
       # releases are published far more often than Android ones, so without
       # this they take the pointer over and the Android update check 404s.
       - name: Keep the Android release as "latest"
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
         shell: bash
         run: |
           gh release edit "$TAG" --repo "${{ github.repository }}" --latest=false \
@@ -693,7 +705,7 @@ jobs:
       # private, so its release API cannot be read without a token).
       # Skipped silently when DOH_ECH_TOKEN is not configured.
       - name: Publish zip to the public update feed (wxcvm/Doh-ECH)
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
         continue-on-error: true
         shell: bash
         env:
@@ -714,15 +726,23 @@ jobs:
             || gh release upload "$TAG" "$ZIP" --repo wxcvm/Doh-ECH --clobber
 
       - name: Build installer (Inno Setup)
-        continue-on-error: true
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if ($env:ADBLOCK_PREVIEW_BUILD -eq '1') {
+            & $compiler installer-preview.iss
+            if ($LASTEXITCODE -ne 0) { throw 'per-user preview installer build failed' }
+            & $compiler /DMachineInstall=1 installer-preview.iss
+            if ($LASTEXITCODE -ne 0) { throw 'all-users preview installer build failed' }
+          } else {
+            & $compiler installer.iss
+            if ($LASTEXITCODE -ne 0) { throw 'installer build failed' }
+          }
           Get-ChildItem dist-installer
 
       - name: Attach installer to the release
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
         continue-on-error: true
         shell: pwsh
         env:
@@ -737,7 +757,7 @@ jobs:
       # The in-app updater reads this fixed-tag manifest instead of the REST API
       # (60 requests/hour per IP) - see UPDATE_MANIFEST_PATH in update_win32.c.
       - name: Publish windows-manifest.json (fixed tag win11-latest)
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -837,7 +857,7 @@ jobs:
       # the release itself is already published at this point, so a failure here
       # must not turn a good release red.
       - name: Prune old Windows releases (keep newest 5)
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -863,3 +883,10 @@ jobs:
                 --cleanup-tag --yes || true
             fi
           done < /tmp/old-win-releases.txt
+
+      - name: Publish progress inspection prerelease
+        if: env.ADBLOCK_PREVIEW_BUILD == '1'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tools/publish-progress-preview.sh

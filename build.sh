@@ -37,7 +37,12 @@ fi
 windres "$RC_FILE" -O coff -o "$HERE/app_res.o"
 
 echo "==> Compiling webserver.exe ..."
+PREVIEW_CFLAGS=()
+if [ "${ADBLOCK_PREVIEW_BUILD:-0}" = 1 ]; then
+  PREVIEW_CFLAGS=(-DADBLOCK_PREVIEW_BUILD=1)
+fi
 gcc \
+  "${PREVIEW_CFLAGS[@]}" \
   -std=c11 -O2 -Wall -mwindows \
   -fstack-protector-strong \
   -Wl,--dynamicbase,--nxcompat,--high-entropy-va \
