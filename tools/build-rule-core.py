@@ -53,6 +53,7 @@ static bool domain_is_allowed(const char *host, const char *resource_dir) {
     source = source[:start] + '''#include "block_rule_snapshot.h"
 static struct bs_store s_native_block_rules = BS_STORE_INITIALIZER;
 static size_t s_block_used;
+static size_t s_subs_domains;
 static bool block_set_contains(const char *host, size_t length) {
     if (!host || !length || length > 253) return false;
     char domain[254]; memcpy(domain, host, length); domain[length] = 0;
