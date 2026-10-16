@@ -1,6 +1,8 @@
 name: Windows 11 webserver release
 
 on:
+  # Builds on main are CI-only: do not auto-publish on merge.
+  # To release, deliberately dispatch this workflow from main after device QA.
   workflow_dispatch:
   pull_request:
     branches: [ main ]
@@ -572,7 +574,7 @@ jobs:
       # Publishing is push/dispatch only: a pull_request run must never create
       # or overwrite a public release.
       - name: Publish GitHub Release (Windows zip)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           : "${TAG:?TAG env var missing}"
@@ -593,7 +595,7 @@ jobs:
       # releases are published far more often than Android ones, so without
       # this they take the pointer over and the Android update check 404s.
       - name: Keep the Android release as "latest"
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           gh release edit "$TAG" --repo "${{ github.repository }}" --latest=false \
@@ -605,7 +607,7 @@ jobs:
       # private, so its release API cannot be read without a token).
       # Skipped silently when DOH_ECH_TOKEN is not configured.
       - name: Publish zip to the public update feed (wxcvm/Doh-ECH)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: bash
         env:
@@ -634,7 +636,7 @@ jobs:
           Get-ChildItem dist-installer
 
       - name: Attach installer to the release
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: pwsh
         env:
@@ -649,7 +651,7 @@ jobs:
       # The in-app updater reads this fixed-tag manifest instead of the REST API
       # (60 requests/hour per IP) - see UPDATE_MANIFEST_PATH in update_win32.c.
       - name: Publish windows-manifest.json (fixed tag win11-latest)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -749,7 +751,7 @@ jobs:
       # the release itself is already published at this point, so a failure here
       # must not turn a good release red.
       - name: Prune old Windows releases (keep newest 5)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
