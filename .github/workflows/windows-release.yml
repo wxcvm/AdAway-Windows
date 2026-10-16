@@ -122,6 +122,14 @@ jobs:
             -o traffic_mode_policy_test.exe
           ./traffic_mode_policy_test.exe
 
+      - name: Cache verified official OpenSSL static archives
+        uses: actions/cache@v4
+        with:
+          # Cache only installed public headers and archives; never runtime
+          # certificates, private keys, or downloaded third-party DLLs.
+          path: .openssl-build/install
+          key: official-openssl-3.5.9-msys2-mingw64-${{ runner.os }}-${{ hashFiles('scripts/build-official-openssl.sh') }}
+
       - name: Check pinned official OpenSSL static build
         shell: bash
         run: |
