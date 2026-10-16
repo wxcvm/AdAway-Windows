@@ -49,7 +49,12 @@ gcc \
   -I"$SSL_PREFIX/include" \
   -I"$MINGW_PREFIX/include" \
   -o "$OUT/webserver.exe" \
-  "$JNI/webserver.c" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/update_win32.c" "$HERE/app_res.o" \
+  "$JNI/webserver.c" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/update_win32.c" \
+  "$HERE/traffic_mode_policy.c" "$HERE/traffic_observer_win32.c" \
+  "$HERE/adguard_home_plan.c" "$HERE/windows_capture_plan.c" \
+  "$HERE/wintun_probe_win32.c" "$HERE/windows_network_inventory_win32.c" \
+  "$HERE/windows_network_journal.c" "$HERE/windows_network_journal_store_win32.c" \
+  "$HERE/app_res.o" \
   "$SSL_PREFIX/lib/libssl.a" "$SSL_PREFIX/lib/libcrypto.a" \
   -lws2_32 -lwinmm -lpthread \
   -lgdi32 -luser32 -lshell32 -ladvapi32 -lcrypt32 -liphlpapi \
@@ -79,13 +84,13 @@ if [ -n "$missing" ]; then
   echo "      $missing"
   exit 1
 fi
-# Runtime imports must not accidentally reference a system/MSYS2 OpenSSL DLL.
+# Never ship or load a mismatched runtime OpenSSL DLL.
 if objdump -p "$OUT/webserver.exe" | grep -Eiq 'DLL Name: *(libssl|libcrypto)'; then
-  echo "ERROR: webserver.exe still dynamically links an unpinned SSL DLL" >&2
+  echo "ERROR: dynamic OpenSSL import remained" >&2
   exit 1
 fi
 if ! strings "$OUT/webserver.exe" | grep -F 'OpenSSL 3.5.9' >/dev/null; then
-  echo "ERROR: OpenSSL 3.5.9 version signature missing from webserver.exe" >&2
+  echo "ERROR: official OpenSSL 3.5.9 signature absent" >&2
   exit 1
 fi
 echo "==> All imports satisfied ($(objdump -p "$OUT/webserver.exe" | grep -c 'DLL Name:'))"

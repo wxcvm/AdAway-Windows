@@ -77,6 +77,17 @@ ADBlock 拦截服务器 - Windows 11 (x64) 独立版
               -H "X-ADBlock-Token: <令牌>"）。
   * block_config.json  拦截策略（界面里勾选即时生效）。
 
+AdGuard Home 协同向导（只给出建议，不改第三方设置）：
+  * 在“设置”页点击“AdGuard Home 协同向导”，或右键托盘图标打开。
+  * 先选择 AdGuard Home 的客户端是否包含其他设备；向导会给出候选 IPv4、
+    检查 HTTP 80 / HTTPS 443、LAN 绑定、本地管理服务和当前用户 CA 信任。
+  * 在 AdGuard Home 中手工选择 DNS 自定义阻断 IP 模式（custom_ip），
+    再按验证结果设置 blocking_ipv4；其他设备不能使用本机的 127.0.0.1。
+  * DNS 不带端口、IPv6 需单独验证；还要测试被拦域名是否实际连到
+    本服务，以及目标客户端是否信任 CA。证书固定应用可能拒绝 HTTPS。
+  * 这不是 AdGuard for Windows/Android 客户端的通用设置入口；
+    不自动修改其配置，不自动启用全局路由或 TLS 中间人。
+
 使用 80/443 端口：
   需要管理员权限：以管理员身份运行终端，并加 --http-port 80 --https-port 443。
 
@@ -93,6 +104,12 @@ Windows SmartScreen / 杀毒软件：
 平台差异：
   * 透明代理（--proxy-filter，依赖 iptables 重定向）只在 Android/Linux 上
     生效，Windows 上不会启用。
+  * 当前 Windows 版本只有本地 HTTP/HTTPS 响应监听和接收到的请求过滤；
+    还没有 TUN/WFP 全局流量接管、系统 DNS 自动配置或 UDP/QUIC 拦截。
+    “服务器运行中”“端口绑定正常”不等于“电脑全部流量已过滤”。
+  * 已增加无副作用的流量模式决策器与 AdGuard 进程只读探测。
+    检测到 AdGuard 进程不代表确认冲突，目前不会自动修改其配置
+    或切换 Windows 系统代理、路由。实现进度见 docs/traffic-mode-foundation.md。
 
 故障排查：
   * 更新很慢或者一直失败：这条线路到 GitHub 资源节点（release-assets.githubusercontent.com）

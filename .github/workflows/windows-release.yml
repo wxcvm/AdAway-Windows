@@ -1,8 +1,7 @@
 name: Windows 11 webserver release
 
 on:
-  # Builds on main are CI-only: do not auto-publish on merge.
-  # To release, deliberately dispatch this workflow from main after device QA.
+  # Code merges never publish user-facing downloads; only explicit dispatch on main.
   workflow_dispatch:
   pull_request:
     branches: [ main ]
@@ -42,7 +41,67 @@ jobs:
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-pkg-config
 
-      - name: Check official OpenSSL pin and static link inputs
+      - name: Check Windows update feed ownership
+        shell: bash
+        run: |
+          python3 - <<'PYEOF'
+          from pathlib import Path
+          src = Path("update_win32.c").read_text(encoding="utf-8")
+          required = [
+              '/repos/wxcvm/AdAway-Windows/releases?per_page=100',
+              '/wxcvm/AdAway-Windows/releases/download/win11-latest/windows-manifest.json',
+              'https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/%s',
+              'https://github.com/wxcvm/AdAway-Windows/releases',
+          ]
+          for target in required:
+              assert target in src, "Windows update feed path missing: " + target
+          assert '/wxcvm/AdAway/releases' not in src
+          assert '/repos/wxcvm/AdAway/releases' not in src
+          print("All Windows update paths point at AdAway-Windows")
+          PYEOF
+
+      - name: Test persistent Windows network journal store
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            windows_network_journal.c windows_network_journal_store_win32.c \
+            windows_network_journal_store_win32_test.c \
+            -o windows_network_journal_store_win32_test.exe
+          ./windows_network_journal_store_win32_test.exe
+
+      - name: Test Windows network undo journal
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            windows_network_journal.c windows_network_journal_test.c \
+            -o windows_network_journal_test.exe
+          ./windows_network_journal_test.exe
+
+      - name: Test Windows capture preflight
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            windows_capture_plan.c windows_capture_plan_test.c \
+            -o windows_capture_plan_test.exe
+          ./windows_capture_plan_test.exe
+
+      - name: Test AdGuard Home coexistence preflight
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            adguard_home_plan.c adguard_home_plan_test.c \
+            -o adguard_home_plan_test.exe
+          ./adguard_home_plan_test.exe
+
+      - name: Test traffic mode decisions (no network changes)
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            traffic_mode_policy.c traffic_mode_policy_test.c \
+            -o traffic_mode_policy_test.exe
+          ./traffic_mode_policy_test.exe
+
+      - name: Check pinned official OpenSSL static build
         shell: bash
         run: |
           grep -Fq 'openssl-3.5.9' scripts/build-official-openssl.sh
@@ -502,7 +561,7 @@ jobs:
           pacman -S --noconfirm --needed mingw-w64-x86_64-osslsigncode
           echo "$SIGN_CERT_B64" | base64 -d > "$RUNNER_TEMP/cert.pfx"
           osslsigncode sign -pkcs12 "$RUNNER_TEMP/cert.pfx" -pass "$SIGN_CERT_PASS" -h sha256 \
-            -n "ADBlock Web Server" -i "https://github.com/wxcvm/AdAway" \
+            -n "ADBlock Web Server" -i "https://github.com/wxcvm/AdAway-Windows" \
             -in dist/webserver.exe -out dist/webserver.signed.exe
           mv dist/webserver.signed.exe dist/webserver.exe
           # A plain "verify" builds the trust store from the runner's CA bundle,
@@ -585,7 +644,7 @@ jobs:
             gh release create "$TAG" adblock-webserver-win64.zip --repo "${{ github.repository }}" \
               --latest=false \
               --title "ADBlock Web Server - Windows 11 (x64)" \
-              --notes "ADBlock Web Server for Windows 11 (x64)：托盘常驻 + 开机自启、CA 一键信任、系统代理式拦截（拦截模式填 127.0.0.1 / 0.0.0.0，可配合 AdGuard）、劫持过滤（全流量 + HTTPS MITM + 类 AdGuard 规则）、应用内自动更新（SHA-256 校验 + API 兜底下载）、统计与诊断导出。统计口径修正：管理流量不再计入连接/请求，拦截率与拦截量一致。" || true
+              --notes "ADBlock Windows 11 (x64)：原生 GUI、托盘常驻、CA 管理、收到的 HTTP/HTTPS 请求过滤与占位响应、应用内更新及统计。注意：当前版本尚未提供全系统 TUN/WFP 流量接管；HTTPS 内容过滤还受证书信任与证书固定限制。" || true
           fi
         env:
           GH_TOKEN: ${{ github.token }}
