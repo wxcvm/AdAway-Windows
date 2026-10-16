@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <sddl.h>
+#include <aclapi.h>
+#include <wincrypt.h>
+#include <bcrypt.h>
 #include "windows_network_journal_store_win32.h"
 
 enum { JOURNAL_FILE_SIZE = 8 + 4 + 4 + NETWORK_JOURNAL_MAX * 16 + 4 };
@@ -88,52 +92,173 @@ static bool deserialize(const unsigned char in[JOURNAL_FILE_SIZE],
     return true;
 }
 
-bool network_journal_save_file(const wchar_t *path,
-                               const struct network_journal *journal) {
-    if (!path || path[0] == L'\0') return false;
-    unsigned char bytes[JOURNAL_FILE_SIZE];
-    if (!serialize(journal, bytes)) return false;
+static const unsigned char SEALED_MAGIC[8] = {'A','D','N','E','T','P','0','2'};
 
-    size_t length = wcslen(path);
-    if (length == 0 || length > 30000) return false;
-    wchar_t *temporary = (wchar_t *)malloc((length + 5) * sizeof(wchar_t));
-    if (!temporary) return false;
-    wcscpy(temporary, path);
-    wcscat(temporary, L".new");
-
-    HANDLE handle = CreateFileW(temporary, GENERIC_WRITE, 0, NULL,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
-    if (handle == INVALID_HANDLE_VALUE) {
-        free(temporary);
-        return false;
-    }
-    DWORD written = 0;
-    bool ok = WriteFile(handle, bytes, sizeof(bytes), &written, NULL) != 0
-            && written == sizeof(bytes)
-            && FlushFileBuffers(handle) != 0;
-    if (!CloseHandle(handle)) ok = false;
-    if (ok) {
-        ok = MoveFileExW(temporary, path,
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-    }
-    if (!ok) DeleteFileW(temporary);
-    free(temporary);
+/* DPAPI may tolerate changes to provider metadata. Authenticate the ENTIRE
+ * DPAPI blob with a random key sealed inside it, not just the model payload. */
+static bool authenticate_blob(const unsigned char key[32], const DATA_BLOB *blob,
+                               unsigned char tag[32]) {
+    BCRYPT_ALG_HANDLE algorithm = NULL;
+    BCRYPT_HASH_HANDLE hash = NULL;
+    DWORD length = 0, got = 0;
+    unsigned char *object = NULL;
+    bool ok = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM,
+            NULL, BCRYPT_ALG_HANDLE_HMAC_FLAG) == 0;
+    if (ok) ok = BCryptGetProperty(algorithm, BCRYPT_OBJECT_LENGTH, (PUCHAR)&length,
+            sizeof(length), &got, 0) == 0 && got == sizeof(length);
+    if (ok) { object = (unsigned char *)malloc(length); ok = object != NULL; }
+    if (ok) ok = BCryptCreateHash(algorithm, &hash, object, length, (PUCHAR)key, 32, 0) == 0
+            && BCryptHashData(hash, blob->pbData, blob->cbData, 0) == 0
+            && BCryptFinishHash(hash, tag, 32, 0) == 0;
+    if (hash) BCryptDestroyHash(hash);
+    if (object) { SecureZeroMemory(object, length); free(object); }
+    if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
     return ok;
 }
 
-bool network_journal_load_file(const wchar_t *path,
-                               struct network_journal *journal) {
-    if (!path || path[0] == L'\0' || !journal) return false;
-    HANDLE handle = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (handle == INVALID_HANDLE_VALUE) return false;
-    LARGE_INTEGER length;
-    bool ok = GetFileSizeEx(handle, &length) != 0
-            && length.QuadPart == JOURNAL_FILE_SIZE;
-    unsigned char bytes[JOURNAL_FILE_SIZE];
-    DWORD readCount = 0;
-    if (ok) ok = ReadFile(handle, bytes, sizeof(bytes), &readCount, NULL) != 0
-            && readCount == sizeof(bytes);
-    CloseHandle(handle);
-    return ok && deserialize(bytes, journal);
+/* Explicit current-user owner and protected DACL; no inherited broad access. */
+static PSECURITY_DESCRIPTOR private_security(void) {
+    HANDLE token = NULL;
+    DWORD size = 0;
+    PSECURITY_DESCRIPTOR result = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return NULL;
+    GetTokenInformation(token, TokenUser, NULL, 0, &size);
+    TOKEN_USER *user = (TOKEN_USER *)malloc(size);
+    wchar_t *sid = NULL;
+    if (user && GetTokenInformation(token, TokenUser, user, size, &size)
+            && ConvertSidToStringSidW(user->User.Sid, &sid)) {
+        size_t capacity = wcslen(sid) * 2 + 64;
+        wchar_t *sddl = (wchar_t *)malloc(capacity * sizeof(wchar_t));
+        if (sddl) {
+            swprintf(sddl, capacity, L"O:%lsD:P(A;;FA;;;SY)(A;;FA;;;%ls)", sid, sid);
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl,
+                    SDDL_REVISION_1, &result, NULL)) result = NULL;
+            free(sddl);
+        }
+        LocalFree(sid);
+    }
+    free(user);
+    CloseHandle(token);
+    return result;
+}
+
+static bool owned_regular(HANDLE file, PSECURITY_DESCRIPTOR expected) {
+    BY_HANDLE_FILE_INFORMATION info;
+    PSID wanted = NULL, actual = NULL;
+    BOOL defaulted = FALSE;
+    PSECURITY_DESCRIPTOR security = NULL;
+    if (!GetFileInformationByHandle(file, &info)
+            || (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))
+            || !GetSecurityDescriptorOwner(expected, &wanted, &defaulted)) return false;
+    DWORD status = GetSecurityInfo(file, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+            &actual, NULL, NULL, NULL, &security);
+    bool ok = status == ERROR_SUCCESS && actual && EqualSid(actual, wanted);
+    if (security) LocalFree(security);
+    return ok;
+}
+
+static HANDLE lock_store(const wchar_t *path, PSECURITY_DESCRIPTOR security) {
+    size_t length = wcslen(path);
+    if (!length || length > 30000) return INVALID_HANDLE_VALUE;
+    wchar_t *lockpath = (wchar_t *)malloc((length + 6) * sizeof(wchar_t));
+    if (!lockpath) return INVALID_HANDLE_VALUE;
+    wcscpy(lockpath, path); wcscat(lockpath, L".lock");
+    SECURITY_ATTRIBUTES attrs = {sizeof(attrs), security, FALSE};
+    HANDLE lock = CreateFileW(lockpath, GENERIC_READ | GENERIC_WRITE, 0, &attrs,
+            OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(lockpath);
+    if (lock != INVALID_HANDLE_VALUE && !owned_regular(lock, security)) {
+        CloseHandle(lock); lock = INVALID_HANDLE_VALUE;
+    }
+    return lock; /* Persistent filename, exclusive handle: no unlink/open race. */
+}
+
+bool network_journal_save_file(const wchar_t *path, const struct network_journal *journal) {
+    if (!path || !path[0]) return false;
+    unsigned char bytes[JOURNAL_FILE_SIZE + 32];
+    if (!serialize(journal, bytes + 32)
+            || BCryptGenRandom(NULL, bytes, 32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return false;
+    PSECURITY_DESCRIPTOR security = private_security();
+    if (!security) return false;
+    HANDLE lock = lock_store(path, security);
+    if (lock == INVALID_HANDLE_VALUE) { LocalFree(security); return false; }
+    HANDLE previous = CreateFileW(path, READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    bool target_ok = previous == INVALID_HANDLE_VALUE
+            ? GetLastError() == ERROR_FILE_NOT_FOUND : owned_regular(previous, security);
+    if (previous != INVALID_HANDLE_VALUE) CloseHandle(previous);
+    if (!target_ok) { CloseHandle(lock); LocalFree(security); return false; }
+    DATA_BLOB input = {sizeof(bytes), bytes}, sealed = {0};
+    bool ok = CryptProtectData(&input, L"ADBlock diagnostic journal model", NULL, NULL, NULL,
+            CRYPTPROTECT_UI_FORBIDDEN, &sealed) != 0;
+    size_t length = wcslen(path);
+    wchar_t *temporary = (wchar_t *)malloc((length + 40) * sizeof(wchar_t));
+    unsigned char nonce[16];
+    HANDLE file = INVALID_HANDLE_VALUE;
+    if (!temporary || !ok || sealed.cbData > 65492 ||
+            BCryptGenRandom(NULL, nonce, sizeof(nonce), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) ok = false;
+    if (ok) {
+        wcscpy(temporary, path); wcscat(temporary, L".new-");
+        for (unsigned i = 0; i < sizeof(nonce); i++)
+            swprintf(temporary + length + 5 + i * 2, 3, L"%02x", (unsigned)nonce[i]);
+        SECURITY_ATTRIBUTES attrs = {sizeof(attrs), security, FALSE};
+        file = CreateFileW(temporary, GENERIC_WRITE | READ_CONTROL | FILE_READ_ATTRIBUTES, 0, &attrs, CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+        ok = file != INVALID_HANDLE_VALUE && owned_regular(file, security);
+    }
+    if (ok) {
+        unsigned char header[44]; DWORD written = 0;
+        memcpy(header, SEALED_MAGIC, 8); put32(header + 8, sealed.cbData);
+        ok = authenticate_blob(bytes, &sealed, header + 12)
+                && WriteFile(file, header, sizeof(header), &written, NULL) && written == sizeof(header)
+                && WriteFile(file, sealed.pbData, sealed.cbData, &written, NULL) && written == sealed.cbData
+                && FlushFileBuffers(file);
+    }
+    if (file != INVALID_HANDLE_VALUE) {
+        if (!CloseHandle(file)) ok = false;
+        if (ok) ok = MoveFileExW(temporary, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+        if (!ok) DeleteFileW(temporary);
+    }
+    if (sealed.pbData) LocalFree(sealed.pbData);
+    SecureZeroMemory(bytes, sizeof(bytes));
+    free(temporary); CloseHandle(lock); LocalFree(security);
+    return ok;
+}
+
+bool network_journal_load_file(const wchar_t *path, struct network_journal *journal) {
+    if (!path || !path[0] || !journal) return false;
+    PSECURITY_DESCRIPTOR security = private_security();
+    if (!security) return false;
+    HANDLE lock = lock_store(path, security);
+    if (lock == INVALID_HANDLE_VALUE) { LocalFree(security); return false; }
+    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+            OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    LARGE_INTEGER size;
+    bool ok = file != INVALID_HANDLE_VALUE && owned_regular(file, security)
+            && GetFileSizeEx(file, &size) && size.QuadPart >= 44 && size.QuadPart <= 65536;
+    unsigned char *bytes = ok ? (unsigned char *)malloc((size_t)size.QuadPart) : NULL;
+    DWORD read = 0;
+    if (ok) ok = bytes && ReadFile(file, bytes, (DWORD)size.QuadPart, &read, NULL)
+            && read == (DWORD)size.QuadPart && memcmp(bytes, SEALED_MAGIC, 8) == 0
+            && get32(bytes + 8) == read - 44;
+    DATA_BLOB plain = {0};
+    if (ok) {
+        DATA_BLOB sealed = {read - 44, bytes + 44};
+        ok = CryptUnprotectData(&sealed, NULL, NULL, NULL, NULL,
+                CRYPTPROTECT_UI_FORBIDDEN, &plain) && plain.cbData == JOURNAL_FILE_SIZE + 32;
+        unsigned char expected[32];
+        if (ok) ok = authenticate_blob(plain.pbData, &sealed, expected);
+        if (ok) {
+            unsigned difference = 0;
+            for (unsigned i = 0; i < 32; i++) difference |= expected[i] ^ bytes[12 + i];
+            ok = difference == 0;
+        }
+        if (ok) ok = deserialize(plain.pbData + 32, journal);
+    }
+    if (plain.pbData) { SecureZeroMemory(plain.pbData, plain.cbData); LocalFree(plain.pbData); }
+    free(bytes);
+    if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+    CloseHandle(lock); LocalFree(security);
+    return ok;
 }

@@ -1,10 +1,10 @@
 name: Windows 11 webserver release
 
 on:
-  # Code merges never publish user-facing downloads; only explicit dispatch on main.
+  # Main-branch merges run CI only; publishing requires manual dispatch.
   workflow_dispatch:
   pull_request:
-    branches: [ main ]
+    branches: [ main, feat/traffic-mode-foundation ]
   push:
     branches: [ main ]
     # 本仓库只放 Windows 端文件（12 个在根目录），因此不再用 paths 过滤：
@@ -66,8 +66,29 @@ jobs:
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
             windows_network_journal.c windows_network_journal_store_win32.c \
             windows_network_journal_store_win32_test.c \
-            -o windows_network_journal_store_win32_test.exe
+            -o windows_network_journal_store_win32_test.exe -municode -lcrypt32 -ladvapi32 -lbcrypt
           ./windows_network_journal_store_win32_test.exe
+
+      - name: Test fixed upstream acquisition and local-cache preservation
+        shell: bash
+        run: bash tests/fetch-upstream-test.sh
+
+      - name: Test optional Wintun discovery does not execute DLL code
+        shell: msys2 {0}
+        run: |
+          test ! -e wintun.dll
+          test ! -e wintun_test_dependency.dll
+          trap 'rm -f wintun.dll wintun_test_dependency.dll wintun_probe_win32_test.exe' EXIT
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -shared tests/wintun_probe_fake.c -o wintun.dll
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic wintun_probe_win32.c wintun_probe_win32_test.c -o wintun_probe_win32_test.exe
+          ./wintun_probe_win32_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -shared -DWINTUN_TEST_FORWARD_ONLY \
+            tests/wintun_probe_fake.c tests/wintun_probe_forwarded.def -o wintun.dll
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -shared -DWINTUN_TEST_FORWARD_ONLY \
+            -DWINTUN_TEST_DEPENDENCY tests/wintun_probe_fake.c -o wintun_test_dependency.dll
+          ./wintun_probe_win32_test.exe
+          printf 'malformed' > wintun.dll
+          ./wintun_probe_win32_test.exe malformed
 
       - name: Test Windows network undo journal
         shell: msys2 {0}
