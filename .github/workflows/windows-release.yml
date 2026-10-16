@@ -1,6 +1,7 @@
 name: Windows 11 webserver release
 
 on:
+  # Code merges never publish user-facing downloads; only explicit dispatch on main.
   workflow_dispatch:
   pull_request:
     branches: [ main ]
@@ -34,6 +35,8 @@ jobs:
           update: false
           install: >-
             git
+            make
+            perl
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-openssl
             mingw-w64-x86_64-pkg-config
@@ -97,6 +100,14 @@ jobs:
             traffic_mode_policy.c traffic_mode_policy_test.c \
             -o traffic_mode_policy_test.exe
           ./traffic_mode_policy_test.exe
+
+      - name: Check pinned official OpenSSL static build
+        shell: bash
+        run: |
+          grep -Fq 'openssl-3.5.9' scripts/build-official-openssl.sh
+          grep -Fq '45e844fa2a14ec92d146bd8f5778ac130b6625fb' scripts/build-official-openssl.sh
+          grep -Fq 'libcrypto.a' build.sh
+          ! grep -Eq '^[[:space:]]*-lssl |^[[:space:]]*-lcrypto ' build.sh
 
       - name: Assert version consistency (header / installer / TAG)
         shell: bash
@@ -622,7 +633,7 @@ jobs:
       # Publishing is push/dispatch only: a pull_request run must never create
       # or overwrite a public release.
       - name: Publish GitHub Release (Windows zip)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           : "${TAG:?TAG env var missing}"
@@ -643,7 +654,7 @@ jobs:
       # releases are published far more often than Android ones, so without
       # this they take the pointer over and the Android update check 404s.
       - name: Keep the Android release as "latest"
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           gh release edit "$TAG" --repo "${{ github.repository }}" --latest=false \
@@ -655,7 +666,7 @@ jobs:
       # private, so its release API cannot be read without a token).
       # Skipped silently when DOH_ECH_TOKEN is not configured.
       - name: Publish zip to the public update feed (wxcvm/Doh-ECH)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: bash
         env:
@@ -684,7 +695,7 @@ jobs:
           Get-ChildItem dist-installer
 
       - name: Attach installer to the release
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: pwsh
         env:
@@ -699,7 +710,7 @@ jobs:
       # The in-app updater reads this fixed-tag manifest instead of the REST API
       # (60 requests/hour per IP) - see UPDATE_MANIFEST_PATH in update_win32.c.
       - name: Publish windows-manifest.json (fixed tag win11-latest)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -799,7 +810,7 @@ jobs:
       # the release itself is already published at this point, so a failure here
       # must not turn a good release red.
       - name: Prune old Windows releases (keep newest 5)
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
