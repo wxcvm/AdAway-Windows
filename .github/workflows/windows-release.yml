@@ -803,14 +803,15 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'per-user preview installer build failed' }
             & $compiler /DMachineInstall=1 installer-preview.iss
             if ($LASTEXITCODE -ne 0) { throw 'all-users preview installer build failed' }
-          } else {
-            & $compiler installer.iss
-            if ($LASTEXITCODE -ne 0) { throw 'installer build failed' }
           }
+          # Always compile the stable installer, even on pull-request runs.
+          # Otherwise syntax regressions in installer.iss remain hidden until
+          # an official release is already attempted.
+          & $compiler installer.iss
+          if ($LASTEXITCODE -ne 0) { throw 'stable installer build failed' }
           Get-ChildItem dist-installer
 
       - name: Validate official installer shortcuts and launch options
-        if: env.ADBLOCK_PREVIEW_BUILD != '1'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
