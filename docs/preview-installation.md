@@ -46,7 +46,7 @@ Integrity events. It does not execute the installer or alter security settings.
 
 Use the portable route only when Windows policy permits it and only if
 you trust the release. Do not extract over an existing production folder.
-Check `SHA256SUMS.txt` against downloaded files. The preview publication workflow requires the **same production Authenticode certificate** for the Windows webserver executable and BOTH preview installers. Publication fails if the prior production EXE is unsigned or the certificate differs. A checksum verifies downloaded bytes but does not replace publisher identity validation.
+Check `SHA256SUMS.txt` against downloaded files. The normal production preview publication workflow requires the **original production Authenticode certificate** for the Windows executable and preview installers. A separate UI-inspection build from October 17, 2026 was intentionally published **without a signature** because no production PFX was configured. The unsigned inspection Release is not a substitute for the signed channel, and may be blocked on a protected Windows 11 PC. A checksum only verifies downloaded bytes; it cannot establish trusted publisher identity.
 MSI, MSIX and public package-manager distribution remain future work.
 
 Current implementation and incomplete platform acceptance are described in
