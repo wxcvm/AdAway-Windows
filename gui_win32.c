@@ -2438,15 +2438,17 @@ static void draw_ranking_page(HDC hdc) {
         TextOutW(hdc, S(222), S(74), L"域名", 2);
         TextOutW(hdc, S(880), S(74), L"拦截次数", 4);
         for (int i = 0; i < rows; i++) {
-            wchar_t nm[64], line[80], num[32];
+            wchar_t rank[16], num[32];
             int y = 100 + i * 21;
-            size_t nl = wcslen(sn->top[i].host);
-            wcsncpy(nm, sn->top[i].host, 44);
-            nm[44] = 0;
-            if (nl > 44) wcscat(nm, L"...");
-            swprintf(line, 80, L"%d. %ls", i + 1, nm);
+            swprintf(rank, 16, L"%d.", i + 1);
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(222), S(y), line, (int) wcslen(line));
+            TextOutW(hdc, S(222), S(y), rank, (int) wcslen(rank));
+            /* DrawText trims to the actual pixel width between rank and bar,
+             * unlike the old 44-character heuristic, which clipped differently
+             * at 125%/150% DPI and for long IDN/hostnames. */
+            RECT host_box = {S(251), S(y), S(545), S(y + 19)};
+            DrawTextW(hdc, sn->top[i].host, -1, &host_box,
+                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             /* 条形长度按最忙的域名归一，形状一眼能看出差距 */
             if (sn->top[i].count > 0) {
                 int w = (int) (160.0 * (double) sn->top[i].count / (double) maxc);
