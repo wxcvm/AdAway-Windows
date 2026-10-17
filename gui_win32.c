@@ -3204,14 +3204,14 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ui_navigate_to(hwnd, (int)(wp - '1'));
             return 0;
         }
-        break;
+        return DefWindowProcW(hwnd, msg, wp, lp);
     case WM_KEYDOWN:
         if (wp == VK_TAB && (GetKeyState(VK_CONTROL) & 0x8000)) {
             int direction = (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1;
             ui_navigate_to(hwnd, (g_tab + 6 + direction) % 6);
             return 0;
         }
-        break;
+        return DefWindowProcW(hwnd, msg, wp, lp);
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         int new_tab = -1;
