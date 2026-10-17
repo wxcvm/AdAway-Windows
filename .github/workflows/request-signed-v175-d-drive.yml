@@ -26,11 +26,11 @@ jobs:
       - name: Require passing main build of exact approved installer change
         run: |
           set -euo pipefail
-          gh run watch 39017134748 --repo "$GITHUB_REPOSITORY" --exit-status
-          expected=bdd6bf04b9003ef299b31f52e687ce61aa11733d
+          gh run watch 39017660197 --repo "$GITHUB_REPOSITORY" --exit-status
+          expected=115663a90846c9f97f63ae3a07759af6e7dd7261
           head=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
           [ "$head" = "$expected" ] || { echo "::error::Main changed; refusing to publish a different build"; exit 1; }
-          source=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/39017134748" --jq '.head_sha')
+          source=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/39017660197" --jq '.head_sha')
           [ "$source" = "$expected" ] || { echo "::error::Tested source does not match official main"; exit 1; }
           if gh release view win11-webserver-v1.75 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::v1.75 release already exists; refusing to overwrite"
