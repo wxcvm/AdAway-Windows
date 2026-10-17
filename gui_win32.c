@@ -2138,6 +2138,16 @@ static void draw_sidebar(HDC hdc) {
         DeleteObject(nf);
     }
 
+    /* Discoverable keyboard hint below the six nav entries. */
+    {
+        HFONT hint = mfont(10, FW_NORMAL);
+        HFONT prev = (HFONT)SelectObject(hdc, hint);
+        SetTextColor(hdc, g_pal.nav_text);
+        TextOutW(hdc, S(22), S(548), L"Alt+1~6 切换页面", 12);
+        SelectObject(hdc, prev);
+        DeleteObject(hint);
+    }
+
     /* exit at sidebar bottom */
     rounded_card(hdc, 16, 576, 160, 40, 10, g_pal.sidebar, g_pal.sidebar);
     HFONT xf = mfont(13, FW_NORMAL);
@@ -2988,6 +2998,20 @@ static void update_prompt_notify(HWND hwnd) {
     }
 }
 
+/* The sidebar is custom painted, not composed of Win32 tab controls.
+ * Provide a keyboard path so navigation is not mouse-only.
+ * Alt+1..6 jumps to a page; Ctrl+Tab cycles while the main view owns focus. */
+static void ui_navigate_to(HWND hwnd, int next_tab) {
+    if (next_tab < 0 || next_tab >= 6 || next_tab == g_tab) return;
+    g_tab = next_tab;
+    show_controls(hwnd, g_tab);
+    if (g_tab == 4) {
+        subs_load();
+        subs_refresh_list(hwnd);
+    }
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
 static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (g_taskbar_created != 0 && msg == g_taskbar_created) {
         tray_add(hwnd);
@@ -3175,6 +3199,19 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_ui_visible) InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
+    case WM_SYSKEYDOWN:
+        if ((GetKeyState(VK_MENU) & 0x8000) && wp >= '1' && wp <= '6') {
+            ui_navigate_to(hwnd, (int)(wp - '1'));
+            return 0;
+        }
+        break;
+    case WM_KEYDOWN:
+        if (wp == VK_TAB && (GetKeyState(VK_CONTROL) & 0x8000)) {
+            int direction = (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1;
+            ui_navigate_to(hwnd, (g_tab + 6 + direction) % 6);
+            return 0;
+        }
+        break;
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         int new_tab = -1;
@@ -3182,12 +3219,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (nav_hit(x, y, tab)) { new_tab = tab; break; }
         }
         if (new_tab >= 0) {
-            if (new_tab != g_tab) {
-                g_tab = new_tab;
-                show_controls(hwnd, g_tab);
-                if (g_tab == 4) { subs_load(); subs_refresh_list(hwnd); }
-                InvalidateRect(hwnd, NULL, TRUE);
-            }
+            ui_navigate_to(hwnd, new_tab);
         } else if (x >= S(16) && x <= S(176) && y >= S(576) && y <= S(616)) {
             PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
         }
