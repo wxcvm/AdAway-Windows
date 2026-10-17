@@ -71,6 +71,60 @@ static void block_set_load(const char *resource_dir) {
 }
 
 ''' + source[end:]
+    # Windows-only audited compatibility overlay. The upstream Android core
+    # stays immutable and is verified above by SHA-256; do not mutate the
+    # pinned jni/ source cache. This fixes independent installations sharing
+    # Global\\ADBlockWebServer_Singleton: the second installation used to
+    # broadcast to the first instance and exit before showing its own UI.
+    begin = '    HANDLE single = CreateMutexW(NULL, FALSE, L"Global\\\\ADBlockWebServer_Singleton");'
+    end_marker = '\n#endif\n    struct settings s = parse_cli_parameters'
+    if source.count(begin) != 1 or source.count(end_marker) != 1:
+        raise ValueError("upstream Win32 mutex guard changed; review before rebasing")
+    left = source.index(begin)
+    right = source.index(end_marker, left)
+    replacement = r'''    /*
+     * Installation-scoped single instance: stable + UI preview have separate
+     * binaries and must not suppress each other's window. FNV-1a hashes the
+     * normalized *absolute executable path*, not a world-visible raw path.
+     * Same installed EXE across two launches retains singleton behavior.
+     */
+    wchar_t exe_path[MAX_PATH];
+    DWORD exe_len = GetModuleFileNameW(NULL, exe_path, MAX_PATH);
+    if (exe_len == 0 || exe_len >= MAX_PATH) {
+        LOG_FATAL("Unable to determine installed EXE path for singleton guard.");
+        return EXIT_FAILURE;
+    }
+    CharLowerBuffW(exe_path, exe_len);
+    uint64_t exe_key = UINT64_C(14695981039346656037);
+    for (DWORD k = 0; k < exe_len; ++k) {
+        exe_key ^= (uint16_t)exe_path[k];
+        exe_key *= UINT64_C(1099511628211);
+    }
+    wchar_t global_name[96], local_name[96];
+    swprintf(global_name, 96, L"Global\\ADBlockWebServer_%016llx",
+             (unsigned long long)exe_key);
+    swprintf(local_name, 96, L"Local\\ADBlockWebServer_%016llx",
+             (unsigned long long)exe_key);
+    HANDLE single = CreateMutexW(NULL, FALSE, global_name);
+    DWORD mutex_status = GetLastError();
+    if (single == NULL) {
+        /* Standard user tokens may not be allowed to CREATE in Global\\.
+         * Falling back to Local\\ is vital; access denied is not proof
+         * that this particular executable is already running. */
+        single = CreateMutexW(NULL, FALSE, local_name);
+        mutex_status = GetLastError();
+    }
+    if (single != NULL && mutex_status == ERROR_ALREADY_EXISTS) {
+        UINT show = RegisterWindowMessageW(L"ADBlockShowDashboard");
+        if (show != 0) PostMessageW(HWND_BROADCAST, show, 0, 0);
+        LOG_INFO("ADBlock: same installed executable already running - exiting.");
+        CloseHandle(single);
+        return 0;
+    }
+    if (single == NULL) {
+        LOG_WARN("Unable to obtain per-install singleton; launching UI anyway.");
+    }'''
+    source = source[:left] + replacement + source[right:]
     if "android/log.h" not in source or "win32_dirent.h" not in source:
         raise ValueError("portable source guards unexpectedly changed")
     return source
@@ -82,4 +136,4 @@ if __name__ == "__main__":
     output = pathlib.Path(sys.argv[2])
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(prepared, encoding="utf-8", newline="\n")
-    print("Frozen portable production core preserved; domain-loader overlay generated")
+    print("Frozen portable core preserved; reviewed rules + Win32 instance isolation overlays generated")
