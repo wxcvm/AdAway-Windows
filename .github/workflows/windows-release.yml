@@ -803,11 +803,54 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'per-user preview installer build failed' }
             & $compiler /DMachineInstall=1 installer-preview.iss
             if ($LASTEXITCODE -ne 0) { throw 'all-users preview installer build failed' }
-          } else {
-            & $compiler installer.iss
-            if ($LASTEXITCODE -ne 0) { throw 'installer build failed' }
           }
+          # Always compile the stable installer, even on pull-request runs.
+          # Otherwise syntax regressions in installer.iss remain hidden until
+          # an official release is already attempted.
+          & $compiler installer.iss
+          if ($LASTEXITCODE -ne 0) { throw 'stable installer build failed' }
           Get-ChildItem dist-installer
+
+      - name: Validate official installer shortcuts and launch options
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Get-Content installer.iss -Raw
+          foreach ($required in @(
+            'DefaultDirName={code:PreferredInstallDir}',
+            "DirExists('D:\')",
+            'Name: "desktopicon"',
+            'postinstall skipifsilent',
+            'WorkingDir: "{app}"'
+          )) {
+            if (-not $script.Contains($required)) { throw "Missing installer option: $required" }
+          }
+          $setup = (Resolve-Path 'dist-installer/adblock-webserver-setup.exe').Path
+          $dest = Join-Path $env:RUNNER_TEMP 'StableUiInstallTest'
+          # Start-Process -Wait waits for the entire child process tree.
+          # The installer starts the persistent GUI, so -Wait would hang
+          # forever even when Setup itself has already exited successfully.
+          $installed = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$dest") -PassThru
+          if (-not $installed.WaitForExit(60000)) { throw 'Installer process did not finish in 60 seconds' }
+          if ($installed.ExitCode -ne 0) { throw "Installer failed: $($installed.ExitCode)" }
+          $exe = Join-Path $dest 'webserver.exe'
+          if (-not (Test-Path $exe)) { throw 'Installed executable missing' }
+          $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ADBlock\ADBlock Dashboard.lnk'
+          if (-not (Test-Path $lnk)) { throw 'Start Menu shortcut missing' }
+          $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
+          $actualTarget = $target.TargetPath
+          Write-Host "Start Menu target: $actualTarget"
+          Write-Host "Installed binary: $exe"
+          if (-not (Test-Path -LiteralPath $actualTarget)) { throw 'Shortcut target file does not exist' }
+          $actualCanonical = (Resolve-Path -LiteralPath $actualTarget).ProviderPath
+          $expectedCanonical = (Resolve-Path -LiteralPath $exe).ProviderPath
+          if ($actualCanonical -ine $expectedCanonical) {
+            throw "Start Menu target mismatch: target=$actualCanonical expected=$expectedCanonical"
+          }
+          Get-CimInstance Win32_Process -Filter "Name='webserver.exe'" |
+            Where-Object { $_.ExecutablePath -ieq $exe } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Write-Host 'PASS: installer worked and installed desktop/Start Menu/launch controls'
 
       - name: Smoke-test installed preview executable with real GUI
         if: env.ADBLOCK_PREVIEW_BUILD == '1'
