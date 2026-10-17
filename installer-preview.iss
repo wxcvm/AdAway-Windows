@@ -5,8 +5,8 @@
 [Setup]
 AppId={{B7B741A8-D763-4B3C-A5DC-302A38AF9E7F}
 AppName=ADBlock Preview
-AppVersion=1.74
-AppVerName=ADBlock Preview 1.74 (M1 progress)
+AppVersion=1.75
+AppVerName=ADBlock Preview 1.75 (UI inspection)
 AppPublisher=wxcvm
 #if MachineInstall
 DefaultDirName={autopf}\ADBlockPreview
@@ -35,7 +35,7 @@ Source: "dist\*"; DestDir: "{app}"; Excludes: "resources\*"; Flags: recursesubdi
 Source: "dist\resources\*"; DestDir: "{app}\resources"; Flags: recursesubdirs createallsubdirs onlyifdoesntexist
 
 [Icons]
-Name: "{group}\ADBlock Preview"; Filename: "{app}\webserver.exe"; WorkingDir: "{app}"; Parameters: "--resources ""{app}\resources"" --bind loop --http-port 18080 --https-port 18443 --stats-port 18686"
+Name: "{group}\ADBlock Preview"; Filename: "{app}\webserver.exe"; WorkingDir: "{app}"; Parameters: "--resources ""{app}\resources"" --bind loopback --http-port 18080 --https-port 18443 --stats-port 18686"
 Name: "{group}\Uninstall ADBlock Preview"; Filename: "{uninstallexe}"
 
 ; No process killing, autostart registration, CA installation or post-install launch.

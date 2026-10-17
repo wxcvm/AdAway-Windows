@@ -723,6 +723,16 @@ jobs:
           path: adblock-webserver-win64.zip
           if-no-files-found: error
 
+      - name: Verify preview shortcut argument contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq -- '--bind loopback' installer-preview.iss
+          if grep -Fq -- '--bind loop --' installer-preview.iss; then
+            echo "::error::Preview shortcut uses rejected --bind loop; use loopback"
+            exit 1
+          fi
+
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
@@ -738,6 +748,33 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'installer build failed' }
           }
           Get-ChildItem dist-installer
+
+      - name: Smoke-test installed preview executable with real GUI
+        if: env.ADBLOCK_PREVIEW_BUILD == '1'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = Join-Path $env:RUNNER_TEMP 'PreviewCiStartup'
+          $installer = (Resolve-Path 'dist-installer/adblock-preview-user-x64.exe').Path
+          $install = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$base") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Preview install failed: $($install.ExitCode)" }
+          $exe = Join-Path $base 'webserver.exe'
+          if (-not (Test-Path $exe)) { throw 'Preview executable missing' }
+          $res = Join-Path $base 'resources'
+          $args = @('--resources', "`"$res`"", '--bind','loopback',
+                    '--http-port','18764','--https-port','18465','--stats-port','18685')
+          $process = Start-Process -FilePath $exe -WorkingDirectory $base -ArgumentList $args -PassThru
+          try {
+            Start-Sleep -Seconds 9
+            $process.Refresh()
+            if ($process.HasExited) { throw "Preview GUI exited on startup: $($process.ExitCode)" }
+            if ((Get-Process -Id $process.Id -ErrorAction Stop).MainWindowHandle -eq 0) {
+              throw 'Preview GUI did not open a visible window'
+            }
+          } finally {
+            $process.Refresh()
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
+          }
 
       - name: Verify production signer parity and sign BOTH preview installers
         if: (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
