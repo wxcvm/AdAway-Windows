@@ -35,7 +35,7 @@ Source: "dist\*"; DestDir: "{app}"; Excludes: "resources\*"; Flags: recursesubdi
 Source: "dist\resources\*"; DestDir: "{app}\resources"; Flags: recursesubdirs createallsubdirs onlyifdoesntexist
 
 [Icons]
-Name: "{group}\ADBlock Preview"; Filename: "{app}\webserver.exe"; WorkingDir: "{app}"; Parameters: "--resources ""{app}\resources"" --bind loop --http-port 18080 --https-port 18443 --stats-port 18686"
+Name: "{group}\ADBlock Preview"; Filename: "{app}\webserver.exe"; WorkingDir: "{app}"; Parameters: "--resources ""{app}\resources"" --bind loopback --http-port 18080 --https-port 18443 --stats-port 18686"
 Name: "{group}\Uninstall ADBlock Preview"; Filename: "{uninstallexe}"
 
 ; No process killing, autostart registration, CA installation or post-install launch.
