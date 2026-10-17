@@ -1896,7 +1896,8 @@ static void draw_statusbar(HDC hdc) {
     HFONT old = (HFONT)SelectObject(hdc, f);
     SetBkMode(hdc, TRANSPARENT);
     wchar_t main[256];
-    swprintf(main, 256, L"服务器运行中 · http://localhost:%d  |  https://localhost:%d",
+    swprintf(main, 256, L"%ls · http://localhost:%d  |  https://localhost:%d",
+             up ? L"服务器运行中" : L"服务器未连接",
              g_http_port, g_https_port);
     SetTextColor(hdc, up ? C_GREEN_TXT : RGB(190, 70, 70));
     TextOutW(hdc, S(40), S(643), main, (int)wcslen(main));
