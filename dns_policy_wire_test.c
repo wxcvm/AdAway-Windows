@@ -4,11 +4,11 @@
 #include <stdio.h>
 #include <string.h>
 
-_Static_assert(DNS_POLICY_PASS == CORE_PASS, "shared PASS ordinal mismatch");
-_Static_assert(DNS_POLICY_NXDOMAIN == CORE_NXDOMAIN, "shared NXDOMAIN mismatch");
-_Static_assert(DNS_POLICY_REFUSED == CORE_REFUSED, "shared REFUSED mismatch");
-_Static_assert(DNS_POLICY_ZERO_ADDRESS == CORE_ZERO_ADDRESS, "shared ZERO mismatch");
-_Static_assert(DNS_POLICY_REPLACE == CORE_REPLACE, "shared REPLACE mismatch");
+_Static_assert((int)DNS_POLICY_PASS == (int)CORE_PASS, "shared PASS ordinal mismatch");
+_Static_assert((int)DNS_POLICY_NXDOMAIN == (int)CORE_NXDOMAIN, "shared NXDOMAIN mismatch");
+_Static_assert((int)DNS_POLICY_REFUSED == (int)CORE_REFUSED, "shared REFUSED mismatch");
+_Static_assert((int)DNS_POLICY_ZERO_ADDRESS == (int)CORE_ZERO_ADDRESS, "shared ZERO mismatch");
+_Static_assert((int)DNS_POLICY_REPLACE == (int)CORE_REPLACE, "shared REPLACE mismatch");
 
 static size_t make_query(const char *domain, unsigned qtype, uint8_t *query) {
     memset(query, 0, 512);
