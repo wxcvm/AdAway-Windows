@@ -59,4 +59,4 @@ begin
 #endif
 end;
 
-; No process killing, autostart registration, or silent CA installation.
+// No process killing, autostart registration, or silent CA installation.
