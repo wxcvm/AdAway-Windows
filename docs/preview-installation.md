@@ -32,7 +32,7 @@ route/DNS recovery or global capture.
 Use the portable route first if you only want to inspect the UI. Do not
 extract over an existing production folder. Check `SHA256SUMS.txt` against
 downloaded files. The preview publication workflow requires the **same production Authenticode certificate** for the Windows webserver executable and BOTH preview installers. Publication fails if the prior production EXE is unsigned or the certificate differs. A checksum verifies downloaded bytes but does not replace publisher identity validation.
-trust. MSI, MSIX and public package-manager distribution remain future work.
+MSI, MSIX and public package-manager distribution remain future work.
 
 Current implementation and incomplete platform acceptance are described in
 `IMPLEMENTATION-STATUS.md`. Keep the original production installation/data;
