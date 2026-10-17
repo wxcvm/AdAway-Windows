@@ -19,7 +19,7 @@ for name, source in files.items():
 digest = {name: hashlib.sha256((output / name).read_bytes()).hexdigest() for name in files}
 script = (root / "tools/install-preview.ps1").read_text(encoding="utf-8")
 for key, value in {
-    "@@TAG@@": os.environ["GITHUB_REF_NAME"],
+    "@@TAG@@": os.environ["PREVIEW_TAG"],
     "@@USER_SHA@@": digest["adblock-preview-user-x64.exe"],
     "@@MACHINE_SHA@@": digest["adblock-preview-machine-x64.exe"],
     "@@PORTABLE_SHA@@": digest["adblock-webserver-win64.zip"],
@@ -35,3 +35,4 @@ checksums = "".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n"
                     for p in sorted(output.iterdir()) if p.is_file() and p.name != "SHA256SUMS.txt")
 (output / "SHA256SUMS.txt").write_text(checksums, encoding="utf-8")
 print("Preview EXE installers, portable ZIP, pinned PowerShell installer and checksums prepared")
+

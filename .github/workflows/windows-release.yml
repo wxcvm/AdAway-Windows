@@ -7,7 +7,7 @@ on:
     branches: [ main, feat/traffic-mode-foundation, feat/core-contract-v1, feat/rule-loader-atomic-v1 ]
   push:
     tags: ['progress-win-*']
-    branches: [ main ]
+    branches: [ main, 'preview/release-*' ]
     # 本仓库只放 Windows 端文件（12 个在根目录），因此不再用 paths 过滤：
     # 原先三条路径是 AdAway 仓库的布局，迁出后永远匹配不到，会让代码改动的推送完全不触发 CI。
 
@@ -22,7 +22,7 @@ jobs:
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
       TAG: win11-webserver-v1.74
-      ADBLOCK_PREVIEW_BUILD: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/progress-win-')) && '1' || '0' }}
+      ADBLOCK_PREVIEW_BUILD: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -610,7 +610,11 @@ jobs:
           SIGN_CERT_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           if [ -z "$SIGN_CERT_B64" ]; then
-            echo "no signing certificate configured - skipping sign"
+            case "$GITHUB_REF" in
+              refs/tags/progress-win-*|refs/heads/preview/release-*)
+                echo "::error::preview publication requires the existing production PFX"; exit 1;;
+            esac
+            echo "no signing certificate configured - skipping sign for ordinary CI"
             exit 0
           fi
           pacman -S --noconfirm --needed mingw-w64-x86_64-osslsigncode
@@ -767,6 +771,48 @@ jobs:
           }
           Get-ChildItem dist-installer
 
+      - name: Verify production signer parity and sign BOTH preview installers
+        if: (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
+        shell: msys2 {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGN_CERT_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          SIGN_CERT_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGN_CERT_B64" && test -n "$SIGN_CERT_PASS"
+          reference="$RUNNER_TEMP/prod-win-reference"
+          mkdir -p "$reference"
+          gh release download win11-webserver-v1.74 --repo "$GITHUB_REPOSITORY" \
+            --pattern 'adblock-webserver-win64.zip' --dir "$reference"
+          unzip -j "$reference/adblock-webserver-win64.zip" 'webserver.exe' -d "$reference"
+          test -s "$reference/webserver.exe"
+          pfx="$RUNNER_TEMP/preview-win-signing.pfx"
+          pem="$RUNNER_TEMP/preview-win-signing.pem"
+          trap 'rm -f "$pfx" "$pem"' EXIT
+          umask 077
+          printf '%s' "$SIGN_CERT_B64" | base64 -d > "$pfx"
+          openssl pkcs12 -in "$pfx" -clcerts -nokeys \
+            -passin "pass:$SIGN_CERT_PASS" -out "$pem"
+          test -s "$pem"
+          # Verify the actual previously published production binary's
+          # Authenticode signature under the SAME signing certificate.
+          osslsigncode verify -CAfile "$pem" "$reference/webserver.exe" \
+            || { echo "::error::production Windows EXE is not signed by the configured preview signer"; exit 1; }
+          osslsigncode verify -CAfile "$pem" dist/webserver.exe \
+            || { echo "::error::current preview webserver executable signature invalid"; exit 1; }
+          for label in user machine; do
+            exe="dist-installer/adblock-preview-${label}-x64.exe"
+            test -s "$exe"
+            osslsigncode sign -pkcs12 "$pfx" -pass "$SIGN_CERT_PASS" -h sha256 \
+              -n "ADBlock Preview" -i "https://github.com/wxcvm/AdAway-Windows" \
+              -in "$exe" -out "$exe.signed"
+            mv "$exe.signed" "$exe"
+            osslsigncode verify -CAfile "$pem" "$exe" \
+              || { echo "::error::preview installer signature verification failed: $label"; exit 1; }
+          done
+          openssl x509 -in "$pem" -noout -fingerprint -sha256
+
       - name: Attach installer to the release
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
@@ -910,7 +956,7 @@ jobs:
             fi
           done < /tmp/old-win-releases.txt
       - name: Publish progress inspection prerelease
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/progress-win-')
+        if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
