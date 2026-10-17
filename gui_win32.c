@@ -2419,6 +2419,91 @@ static void update_button_refresh(HWND hwnd) {
 /* 拦截排行 + 拦截类型分布：服务端按 Host 头累计的“真正被拦下”的次数（最多 20 条），
    以及每个类别各被拦下多少次。以前只有聚合数字，看不出“到底哪些域名在捣乱、
    拦的都是什么”。 */
+/* Dedicated network-integration destination. It reserves stable space for
+ * future TUN/WFP capture, AdGuard coexistence and rollback, but does not make
+ * any configuration changes or pretend that a backend already exists. */
+static void draw_network_capability(HDC hdc, int x, int y, int w,
+                                    const wchar_t *title,
+                                    const wchar_t *description,
+                                    bool available) {
+    rounded_card(hdc, x, y, w, 116, 12, g_pal.card, g_pal.border);
+    HFONT heading = mfont(14, FW_SEMIBOLD);
+    HFONT body = mfont(11, FW_NORMAL);
+    HFONT old = (HFONT)SelectObject(hdc, heading);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, g_pal.text);
+    RECT title_rect = {S(x + 16), S(y + 12), S(x + w - 100), S(y + 36)};
+    DrawTextW(hdc, title, -1, &title_rect,
+              DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    const wchar_t *badge = available ? L"现有功能" : L"规划中";
+    SetTextColor(hdc, available ? C_GREEN_TXT : g_pal.muted);
+    RECT badge_rect = {S(x + w - 94), S(y + 13), S(x + w - 10), S(y + 36)};
+    DrawTextW(hdc, badge, -1, &badge_rect,
+              DT_SINGLELINE | DT_RIGHT | DT_NOPREFIX);
+    SelectObject(hdc, body);
+    SetTextColor(hdc, g_pal.muted);
+    RECT desc_rect = {S(x + 16), S(y + 42), S(x + w - 16), S(y + 110)};
+    DrawTextW(hdc, description, -1, &desc_rect,
+              DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(hdc, old);
+    DeleteObject(heading);
+    DeleteObject(body);
+}
+
+static void draw_network_center_page(HDC hdc) {
+    rounded_card(hdc, 202, 12, 812, 184, 12,
+                 g_pal.card, g_pal.border);
+    HFONT heading = mfont(19, FW_SEMIBOLD);
+    HFONT body = mfont(12, FW_NORMAL);
+    HFONT old = (HFONT)SelectObject(hdc, heading);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, g_pal.text);
+    RECT title = {S(224), S(28), S(984), S(58)};
+    DrawTextW(hdc, L"网络中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, body);
+    SetTextColor(hdc, g_pal.muted);
+    const wchar_t *note =
+        L"当前版本仅处理已经送到本地端口的请求。监听成功 ≠ 已接管全机流量。";
+    RECT note_rect = {S(224), S(66), S(992), S(108)};
+    DrawTextW(hdc, note, -1, &note_rect, DT_WORDBREAK | DT_NOPREFIX);
+    const wchar_t *adguard =
+        g_adguard_signal == ADGUARD_PROCESS_PRESENT
+            ? L"AdGuard 进程：已发现（不能据此判断是否冲突）"
+            : g_adguard_signal == ADGUARD_PROCESS_ABSENT
+                ? L"AdGuard 进程：未发现"
+                : L"AdGuard 进程：检测结果未知";
+    RECT adguard_rect = {S(224), S(114), S(990), S(138)};
+    DrawTextW(hdc, adguard, -1, &adguard_rect,
+              DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    const wchar_t *capture =
+        L"全局接管：未接入 TUN/WFP    ·    自动协同切换：尚未启用";
+    RECT capture_rect = {S(224), S(151), S(990), S(182)};
+    DrawTextW(hdc, capture, -1, &capture_rect,
+              DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(hdc, old);
+    DeleteObject(heading);
+    DeleteObject(body);
+
+    draw_network_capability(hdc, 202, 208, 398,
+        L"全流量接管", L"IPv4/IPv6、TCP/UDP、按应用接管；支持明确授权与运行状态。",
+        false);
+    draw_network_capability(hdc, 616, 208, 398,
+        L"AdGuard 协同监听", L"确认活动冲突后引导监听及 AdGuard Home 阻断 IP 配置。",
+        false);
+    draw_network_capability(hdc, 202, 338, 398,
+        L"DNS 与规则引擎", L"上游 DNS 健康、加密 DNS、规则匹配与漏流量诊断。",
+        false);
+    draw_network_capability(hdc, 616, 338, 398,
+        L"HTTPS / QUIC", L"证书信任、TLS 失败、UDP/443 与不能解密的应用诊断。",
+        false);
+    draw_network_capability(hdc, 202, 468, 398,
+        L"安全回滚", L"记录本程序改变的系统设置，失败时仅恢复自己的网络修改。",
+        false);
+    draw_network_capability(hdc, 616, 468, 398,
+        L"本地监听与规则", L"当前可在设置、订阅和拦截排行页面管理；此处不重复开关。",
+        true);
+}
+
 static void draw_ranking_page(HDC hdc) {
     struct snapshot *sn = g_sn;
     HFONT hf = mfont(15, FW_SEMIBOLD);
@@ -3410,6 +3495,18 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 1) {
             /* 应用日志 page */
             draw_activity_page(hdc);
+            BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
+            SelectObject(mem, oldbmp);
+            DeleteObject(bmp);
+            DeleteDC(mem);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        if (g_tab == 5) {
+            /* Network integration roadmap with truthful capability states. */
+            draw_network_center_page(hdc);
+            draw_statusbar(hdc);
             BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
             SelectObject(mem, oldbmp);
             DeleteObject(bmp);
