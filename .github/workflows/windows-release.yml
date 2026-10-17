@@ -837,7 +837,7 @@ jobs:
           foreach ($iss in @('installer.iss','installer-preview.iss')) {
             $cfg = Get-Content $iss -Raw
             if ($cfg -notmatch 'DefaultDirName=\{code:PreferredInstallDir\}' -or
-                $cfg -notmatch "DirExists\('D:\\\\'\)" -or
+                -not $cfg.Contains("DirExists('D:\')") -or
                 $cfg -notmatch 'Flags: postinstall nowait skipifsilent') {
               throw "D-drive fallback or launch-after-install configuration missing: $iss"
             }
