@@ -668,9 +668,17 @@ jobs:
         if: env.ADBLOCK_PREVIEW_BUILD == '1'
         shell: pwsh
         run: |
-          $launcher = '@echo off' + "`r`n" + 'cd /d "%~dp0"' + "`r`n" + 'webserver.exe --resources "%~dp0resources" --bind loop --http-port 18080 --https-port 18443 --stats-port 18686' + "`r`n"
+          $launcher = '@echo off' + "`r`n" + 'cd /d "%~dp0"' + "`r`n" + 'webserver.exe --resources "%~dp0resources" --bind loopback --http-port 18080 --https-port 18443 --stats-port 18686' + "`r`n"
           Set-Content -LiteralPath dist/start-preview.bat -Value $launcher -Encoding ascii
           Set-Content -LiteralPath dist/start.bat -Value $launcher -Encoding ascii
+          # These batch scripts are part of the portable installation path.
+          # The program rejects --bind loop at CLI parsing, before GUI startup.
+          foreach ($launcherFile in @('dist/start.bat','dist/start-preview.bat')) {
+            $actual = Get-Content -LiteralPath $launcherFile -Raw
+            if ($actual -notmatch '--bind loopback' -or $actual -match '--bind loop(?!back)') {
+              throw "Invalid portable launcher CLI option in $launcherFile"
+            }
+          }
           Copy-Item -LiteralPath docs/preview-installation.md -Destination dist/README.txt -Force
           Copy-Item -LiteralPath docs/m1-rule-loader-validation.md -Destination dist/IMPLEMENTATION-STATUS.md -Force
 
