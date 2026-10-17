@@ -957,8 +957,11 @@ jobs:
           fi
           test -s adblock-webserver-win64.zip
           test -s dist-installer/adblock-webserver-setup.exe
+          # SHA-256 is particularly important for unsigned releases:
+          # it verifies the artifact bytes, but it does not establish publisher trust.
+          sha256sum adblock-webserver-win64.zip dist-installer/adblock-webserver-setup.exe > SHA256SUMS.txt
           gh release create "$TAG" adblock-webserver-win64.zip \
-            dist-installer/adblock-webserver-setup.exe --repo "${{ github.repository }}" \
+            dist-installer/adblock-webserver-setup.exe SHA256SUMS.txt --repo "${{ github.repository }}" \
             --latest \
             --title "ADBlock Windows v1.75 (x64 · 未签名)" \
             --notes "Windows 1.75 正式构建（未签名）：默认优先安装到 D:\\ADBlock（无 D 盘时回退到用户目录），支持开始菜单/桌面快捷方式、完成后启动。此版本的 EXE 和安装器不带 Authenticode 数字签名，Windows 可能拒绝执行；请勿为使用本软件关闭 Defender、SmartScreen 或智能应用控制。支持现有过滤和监听；TUN/WFP 全局接管、AdGuard 自动协同仍未实现。"
