@@ -803,6 +803,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'per-user preview installer build failed' }
             & $compiler /DMachineInstall=1 installer-preview.iss
             if ($LASTEXITCODE -ne 0) { throw 'all-users preview installer build failed' }
+            # UI PRs must also compile the REAL stable installer; otherwise
+            # a valid preview package could hide a broken official package.
+            & $compiler installer.iss
+            if ($LASTEXITCODE -ne 0) { throw 'stable installer build failed on PR' }
           } else {
             & $compiler installer.iss
             if ($LASTEXITCODE -ne 0) { throw 'installer build failed' }
@@ -820,6 +824,24 @@ jobs:
           if ($install.ExitCode -ne 0) { throw "Preview install failed: $($install.ExitCode)" }
           $exe = Join-Path $base 'webserver.exe'
           if (-not (Test-Path $exe)) { throw 'Preview executable missing' }
+          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ADBlock Preview\ADBlock Preview.lnk'
+          if (-not (Test-Path $shortcut)) { throw 'Start Menu shortcut was not installed' }
+          $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+          if ($link.TargetPath -ine $exe) { throw 'Shortcut points to wrong executable' }
+          if ($link.WorkingDirectory -ine $base) { throw 'Shortcut working directory is wrong' }
+          if ($link.Arguments -notmatch '--bind loopback' -or $link.Arguments -notmatch '--resources') {
+            throw 'Shortcut is missing working server arguments'
+          }
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ADBlock Preview.lnk'
+          if (-not (Test-Path $desktop)) { throw 'Desktop shortcut was not created by default' }
+          foreach ($iss in @('installer.iss','installer-preview.iss')) {
+            $cfg = Get-Content $iss -Raw
+            if ($cfg -notmatch 'DefaultDirName=\{code:PreferredInstallDir\}' -or
+                -not $cfg.Contains("DirExists('D:\')") -or
+                $cfg -notmatch 'Flags: postinstall nowait skipifsilent') {
+              throw "D-drive fallback or launch-after-install configuration missing: $iss"
+            }
+          }
           $res = Join-Path $base 'resources'
           $args = @('--resources', "`"$res`"", '--bind','loopback',
                     '--http-port','18764','--https-port','18465','--stats-port','18685')
