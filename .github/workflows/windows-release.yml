@@ -827,7 +827,11 @@ jobs:
           }
           $setup = (Resolve-Path 'dist-installer/adblock-webserver-setup.exe').Path
           $dest = Join-Path $env:RUNNER_TEMP 'StableUiInstallTest'
-          $installed = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$dest") -Wait -PassThru
+          # Start-Process -Wait waits for the entire child process tree.
+          # The installer starts the persistent GUI, so -Wait would hang
+          # forever even when Setup itself has already exited successfully.
+          $installed = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$dest") -PassThru
+          if (-not $installed.WaitForExit(60000)) { throw 'Installer process did not finish in 60 seconds' }
           if ($installed.ExitCode -ne 0) { throw "Installer failed: $($installed.ExitCode)" }
           $exe = Join-Path $dest 'webserver.exe'
           if (-not (Test-Path $exe)) { throw 'Installed executable missing' }
