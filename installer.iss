@@ -22,8 +22,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 WizardStyle=modern
-; A running webserver.exe would lock its files: let Inno close it (and the
-; code below kills it explicitly as well, which also covers the tray process).
+; A running webserver.exe would lock its files: let Inno close files belonging
+; to THIS installation; never kill other installations merely by process name.
 CloseApplications=force
 RestartApplications=no
 
@@ -85,7 +85,7 @@ begin
     installs use Inno Restart Manager instead of killing processes by filename. }
   Pid := ExpandConstant('{param:PID|}');
   if Pid <> '' then
-    Exec('taskkill.exe', '/F /PID ' + Pid, '', SW_HIDE, ewWaitUntilTerminated, ResultCode)
+    Exec('taskkill.exe', '/F /PID ' + Pid, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   { Do not kill ALL webserver.exe processes: preview and stable are
     intentionally separate installations, and Inno CloseApplications handles
     only locked files in the selected upgrade destination. }
