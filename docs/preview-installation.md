@@ -29,9 +29,24 @@ management 18686. In-app production updating is disabled in the preview
 binary. Closing the preview stops its listener; it does not represent OS
 route/DNS recovery or global capture.
 
-Use the portable route first if you only want to inspect the UI. Do not
-extract over an existing production folder. Check `SHA256SUMS.txt` against
-downloaded files. The preview publication workflow requires the **same production Authenticode certificate** for the Windows webserver executable and BOTH preview installers. Publication fails if the prior production EXE is unsigned or the certificate differs. A checksum verifies downloaded bytes but does not replace publisher identity validation.
+The v1.75 UI inspection installer and its embedded webserver.exe are
+**unsigned**. On Windows 11 with Smart App Control in enforcement mode,
+the installer may be blocked before any dialog or log is created. There
+may be **no** "More info" override. Do not disable Defender, SmartScreen
+or Smart App Control for this preview. An unsigned portable build may
+also be blocked by the same policy; it is an alternative diagnostic,
+not a security workaround.
+
+To distinguish a damaged download from an unsigned-app block, check the
+release SHA256SUMS and the Windows Security > Protection history, then
+Windows Security > App & browser control > Smart App Control settings.
+The read-only script `tools/diagnose-preview-installer.ps1` reports
+the SHA-256 hash, Authenticode signature state and relevant recent Code
+Integrity events. It does not execute the installer or alter security settings.
+
+Use the portable route only when Windows policy permits it and only if
+you trust the release. Do not extract over an existing production folder.
+Check `SHA256SUMS.txt` against downloaded files. The preview publication workflow requires the **same production Authenticode certificate** for the Windows webserver executable and BOTH preview installers. Publication fails if the prior production EXE is unsigned or the certificate differs. A checksum verifies downloaded bytes but does not replace publisher identity validation.
 MSI, MSIX and public package-manager distribution remain future work.
 
 Current implementation and incomplete platform acceptance are described in
