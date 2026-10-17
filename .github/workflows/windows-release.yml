@@ -92,6 +92,13 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
           ./rule_norm_test.exe shared-contract/rule_vectors.txt
 
+      - name: Test rule-driven DNS wire responses (core action parity)
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
+            dns_policy_wire.c dns_policy_wire_test.c -o dns_policy_wire_test.exe
+          ./dns_policy_wire_test.exe
+
       - name: Test optional Wintun discovery does not execute DLL code
         shell: msys2 {0}
         run: |
