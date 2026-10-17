@@ -57,7 +57,7 @@ gcc \
   -I"$SSL_PREFIX/include" \
   -I"$MINGW_PREFIX/include" \
   -o "$OUT/webserver.exe" \
-  "$CORE_SOURCE" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/update_win32.c" \
+  "$CORE_SOURCE" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/gui_assist_dialogs_win32.c" "$HERE/update_win32.c" \
   "$HERE/subscription_update_win32.c" "$HERE/dns_policy_wire.c" \
   "$HERE/traffic_mode_policy.c" "$HERE/traffic_observer_win32.c" \
   "$HERE/adguard_home_plan.c" "$HERE/windows_capture_plan.c" \
