@@ -5,8 +5,8 @@
 [Setup]
 AppId={{B7B741A8-D763-4B3C-A5DC-302A38AF9E7F}
 AppName=ADBlock Preview
-AppVersion=1.74
-AppVerName=ADBlock Preview 1.74 (M1 progress)
+AppVersion=1.75
+AppVerName=ADBlock Preview 1.75 (UI inspection)
 AppPublisher=wxcvm
 #if MachineInstall
 DefaultDirName={autopf}\ADBlockPreview
