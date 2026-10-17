@@ -21,7 +21,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.74
+      TAG: win11-webserver-v1.75
       ADBLOCK_PREVIEW_BUILD: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -628,7 +628,12 @@ jobs:
           SIGN_CERT_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
           SIGN_CERT_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          if [ -z "$SIGN_CERT_B64" ]; then
+          if [ -z "$SIGN_CERT_B64" ] || [ -z "$SIGN_CERT_PASS" ]; then
+            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+               [ "$GITHUB_REF" = "refs/heads/main" ]; then
+              echo "::error::Official Windows release requires original production PFX and password"
+              exit 1
+            fi
             case "$GITHUB_REF" in
               refs/tags/progress-win-*|refs/heads/preview/release-*)
                 echo "::error::preview publication requires the existing production PFX"; exit 1;;
@@ -718,62 +723,6 @@ jobs:
           path: adblock-webserver-win64.zip
           if-no-files-found: error
 
-      # Publishing is push/dispatch only: a pull_request run must never create
-      # or overwrite a public release.
-      - name: Publish GitHub Release (Windows zip)
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        shell: bash
-        run: |
-          : "${TAG:?TAG env var missing}"
-          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release upload "$TAG" adblock-webserver-win64.zip --repo "${{ github.repository }}" --clobber || true
-            echo "uploaded to existing release"
-          else
-            gh release create "$TAG" adblock-webserver-win64.zip --repo "${{ github.repository }}" \
-              --latest=false \
-              --title "ADBlock Web Server - Windows 11 (x64)" \
-              --notes "ADBlock Windows 11 (x64)：原生 GUI、托盘常驻、CA 管理、收到的 HTTP/HTTPS 请求过滤与占位响应、应用内更新及统计。注意：当前版本尚未提供全系统 TUN/WFP 流量接管；HTTPS 内容过滤还受证书信任与证书固定限制。" || true
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      # AUDIT W5-04: GitHub keeps a single "latest release" pointer, and the
-      # Android updater reads releases/latest/download/manifest.json. Windows
-      # releases are published far more often than Android ones, so without
-      # this they take the pointer over and the Android update check 404s.
-      - name: Keep the Android release as "latest"
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        shell: bash
-        run: |
-          gh release edit "$TAG" --repo "${{ github.repository }}" --latest=false \
-            && echo "$TAG is no longer the latest release"
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      # The in-app updater checks the PUBLIC feed repository (this one is
-      # private, so its release API cannot be read without a token).
-      # Skipped silently when DOH_ECH_TOKEN is not configured.
-      - name: Publish zip to the public update feed (wxcvm/Doh-ECH)
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        continue-on-error: true
-        shell: bash
-        env:
-          FEED_TOKEN: ${{ secrets.DOH_ECH_TOKEN }}
-        run: |
-          if [ -z "$FEED_TOKEN" ]; then
-            echo "DOH_ECH_TOKEN is not configured - skipping public feed publish."
-            exit 0
-          fi
-          : "${TAG:?TAG env var missing}"
-          ZIP=$(find . -name 'adblock-webserver-win64.zip' | head -1)
-          if [ -z "$ZIP" ]; then echo "no zip found"; exit 0; fi
-          export GH_TOKEN="$FEED_TOKEN"
-          VERSION="${TAG#win11-webserver-v}"
-          gh release create "$TAG" "$ZIP" --repo wxcvm/Doh-ECH \
-            --title "ADBlock Windows 服务器 v$VERSION" \
-            --notes "Windows 端一键更新版（自动检查/下载/替换/重启）" \
-            || gh release upload "$TAG" "$ZIP" --repo wxcvm/Doh-ECH --clobber
-
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |
@@ -832,18 +781,99 @@ jobs:
           done
           openssl x509 -in "$pem" -noout -fingerprint -sha256
 
-      - name: Attach installer to the release
+      - name: Verify original production signature and sign official installer
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-        continue-on-error: true
-        shell: pwsh
+        shell: msys2 {0}
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGN_CERT_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          SIGN_CERT_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
-          $exe = "dist-installer/adblock-webserver-setup.exe"
-          if (-not (Test-Path $exe)) { Write-Host "installer not built - skipped"; exit 0 }
-          if (-not $env:TAG) { Write-Error "TAG env var missing"; exit 1 }
-          gh release upload "$env:TAG" $exe --repo "${{ github.repository }}" --clobber
-          Write-Host "attached $exe to $env:TAG"
+          set -euo pipefail
+          test -n "$SIGN_CERT_B64" && test -n "$SIGN_CERT_PASS"
+          reference="$RUNNER_TEMP/production-signer-reference"
+          mkdir -p "$reference"
+          gh release download win11-webserver-v1.74 --repo "$GITHUB_REPOSITORY" \
+            --pattern 'adblock-webserver-win64.zip' --dir "$reference"
+          unzip -j "$reference/adblock-webserver-win64.zip" 'webserver.exe' -d "$reference"
+          test -s "$reference/webserver.exe"
+          pfx="$RUNNER_TEMP/stable-signing.pfx"
+          pem="$RUNNER_TEMP/stable-signing.pem"
+          trap 'rm -f "$pfx" "$pem"' EXIT
+          umask 077
+          printf '%s' "$SIGN_CERT_B64" | base64 -d > "$pfx"
+          openssl pkcs12 -in "$pfx" -clcerts -nokeys \
+            -passin "pass:$SIGN_CERT_PASS" -out "$pem"
+          test -s "$pem"
+          osslsigncode verify -CAfile "$pem" "$reference/webserver.exe"
+          osslsigncode verify -CAfile "$pem" dist/webserver.exe
+          installer="dist-installer/adblock-webserver-setup.exe"
+          test -s "$installer"
+          osslsigncode sign -pkcs12 "$pfx" -pass "$SIGN_CERT_PASS" -h sha256 \
+            -n "ADBlock Web Server" -i "https://github.com/wxcvm/AdAway-Windows" \
+            -in "$installer" -out "$installer.signed"
+          mv "$installer.signed" "$installer"
+          osslsigncode verify -CAfile "$pem" "$installer"
+          echo "Official EXE and installer match the previously published Windows signing certificate"
+
+      # Publishing is push/dispatch only: a pull_request run must never create
+      # or overwrite a public release. Only publish after installer signature verification.
+      - name: Publish signed official Windows Release (ZIP and installer)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          : "${TAG:?TAG env var missing}"
+          set -euo pipefail
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::Official release $TAG already exists; refusing to replace signed assets"
+            exit 1
+          fi
+          test -s adblock-webserver-win64.zip
+          test -s dist-installer/adblock-webserver-setup.exe
+          gh release create "$TAG" adblock-webserver-win64.zip \
+            dist-installer/adblock-webserver-setup.exe --repo "${{ github.repository }}" \
+            --latest=false \
+            --title "ADBlock Windows v1.75 (x64)" \
+            --notes "正式版 1.75：六页原生界面、网络中心、键盘导航、DPI 与排版修复。保留现有过滤和监听；全系统 TUN/WFP 接管、AdGuard 自动协同尚未启用。HTTPS 内容过滤受证书信任和证书固定限制。"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # AUDIT W5-04: GitHub keeps a single "latest release" pointer, and the
+      # Android updater reads releases/latest/download/manifest.json. Windows
+      # releases are published far more often than Android ones, so without
+      # this they take the pointer over and the Android update check 404s.
+      - name: Keep the Android release as "latest"
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          gh release edit "$TAG" --repo "${{ github.repository }}" --latest=false \
+            && echo "$TAG is no longer the latest release"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # The in-app updater checks the PUBLIC feed repository (this one is
+      # private, so its release API cannot be read without a token).
+      # Skipped silently when DOH_ECH_TOKEN is not configured.
+      - name: Publish zip to the public update feed (wxcvm/Doh-ECH)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        shell: bash
+        env:
+          FEED_TOKEN: ${{ secrets.DOH_ECH_TOKEN }}
+        run: |
+          if [ -z "$FEED_TOKEN" ]; then
+            echo "DOH_ECH_TOKEN is not configured - skipping public feed publish."
+            exit 0
+          fi
+          : "${TAG:?TAG env var missing}"
+          ZIP=$(find . -name 'adblock-webserver-win64.zip' | head -1)
+          if [ -z "$ZIP" ]; then echo "no zip found"; exit 0; fi
+          export GH_TOKEN="$FEED_TOKEN"
+          VERSION="${TAG#win11-webserver-v}"
+          gh release create "$TAG" "$ZIP" --repo wxcvm/Doh-ECH \
+            --title "ADBlock Windows 服务器 v$VERSION" \
+            --notes "Windows 端一键更新版（自动检查/下载/替换/重启）" \
+            || gh release upload "$TAG" "$ZIP" --repo wxcvm/Doh-ECH --clobber
 
       # The in-app updater reads this fixed-tag manifest instead of the REST API
       # (60 requests/hour per IP) - see UPDATE_MANIFEST_PATH in update_win32.c.

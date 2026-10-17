@@ -1896,10 +1896,13 @@ static void draw_statusbar(HDC hdc) {
     HFONT old = (HFONT)SelectObject(hdc, f);
     SetBkMode(hdc, TRANSPARENT);
     wchar_t main[256];
-    swprintf(main, 256, L"服务器运行中 · http://localhost:%d  |  https://localhost:%d",
+    swprintf(main, 256, L"%ls · http://localhost:%d  |  https://localhost:%d",
+             up ? L"服务器运行中" : L"服务器未连接",
              g_http_port, g_https_port);
     SetTextColor(hdc, up ? C_GREEN_TXT : RGB(190, 70, 70));
-    TextOutW(hdc, S(40), S(643), main, (int)wcslen(main));
+    RECT service_label = {S(40), S(640), S(415), S(662)};
+    DrawTextW(hdc, main, -1, &service_label,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     char cert_path[1024];
     snprintf(cert_path, sizeof(cert_path), "%s/localhost-2410.crt", g_res);
@@ -1916,7 +1919,11 @@ static void draw_statusbar(HDC hdc) {
     else
         swprintf(cert, 200, L"CA 证书已过期 - 删除 %hs 后重启", cert_path);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(430), S(643), cert, (int)wcslen(cert));
+    /* Long CA paths are common (especially under non-ASCII user profiles).
+     * Clip rather than painting through the clock at the right edge. */
+    RECT certificate_label = {S(430), S(640), S(904), S(662)};
+    DrawTextW(hdc, cert, -1, &certificate_label,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -1926,7 +1933,9 @@ static void draw_statusbar(HDC hdc) {
     TextOutW(hdc, S(920), S(643), tm, (int)wcslen(tm));
 
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(16), S(661), g_status, (int)wcslen(g_status));
+    RECT status_message = {S(16), S(660), S(980), S(680)};
+    DrawTextW(hdc, g_status, -1, &status_message,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     SelectObject(hdc, old);
     DeleteObject(f);
@@ -1934,12 +1943,16 @@ static void draw_statusbar(HDC hdc) {
 
 /* sidebar nav hit areas (logical units; callers pass physical coords) */
 static bool nav_hit(int x, int y, int which) {
-    int top = 96 + which * 52;   /* statistics / activity / settings */
+    int top = 96 + which * 46;   /* six equally spaced navigation destinations */
     return x >= S(16) && x <= S(176) && y >= S(top) && y <= S(top + 40);
 }
 
 static void draw_sidebar(HDC hdc) {
-    RECT sb = {S(0), S(0), S(190), S(680)};         /* AUDIT V8: was unscaled */
+    /* Cover the whole drawable height, including taller windows/DPI layouts.
+     * The former fixed 680px background left a blank strip after resize. */
+    RECT client_clip;
+    GetClipBox(hdc, &client_clip);
+    RECT sb = {S(0), S(0), S(190), client_clip.bottom};
     HBRUSH bg = CreateSolidBrush(g_pal.sidebar);
     FillRect(hdc, &sb, bg);
     DeleteObject(bg);
@@ -2021,8 +2034,8 @@ static void draw_sidebar(HDC hdc) {
     }
 
     /* nav items */
-    for (int t = 0; t < 5; t++) {
-        int ny = 96 + t * 52;
+    for (int t = 0; t < 6; t++) {
+        int ny = 96 + t * 46;
         bool active = (g_tab == t);
         rounded_card(hdc, 16, ny, 160, 40, 10,
                      active ? g_pal.nav_active : g_pal.sidebar,
@@ -2076,21 +2089,38 @@ static void draw_sidebar(HDC hdc) {
             HBRUSH ib = CreateSolidBrush(active ? C_ACCENT : g_pal.nav_text);
             HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
             HGDIOBJ ob = SelectObject(hdc, ib);
-            RoundRect(hdc, S(34), S(ny + 22), S(41), S(30), S(2), S(2));
-            RoundRect(hdc, S(45), S(16), S(52), S(30), S(2), S(2));
-            RoundRect(hdc, S(56), S(10), S(63), S(30), S(2), S(2));
+            /* All coordinates must be relative to ny. Previous end points
+             * used absolute y=30, drawing inverted/outside the nav row. */
+            RoundRect(hdc, S(34), S(ny + 22), S(41), S(ny + 30), S(2), S(2));
+            RoundRect(hdc, S(45), S(ny + 16), S(52), S(ny + 30), S(2), S(2));
+            RoundRect(hdc, S(56), S(ny + 10), S(63), S(ny + 30), S(2), S(2));
             SelectObject(hdc, op);
             SelectObject(hdc, ob);
             DeleteObject(ib);
-        } else {
+        } else if (t == 4) {
             /* subscriptions: a globe (circle + meridian) */
             HPEN ip = CreatePen(PS_SOLID, S(2), active ? C_ACCENT : g_pal.nav_text);
             HGDIOBJ op = SelectObject(hdc, ip);
             HGDIOBJ ob2 = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            Ellipse(hdc, S(34), S(10), S(62), S(30));
-            MoveToEx(hdc, S(48), S(10), NULL);
-            LineTo(hdc, S(48), S(30));
+            Ellipse(hdc, S(34), S(ny + 10), S(62), S(ny + 30));
+            MoveToEx(hdc, S(48), S(ny + 10), NULL);
+            LineTo(hdc, S(48), S(ny + 30));
             SelectObject(hdc, ob2);
+            SelectObject(hdc, op);
+            DeleteObject(ip);
+        } else {
+            /* network center: three connection nodes; all relative to nav row */
+            HPEN ip = CreatePen(PS_SOLID, S(2), active ? C_ACCENT : g_pal.nav_text);
+            HGDIOBJ op = SelectObject(hdc, ip);
+            HGDIOBJ ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            MoveToEx(hdc, S(39), S(ny + 20), NULL);
+            LineTo(hdc, S(56), S(ny + 12));
+            MoveToEx(hdc, S(39), S(ny + 20), NULL);
+            LineTo(hdc, S(56), S(ny + 28));
+            Ellipse(hdc, S(34), S(ny + 15), S(44), S(ny + 25));
+            Ellipse(hdc, S(52), S(ny + 7), S(62), S(ny + 17));
+            Ellipse(hdc, S(52), S(ny + 23), S(62), S(ny + 33));
+            SelectObject(hdc, ob);
             SelectObject(hdc, op);
             DeleteObject(ip);
         }
@@ -2101,11 +2131,21 @@ static void draw_sidebar(HDC hdc) {
             const wchar_t *label = t == 0 ? L"统计"
                                  : (t == 1 ? L"应用日志"
                                  : (t == 2 ? L"设置"
-                                 : (t == 3 ? L"拦截排行" : L"订阅")));
+                                 : (t == 3 ? L"拦截排行" : (t == 4 ? L"订阅" : L"网络中心"))));
             TextOutW(hdc, S(70), S(ny + 10), label, (int) wcslen(label));
         }
         SelectObject(hdc, old);
         DeleteObject(nf);
+    }
+
+    /* Discoverable keyboard hint below the six nav entries. */
+    {
+        HFONT hint = mfont(10, FW_NORMAL);
+        HFONT prev = (HFONT)SelectObject(hdc, hint);
+        SetTextColor(hdc, g_pal.nav_text);
+        TextOutW(hdc, S(22), S(548), L"Alt+1~6 切换页面", 12);
+        SelectObject(hdc, prev);
+        DeleteObject(hint);
     }
 
     /* exit at sidebar bottom */
@@ -2389,6 +2429,91 @@ static void update_button_refresh(HWND hwnd) {
 /* 拦截排行 + 拦截类型分布：服务端按 Host 头累计的“真正被拦下”的次数（最多 20 条），
    以及每个类别各被拦下多少次。以前只有聚合数字，看不出“到底哪些域名在捣乱、
    拦的都是什么”。 */
+/* Dedicated network-integration destination. It reserves stable space for
+ * future TUN/WFP capture, AdGuard coexistence and rollback, but does not make
+ * any configuration changes or pretend that a backend already exists. */
+static void draw_network_capability(HDC hdc, int x, int y, int w,
+                                    const wchar_t *title,
+                                    const wchar_t *description,
+                                    bool available) {
+    rounded_card(hdc, x, y, w, 116, 12, g_pal.card, g_pal.border);
+    HFONT heading = mfont(14, FW_SEMIBOLD);
+    HFONT body = mfont(11, FW_NORMAL);
+    HFONT old = (HFONT)SelectObject(hdc, heading);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, g_pal.text);
+    RECT title_rect = {S(x + 16), S(y + 12), S(x + w - 100), S(y + 36)};
+    DrawTextW(hdc, title, -1, &title_rect,
+              DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    const wchar_t *badge = available ? L"现有功能" : L"规划中";
+    SetTextColor(hdc, available ? C_GREEN_TXT : g_pal.muted);
+    RECT badge_rect = {S(x + w - 94), S(y + 13), S(x + w - 10), S(y + 36)};
+    DrawTextW(hdc, badge, -1, &badge_rect,
+              DT_SINGLELINE | DT_RIGHT | DT_NOPREFIX);
+    SelectObject(hdc, body);
+    SetTextColor(hdc, g_pal.muted);
+    RECT desc_rect = {S(x + 16), S(y + 42), S(x + w - 16), S(y + 110)};
+    DrawTextW(hdc, description, -1, &desc_rect,
+              DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(hdc, old);
+    DeleteObject(heading);
+    DeleteObject(body);
+}
+
+static void draw_network_center_page(HDC hdc) {
+    rounded_card(hdc, 202, 12, 812, 184, 12,
+                 g_pal.card, g_pal.border);
+    HFONT heading = mfont(19, FW_SEMIBOLD);
+    HFONT body = mfont(12, FW_NORMAL);
+    HFONT old = (HFONT)SelectObject(hdc, heading);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, g_pal.text);
+    RECT title = {S(224), S(28), S(984), S(58)};
+    DrawTextW(hdc, L"网络中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, body);
+    SetTextColor(hdc, g_pal.muted);
+    const wchar_t *note =
+        L"当前版本仅处理已经送到本地端口的请求。监听成功 ≠ 已接管全机流量。";
+    RECT note_rect = {S(224), S(66), S(992), S(108)};
+    DrawTextW(hdc, note, -1, &note_rect, DT_WORDBREAK | DT_NOPREFIX);
+    const wchar_t *adguard =
+        g_adguard_signal == ADGUARD_PROCESS_PRESENT
+            ? L"AdGuard 进程：已发现（不能据此判断是否冲突）"
+            : g_adguard_signal == ADGUARD_PROCESS_ABSENT
+                ? L"AdGuard 进程：未发现"
+                : L"AdGuard 进程：检测结果未知";
+    RECT adguard_rect = {S(224), S(114), S(990), S(138)};
+    DrawTextW(hdc, adguard, -1, &adguard_rect,
+              DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    const wchar_t *capture =
+        L"全局接管：未接入 TUN/WFP    ·    自动协同切换：尚未启用";
+    RECT capture_rect = {S(224), S(151), S(990), S(182)};
+    DrawTextW(hdc, capture, -1, &capture_rect,
+              DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(hdc, old);
+    DeleteObject(heading);
+    DeleteObject(body);
+
+    draw_network_capability(hdc, 202, 208, 398,
+        L"全流量接管", L"IPv4/IPv6、TCP/UDP、按应用接管；支持明确授权与运行状态。",
+        false);
+    draw_network_capability(hdc, 616, 208, 398,
+        L"AdGuard 协同监听", L"确认活动冲突后引导监听及 AdGuard Home 阻断 IP 配置。",
+        false);
+    draw_network_capability(hdc, 202, 338, 398,
+        L"DNS 与规则引擎", L"上游 DNS 健康、加密 DNS、规则匹配与漏流量诊断。",
+        false);
+    draw_network_capability(hdc, 616, 338, 398,
+        L"HTTPS / QUIC", L"证书信任、TLS 失败、UDP/443 与不能解密的应用诊断。",
+        false);
+    draw_network_capability(hdc, 202, 468, 398,
+        L"安全回滚", L"记录本程序改变的系统设置，失败时仅恢复自己的网络修改。",
+        false);
+    draw_network_capability(hdc, 616, 468, 398,
+        L"本地监听与规则", L"当前可在设置、订阅和拦截排行页面管理；此处不重复开关。",
+        true);
+}
+
 static void draw_ranking_page(HDC hdc) {
     struct snapshot *sn = g_sn;
     HFONT hf = mfont(15, FW_SEMIBOLD);
@@ -2423,15 +2548,17 @@ static void draw_ranking_page(HDC hdc) {
         TextOutW(hdc, S(222), S(74), L"域名", 2);
         TextOutW(hdc, S(880), S(74), L"拦截次数", 4);
         for (int i = 0; i < rows; i++) {
-            wchar_t nm[64], line[80], num[32];
+            wchar_t rank[16], num[32];
             int y = 100 + i * 21;
-            size_t nl = wcslen(sn->top[i].host);
-            wcsncpy(nm, sn->top[i].host, 44);
-            nm[44] = 0;
-            if (nl > 44) wcscat(nm, L"...");
-            swprintf(line, 80, L"%d. %ls", i + 1, nm);
+            swprintf(rank, 16, L"%d.", i + 1);
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(222), S(y), line, (int) wcslen(line));
+            TextOutW(hdc, S(222), S(y), rank, (int) wcslen(rank));
+            /* DrawText trims to the actual pixel width between rank and bar,
+             * unlike the old 44-character heuristic, which clipped differently
+             * at 125%/150% DPI and for long IDN/hostnames. */
+            RECT host_box = {S(251), S(y), S(545), S(y + 19)};
+            DrawTextW(hdc, sn->top[i].host, -1, &host_box,
+                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
             /* 条形长度按最忙的域名归一，形状一眼能看出差距 */
             if (sn->top[i].count > 0) {
                 int w = (int) (160.0 * (double) sn->top[i].count / (double) maxc);
@@ -2826,7 +2953,9 @@ static void draw_subs_page(HDC hdc) {
     {
         static const wchar_t *H1 =
             L"粘贴订阅链接后点「添加」（hosts / 纯域名 / ||域名^ 三种格式都能解析），再点「立即更新全部」";
-        TextOutW(hdc, S(218), S(44), H1, (int) wcslen(H1));
+        RECT intro_rect = {S(218), S(43), S(994), S(66)};
+        DrawTextW(hdc, H1, -1, &intro_rect,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     {
         wchar_t sum[400];
@@ -2840,13 +2969,17 @@ static void draw_subs_page(HDC hdc) {
                      L"%d 个源 · 上次写入 %d 条域名到 subscriptions.txt（服务端会自行去重）",
                      s_sub_count, s_sub_written);
         SetTextColor(hdc, g_pal.text);
-        TextOutW(hdc, S(218), S(534), sum, (int) wcslen(sum));
+        RECT summary_rect = {S(218), S(532), S(992), S(554)};
+        DrawTextW(hdc, sum, -1, &summary_rect,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     {
         static const wchar_t *H2 =
             L"源列表存在 resources\\subscription_urls.txt，可以直接用记事本编辑；改完点「立即更新全部」即可生效。";
         SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(218), S(560), H2, (int) wcslen(H2));
+        RECT file_hint_rect = {S(218), S(558), S(992), S(583)};
+        DrawTextW(hdc, H2, -1, &file_hint_rect,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     SelectObject(hdc, old);
     DeleteObject(hf);
@@ -2869,6 +3002,22 @@ static void update_prompt_notify(HWND hwnd) {
         Shell_NotifyIconW(NIM_MODIFY, &g_nid);
         g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     }
+}
+
+/* Registered accelerators also work when focus is inside a child control. */
+#define UI_ACCEL_NAV_FIRST 47000
+#define UI_ACCEL_NAV_NEXT  47006
+#define UI_ACCEL_NAV_PREV  47007
+
+static void ui_navigate_to(HWND hwnd, int next_tab) {
+    if (next_tab < 0 || next_tab >= 6 || next_tab == g_tab) return;
+    g_tab = next_tab;
+    show_controls(hwnd, g_tab);
+    if (g_tab == 4) {
+        subs_load();
+        subs_refresh_list(hwnd);
+    }
+    InvalidateRect(hwnd, NULL, TRUE);
 }
 
 static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -3060,22 +3209,30 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
-        if (nav_hit(x, y, 0) || nav_hit(x, y, 1) || nav_hit(x, y, 2) ||
-            nav_hit(x, y, 3) || nav_hit(x, y, 4)) {
-            int new_tab = nav_hit(x, y, 0) ? 0 : (nav_hit(x, y, 1) ? 1
-                        : (nav_hit(x, y, 2) ? 2 : (nav_hit(x, y, 3) ? 3 : 4)));
-            if (new_tab != g_tab) {
-                g_tab = new_tab;
-                show_controls(hwnd, g_tab);
-                if (g_tab == 4) { subs_load(); subs_refresh_list(hwnd); }
-                InvalidateRect(hwnd, NULL, TRUE);
-            }
+        int new_tab = -1;
+        for (int tab = 0; tab < 6; ++tab) {
+            if (nav_hit(x, y, tab)) { new_tab = tab; break; }
+        }
+        if (new_tab >= 0) {
+            ui_navigate_to(hwnd, new_tab);
         } else if (x >= S(16) && x <= S(176) && y >= S(576) && y <= S(616)) {
             PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
         }
         return 0;
     }
     case WM_COMMAND:
+        if (HIWORD(wp) == 1) { /* keyboard accelerator */
+            int id = LOWORD(wp);
+            if (id >= UI_ACCEL_NAV_FIRST && id < UI_ACCEL_NAV_FIRST + 6) {
+                ui_navigate_to(hwnd, id - UI_ACCEL_NAV_FIRST);
+                return 0;
+            }
+            if (id == UI_ACCEL_NAV_NEXT || id == UI_ACCEL_NAV_PREV) {
+                ui_navigate_to(hwnd, (g_tab + 6 +
+                    (id == UI_ACCEL_NAV_NEXT ? 1 : -1)) % 6);
+                return 0;
+            }
+        }
         if (HIWORD(wp) == BN_CLICKED) {
             int id = LOWORD(wp);
             if (id == IDM_TRUST || id == IDM_UNTRUST) {
@@ -3385,6 +3542,18 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
+        if (g_tab == 5) {
+            /* Network integration roadmap with truthful capability states. */
+            draw_network_center_page(hdc);
+            draw_statusbar(hdc);
+            BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
+            SelectObject(mem, oldbmp);
+            DeleteObject(bmp);
+            DeleteDC(mem);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
         if (g_tab == 4) {
             /* 订阅 page */
             draw_subs_page(hdc);
@@ -3605,16 +3774,22 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
         return -1;
     }
     {
-        double sc = GetDpiForSystem() / 96.0;
-        HWND hwnd = CreateWindowExW(0, L"ADBlockDashWin11", g_title,
+        UINT dpi = GetDpiForSystem();
+        double sc = dpi / 96.0;
+        const DWORD style =
             (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
-             WS_MAXIMIZEBOX | WS_THICKFRAME |
-             /* WS_CLIPCHILDREN: without it the parent repaints over the child
-                controls on every statistics tick (1 Hz), which shows up as a
-                constantly flickering window. */
-             WS_CLIPCHILDREN),
-            CW_USEDEFAULT, CW_USEDEFAULT,
-            (int)(1024 * sc), (int)(678 * sc),
+             WS_MAXIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN);
+        /* The canvas uses 1024x680 logical *CLIENT* coordinates. Passing
+         * those as the outer window dimensions clips the bottom status bar
+         * behind the title bar and resize borders on initial launch. */
+        RECT outer = {0, 0, (LONG)(1024 * sc), (LONG)(680 * sc)};
+        if (!AdjustWindowRectExForDpi(&outer, style, FALSE, 0, dpi)) {
+            /* Safe fallback for unexpected older API/runtime behavior. */
+            AdjustWindowRectEx(&outer, style, FALSE, 0);
+        }
+        HWND hwnd = CreateWindowExW(0, L"ADBlockDashWin11", g_title,
+            style, CW_USEDEFAULT, CW_USEDEFAULT,
+            outer.right - outer.left, outer.bottom - outer.top,
             NULL, NULL, hinst, (LPVOID)args);
         if (!hwnd) {
             WSACleanup();
@@ -3622,11 +3797,28 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
         }
         ShowWindow(hwnd, g_start_minimized ? SW_HIDE : SW_SHOW);
         UpdateWindow(hwnd);
+        /* Keyboard shortcuts are active even when a settings edit field
+         * owns focus; relying on WM_KEYDOWN in the parent misses that case. */
+        ACCEL nav_keys[] = {
+            {FVIRTKEY | FALT, '1', UI_ACCEL_NAV_FIRST},
+            {FVIRTKEY | FALT, '2', UI_ACCEL_NAV_FIRST + 1},
+            {FVIRTKEY | FALT, '3', UI_ACCEL_NAV_FIRST + 2},
+            {FVIRTKEY | FALT, '4', UI_ACCEL_NAV_FIRST + 3},
+            {FVIRTKEY | FALT, '5', UI_ACCEL_NAV_FIRST + 4},
+            {FVIRTKEY | FALT, '6', UI_ACCEL_NAV_FIRST + 5},
+            {FVIRTKEY | FCONTROL, VK_TAB, UI_ACCEL_NAV_NEXT},
+            {FVIRTKEY | FCONTROL | FSHIFT, VK_TAB, UI_ACCEL_NAV_PREV},
+        };
+        HACCEL nav_accel = CreateAcceleratorTableW(
+            nav_keys, (int)(sizeof(nav_keys) / sizeof(nav_keys[0])));
         MSG msg;
         while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if (nav_accel == NULL || !TranslateAcceleratorW(hwnd, nav_accel, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
+        if (nav_accel != NULL) DestroyAcceleratorTable(nav_accel);
         WSACleanup();
         return 0;
     }
