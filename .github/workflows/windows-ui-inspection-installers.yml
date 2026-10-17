@@ -38,8 +38,13 @@ jobs:
           }
           gh release view $env:PREVIEW_SOURCE_TAG --repo $env:GITHUB_REPOSITORY
           if ($LASTEXITCODE -ne 0) { throw 'Expected portable UI prerelease is missing' }
-          gh release view $env:PREVIEW_INSTALLER_TAG --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) { throw 'Refusing to overwrite an existing installer prerelease' }
+          # A missing release is expected. Do not call a failing native
+          # command under PowerShell ErrorActionPreference=Stop.
+          $tags = @(gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName --jq '.[].tagName')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot enumerate releases for duplicate guard' }
+          if ($tags -contains $env:PREVIEW_INSTALLER_TAG) {
+            throw 'Refusing to overwrite an existing installer prerelease'
+          }
           if ((Get-Content installer-preview.iss -Raw) -notmatch 'AppVersion=1\.75') {
             throw 'Preview installer must be version 1.75'
           }
