@@ -838,7 +838,15 @@ jobs:
           $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ADBlock\ADBlock 仪表盘.lnk'
           if (-not (Test-Path $lnk)) { throw 'Start Menu shortcut missing' }
           $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
-          if ($target.TargetPath -ine $exe) { throw 'Start Menu shortcut target mismatch' }
+          $actualTarget = $target.TargetPath
+          Write-Host "Start Menu target: $actualTarget"
+          Write-Host "Installed binary: $exe"
+          if (-not (Test-Path -LiteralPath $actualTarget)) { throw 'Shortcut target file does not exist' }
+          $actualCanonical = (Resolve-Path -LiteralPath $actualTarget).ProviderPath
+          $expectedCanonical = (Resolve-Path -LiteralPath $exe).ProviderPath
+          if ($actualCanonical -ine $expectedCanonical) {
+            throw "Start Menu target mismatch: target=$actualCanonical expected=$expectedCanonical"
+          }
           Get-CimInstance Win32_Process -Filter "Name='webserver.exe'" |
             Where-Object { $_.ExecutablePath -ieq $exe } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
