@@ -46,17 +46,19 @@ jobs:
           if (-not (Test-Path dist/webserver.exe) -or -not (Test-Path dist/resources)) {
             throw 'Missing program or resources from original portable payload'
           }
+          # The original stable build may contain a different start.bat
+          # from the preview build; overwrite BOTH with one known-good,
+          # explicit loopback-only launcher. The executable stays untouched.
+          $launcher = @'
+          @echo off
+          cd /d "%~dp0"
+          start "" /D "%~dp0" "%~dp0webserver.exe" --resources "%~dp0resources" --bind loopback --http-port 18080 --https-port 18443 --stats-port 18686
+          '@
           foreach ($file in @('dist/start.bat','dist/start-preview.bat')) {
-            if (-not (Test-Path $file)) { throw "Missing launcher: $file" }
-            $old = Get-Content $file -Raw
-            if ($old -notmatch '--bind loop(?!back)') {
-              throw "Original launcher does not match known failing parameter: $file"
-            }
-            $fixed = $old -replace '--bind loop(?!back)', '--bind loopback'
-            Set-Content -LiteralPath $file -Value $fixed.TrimEnd() -Encoding ascii
+            Set-Content -LiteralPath $file -Value $launcher.TrimEnd() -Encoding ascii
             $check = Get-Content $file -Raw
             if ($check -notmatch '--bind loopback' -or $check -match '--bind loop(?!back)') {
-              throw "Fix did not replace invalid launcher parameter in $file"
+              throw "Generated invalid launcher: $file"
             }
           }
           @'
