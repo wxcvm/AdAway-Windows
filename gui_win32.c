@@ -1943,7 +1943,7 @@ static void draw_statusbar(HDC hdc) {
 
 /* sidebar nav hit areas (logical units; callers pass physical coords) */
 static bool nav_hit(int x, int y, int which) {
-    int top = 96 + which * 52;   /* statistics / activity / settings */
+    int top = 96 + which * 46;   /* six equally spaced navigation destinations */
     return x >= S(16) && x <= S(176) && y >= S(top) && y <= S(top + 40);
 }
 
@@ -2034,8 +2034,8 @@ static void draw_sidebar(HDC hdc) {
     }
 
     /* nav items */
-    for (int t = 0; t < 5; t++) {
-        int ny = 96 + t * 52;
+    for (int t = 0; t < 6; t++) {
+        int ny = 96 + t * 46;
         bool active = (g_tab == t);
         rounded_card(hdc, 16, ny, 160, 40, 10,
                      active ? g_pal.nav_active : g_pal.sidebar,
@@ -2097,7 +2097,7 @@ static void draw_sidebar(HDC hdc) {
             SelectObject(hdc, op);
             SelectObject(hdc, ob);
             DeleteObject(ib);
-        } else {
+        } else if (t == 4) {
             /* subscriptions: a globe (circle + meridian) */
             HPEN ip = CreatePen(PS_SOLID, S(2), active ? C_ACCENT : g_pal.nav_text);
             HGDIOBJ op = SelectObject(hdc, ip);
@@ -2108,6 +2108,21 @@ static void draw_sidebar(HDC hdc) {
             SelectObject(hdc, ob2);
             SelectObject(hdc, op);
             DeleteObject(ip);
+        } else {
+            /* network center: three connection nodes; all relative to nav row */
+            HPEN ip = CreatePen(PS_SOLID, S(2), active ? C_ACCENT : g_pal.nav_text);
+            HGDIOBJ op = SelectObject(hdc, ip);
+            HGDIOBJ ob = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            MoveToEx(hdc, S(39), S(ny + 20), NULL);
+            LineTo(hdc, S(56), S(ny + 12));
+            MoveToEx(hdc, S(39), S(ny + 20), NULL);
+            LineTo(hdc, S(56), S(ny + 28));
+            Ellipse(hdc, S(34), S(ny + 15), S(44), S(ny + 25));
+            Ellipse(hdc, S(52), S(ny + 7), S(62), S(ny + 17));
+            Ellipse(hdc, S(52), S(ny + 23), S(62), S(ny + 33));
+            SelectObject(hdc, ob);
+            SelectObject(hdc, op);
+            DeleteObject(ip);
         }
         HFONT nf = mfont(14, active ? FW_SEMIBOLD : FW_NORMAL);
         SelectObject(hdc, nf);
@@ -2116,7 +2131,7 @@ static void draw_sidebar(HDC hdc) {
             const wchar_t *label = t == 0 ? L"统计"
                                  : (t == 1 ? L"应用日志"
                                  : (t == 2 ? L"设置"
-                                 : (t == 3 ? L"拦截排行" : L"订阅")));
+                                 : (t == 3 ? L"拦截排行" : (t == 4 ? L"订阅" : L"网络中心"))));
             TextOutW(hdc, S(70), S(ny + 10), label, (int) wcslen(label));
         }
         SelectObject(hdc, old);
@@ -3077,10 +3092,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
-        if (nav_hit(x, y, 0) || nav_hit(x, y, 1) || nav_hit(x, y, 2) ||
-            nav_hit(x, y, 3) || nav_hit(x, y, 4)) {
-            int new_tab = nav_hit(x, y, 0) ? 0 : (nav_hit(x, y, 1) ? 1
-                        : (nav_hit(x, y, 2) ? 2 : (nav_hit(x, y, 3) ? 3 : 4)));
+        int new_tab = -1;
+        for (int tab = 0; tab < 6; ++tab) {
+            if (nav_hit(x, y, tab)) { new_tab = tab; break; }
+        }
+        if (new_tab >= 0) {
             if (new_tab != g_tab) {
                 g_tab = new_tab;
                 show_controls(hwnd, g_tab);
