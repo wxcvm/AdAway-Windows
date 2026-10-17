@@ -2167,6 +2167,17 @@ static void tray_remove(void) {
 }
 
 
+static void show_adguard_assistant(HWND hwnd) {
+    const struct gui_adguard_runtime state = {
+        .bind_all = g_bind_all,
+        .listener_responding = (g_sn != NULL && g_sn->valid),
+        .ca_trusted_for_user = (g_cert_trusted_flag != 0),
+        .http_port = g_http_port,
+        .https_port = g_https_port
+    };
+    gui_show_adguard_home_wizard(hwnd, &state, first_lan_ip);
+}
+
 static void tray_menu(HWND hwnd) {
     HMENU m = CreatePopupMenu();
     AppendMenuW(m, MF_STRING | MF_ENABLED, 3001, L"打开仪表盘");
@@ -2196,14 +2207,7 @@ static void tray_menu(HWND hwnd) {
         swprintf(g_status, 4096, L"开机自启动已%ls", on ? L"启用" : L"关闭");
         InvalidateRect(hwnd, NULL, FALSE);
     } else if (cmd == 3005) {
-        const struct gui_adguard_runtime state = {
-            .bind_all = g_bind_all,
-            .listener_responding = (g_sn != NULL && g_sn->valid),
-            .ca_trusted_for_user = (g_cert_trusted_flag != 0),
-            .http_port = g_http_port,
-            .https_port = g_https_port
-        };
-        gui_show_adguard_home_wizard(hwnd, &state, first_lan_ip);
+        show_adguard_assistant(hwnd);
     } else if (cmd == 3006) {
         gui_show_network_baseline(hwnd);
     } else if (cmd == 3004) {
@@ -3194,7 +3198,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 update_check_async(hwnd);
                 InvalidateRect(hwnd, NULL, FALSE);
             } else if (id == IDC_ADGUARD_HOME) {
-                adguard_home_wizard(hwnd);
+                show_adguard_assistant(hwnd);
             } else if (id == IDM_TEST) {
                 wchar_t url[256];
                 swprintf(url, 256, L"https://localhost:%d/internal-test", g_https_port);
