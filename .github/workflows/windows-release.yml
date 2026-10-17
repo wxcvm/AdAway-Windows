@@ -478,6 +478,58 @@ jobs:
             Get-Process -Name webserver -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Regression test separate stable and preview installations can both open GUIs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'gui-instance-isolation'
+          $stable = Join-Path $root 'ADBlock'
+          $preview = Join-Path $root 'ADBlockPreview'
+          New-Item -ItemType Directory -Force -Path $stable, $preview | Out-Null
+          Copy-Item -Path 'dist/*' -Destination $stable -Recurse -Force
+          Copy-Item -Path 'dist/*' -Destination $preview -Recurse -Force
+          $a = $null
+          $b = $null
+          try {
+            $stableRes = Join-Path $stable 'resources'
+            $previewRes = Join-Path $preview 'resources'
+            $stableExe = Join-Path $stable 'webserver.exe'
+            $previewExe = Join-Path $preview 'webserver.exe'
+            $argsA = @('--resources', "`"$stableRes`"", '--bind', 'loopback',
+                       '--http-port', '18220', '--https-port', '18221', '--stats-port', '18222')
+            $argsB = @('--resources', "`"$previewRes`"", '--bind', 'loopback',
+                       '--http-port', '18230', '--https-port', '18231', '--stats-port', '18232')
+            $a = Start-Process -FilePath $stableExe -WorkingDirectory $stable -ArgumentList $argsA -PassThru
+            $b = Start-Process -FilePath $previewExe -WorkingDirectory $preview -ArgumentList $argsB -PassThru
+            $deadline = (Get-Date).AddSeconds(35)
+            $ok = $false
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 500
+              $a.Refresh()
+              $b.Refresh()
+              if ($a.HasExited -or $b.HasExited) {
+                throw "One installation exited unexpectedly: stable=$($a.HasExited), preview=$($b.HasExited)"
+              }
+              $wA = (Get-Process -Id $a.Id -ErrorAction SilentlyContinue).MainWindowHandle
+              $wB = (Get-Process -Id $b.Id -ErrorAction SilentlyContinue).MainWindowHandle
+              if ($wA -ne 0 -and $wB -ne 0) { $ok = $true; break }
+            }
+            if (-not $ok) { throw 'Two separate installed GUI windows were not created' }
+            $again = Start-Process -FilePath $stableExe -WorkingDirectory $stable -ArgumentList $argsA -PassThru -Wait
+            if ($again.ExitCode -ne 0) { throw 'Second same-install invocation should hand off cleanly' }
+            $a.Refresh()
+            $b.Refresh()
+            if ($a.HasExited -or $b.HasExited) { throw 'Same-install invocation killed an existing GUI' }
+            Write-Host 'PASS: Independent installations show distinct GUIs; duplicate same-install start exits cleanly'
+          } finally {
+            foreach ($p in @($a, $b)) {
+              if ($p) {
+                $p.Refresh()
+                if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+              }
+            }
+          }
+
       - name: Port-conflict test (management port must survive a busy main port)
         shell: pwsh
         run: |
