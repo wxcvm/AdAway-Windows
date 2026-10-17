@@ -1,9 +1,10 @@
 name: Windows 11 webserver release
 
 on:
+  # Main-branch merges run CI only; publishing requires manual dispatch.
   workflow_dispatch:
   pull_request:
-    branches: [ main, feat/traffic-mode-foundation, fix/windows-journal-p0, feat/core-contract-v1 ]
+    branches: [ main, feat/traffic-mode-foundation, feat/core-contract-v1, feat/rule-loader-atomic-v1 ]
   push:
     tags: ['progress-win-*']
     branches: [ main ]
@@ -21,7 +22,7 @@ jobs:
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
       TAG: win11-webserver-v1.74
-      ADBLOCK_PREVIEW_BUILD: ${{ startsWith(github.ref, 'refs/tags/progress-win-') && '1' || '0' }}
+      ADBLOCK_PREVIEW_BUILD: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/progress-win-')) && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -36,6 +37,8 @@ jobs:
           update: false
           install: >-
             git
+            make
+            perl
             python
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-openssl
@@ -73,7 +76,7 @@ jobs:
         shell: bash
         run: bash tests/fetch-upstream-test.sh
 
-      - name: Test shared native rule and core contracts from the pinned source
+      - name: Test pinned shared rule and native core contracts
         shell: msys2 {0}
         run: |
           bash fetch-core-contract.sh
@@ -137,6 +140,22 @@ jobs:
             traffic_mode_policy.c traffic_mode_policy_test.c \
             -o traffic_mode_policy_test.exe
           ./traffic_mode_policy_test.exe
+
+      - name: Cache verified official OpenSSL static archives
+        uses: actions/cache@v4
+        with:
+          # Cache only installed public headers and archives; never runtime
+          # certificates, private keys, or downloaded third-party DLLs.
+          path: .openssl-build/install
+          key: official-openssl-3.5.9-msys2-mingw64-${{ runner.os }}-${{ hashFiles('scripts/build-official-openssl.sh') }}
+
+      - name: Check pinned official OpenSSL static build
+        shell: bash
+        run: |
+          grep -Fq 'openssl-3.5.9' scripts/build-official-openssl.sh
+          grep -Fq '45e844fa2a14ec92d146bd8f5778ac130b6625fb' scripts/build-official-openssl.sh
+          grep -Fq 'libcrypto.a' build.sh
+          ! grep -Eq '^[[:space:]]*-lssl |^[[:space:]]*-lcrypto ' build.sh
 
       - name: Assert version consistency (header / installer / TAG)
         shell: bash
@@ -672,7 +691,7 @@ jobs:
       # Publishing is push/dispatch only: a pull_request run must never create
       # or overwrite a public release.
       - name: Publish GitHub Release (Windows zip)
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           : "${TAG:?TAG env var missing}"
@@ -693,7 +712,7 @@ jobs:
       # releases are published far more often than Android ones, so without
       # this they take the pointer over and the Android update check 404s.
       - name: Keep the Android release as "latest"
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           gh release edit "$TAG" --repo "${{ github.repository }}" --latest=false \
@@ -705,7 +724,7 @@ jobs:
       # private, so its release API cannot be read without a token).
       # Skipped silently when DOH_ECH_TOKEN is not configured.
       - name: Publish zip to the public update feed (wxcvm/Doh-ECH)
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: bash
         env:
@@ -742,7 +761,7 @@ jobs:
           Get-ChildItem dist-installer
 
       - name: Attach installer to the release
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         continue-on-error: true
         shell: pwsh
         env:
@@ -757,7 +776,7 @@ jobs:
       # The in-app updater reads this fixed-tag manifest instead of the REST API
       # (60 requests/hour per IP) - see UPDATE_MANIFEST_PATH in update_win32.c.
       - name: Publish windows-manifest.json (fixed tag win11-latest)
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -857,7 +876,7 @@ jobs:
       # the release itself is already published at this point, so a failure here
       # must not turn a good release red.
       - name: Prune old Windows releases (keep newest 5)
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/progress-win-')
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -883,9 +902,8 @@ jobs:
                 --cleanup-tag --yes || true
             fi
           done < /tmp/old-win-releases.txt
-
       - name: Publish progress inspection prerelease
-        if: env.ADBLOCK_PREVIEW_BUILD == '1'
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/progress-win-')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

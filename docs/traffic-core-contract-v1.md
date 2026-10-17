@@ -1,6 +1,6 @@
 # M1 shared core contracts with an independent test pin
 
-Depends on Windows M0 PR #3 and Android M0 PR #45 / M1 PR #46. All remain reviewable drafts; no merge, release or capture activation is requested by this phase.
+Depends on Windows M0 PR #3 and Android M0 PR #45 / M1 PR #46. Windows M0 is already merged; shared contract tests may merge independently of capture activation and public release.
 
 The production Windows service remains pinned to `4470606366e614abdb308fdfe94734d28167439c` in `fetch-upstream.sh`. The proposed contract/test files alone are pinned to `c2bff508a1607c2f7a0ce19ef96109a50fa202b2` by `fetch-core-contract.sh`, in a separate verified `shared-contract/` cache. An attempted whole-server upgrade failed the actual Windows build because the newer server unconditionally includes Android headers; that upgrade was rejected. The complete newer local cache was preserved outside the checkout. A production upgrade needs a separate platform-compatibility review and regression validation.
 
