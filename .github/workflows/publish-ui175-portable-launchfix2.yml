@@ -1,0 +1,122 @@
+name: Publish corrected Windows 1.75 portable UI launchers
+on:
+  push:
+    branches: [release/ui175-portable-launchfix2-20261017]
+    paths: [.github/workflows/publish-ui175-portable-launchfix2.yml]
+permissions:
+  contents: write
+jobs:
+  preview:
+    if: github.repository == 'wxcvm/AdAway-Windows'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ui-preview-v1.75-portable-launchfix2-20261017
+      INPUT_TAG: ui-preview-v1.75-installers-hotfix1-20261017
+      EXPECTED_SHA: eeb369acc17f356ea83663241aaeabff4f01da1a58e5241b652f9d6c8cb3d464
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify original tested release and no duplicate target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tagList = @(gh release list --repo $env:GITHUB_REPOSITORY --json tagName --limit 100 --jq '.[].tagName')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list releases' }
+          if ($tagList -contains $env:TAG) { throw 'Refusing to overwrite existing UI preview' }
+          $source = gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq '.sha'
+          if ($LASTEXITCODE -ne 0 -or $source.Trim() -ne '9ea1a447f9ebfec513d7f2cf9762b77ffaedfb1e') {
+            throw 'Unexpected main state; a fresh release audit is needed'
+          }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/39010121649" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.conclusion -ne 'success') {
+            throw 'Original installer GUI smoke test has not passed'
+          }
+      - name: Download and inspect immutable portable payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path original, dist | Out-Null
+          gh release download $env:INPUT_TAG --repo $env:GITHUB_REPOSITORY --dir original --pattern 'adblock-ui-v1.75-unsigned-portable.zip'
+          if ($LASTEXITCODE -ne 0) { throw 'Original portable download failed' }
+          $zip = 'original/adblock-ui-v1.75-unsigned-portable.zip'
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -ne $env:EXPECTED_SHA) { throw "Source ZIP changed: $sha" }
+          Expand-Archive -LiteralPath $zip -DestinationPath dist -Force
+          if (-not (Test-Path dist/webserver.exe) -or -not (Test-Path dist/resources)) {
+            throw 'Missing program or resources from original portable payload'
+          }
+          foreach ($file in @('dist/start.bat','dist/start-preview.bat')) {
+            if (-not (Test-Path $file)) { throw "Missing launcher: $file" }
+            $old = Get-Content $file -Raw
+            if ($old -notmatch '--bind loop(?!back)') {
+              throw "Original launcher does not match known failing parameter: $file"
+            }
+            $fixed = $old -replace '--bind loop(?!back)', '--bind loopback'
+            Set-Content -LiteralPath $file -Value $fixed.TrimEnd() -Encoding ascii
+            $check = Get-Content $file -Raw
+            if ($check -notmatch '--bind loopback' -or $check -match '--bind loop(?!back)') {
+              throw "Fix did not replace invalid launcher parameter in $file"
+            }
+          }
+          @'
+          UNSIGNED Windows 1.75 UI inspection portable — launcher hotfix 2
+          Original program SHA is preserved; only start.bat/start-preview.bat were changed.
+          Extract into a separate directory; run start-preview.bat only if Windows Security permits.
+          The release remains UNSIGNED and may be blocked by Smart App Control without any
+          "More information" option. Do NOT disable Windows security to run the preview.
+          If blocked, check Windows Security > App & browser control > Smart App Control,
+          and Windows Security > Protection history.
+          '--bind loop' was an invalid argument. Fixed launchers use '--bind loopback'.
+          Full-system TUN/WFP capture and automatic AdGuard coexistence remain unfinished.
+          '@ | Set-Content -Encoding utf8 dist/README-STARTUP.txt
+      - name: Verify actual batch launcher opens GUI on Windows runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workdir = (Resolve-Path dist).Path
+          $cmd = Start-Process -FilePath $env:ComSpec -ArgumentList '/c','start-preview.bat' -WorkingDirectory $workdir -PassThru
+          try {
+            $launched = $null
+            for ($i = 0; $i -lt 15; ++$i) {
+              Start-Sleep -Seconds 1
+              $found = Get-CimInstance Win32_Process -Filter "Name='webserver.exe'" |
+                Where-Object { $_.ExecutablePath -eq (Join-Path $workdir 'webserver.exe') }
+              if ($found) {
+                $p = Get-Process -Id $found[0].ProcessId -ErrorAction SilentlyContinue
+                if ($p -and $p.MainWindowHandle -ne 0) {
+                  $launched = $p
+                  break
+                }
+              }
+            }
+            if (-not $launched) { throw 'Batch launcher failed to start a GUI window' }
+            Write-Host "PASS: start-preview.bat opened GUI PID=$($launched.Id)"
+          } finally {
+            $found = @(Get-CimInstance Win32_Process -Filter "Name='webserver.exe'" |
+              Where-Object { $_.ExecutablePath -eq (Join-Path $workdir 'webserver.exe') })
+            foreach ($p in $found) {
+              Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+            if (-not $cmd.HasExited) { Stop-Process -Id $cmd.Id -Force -ErrorAction SilentlyContinue }
+          }
+      - name: Create checksum-protected corrected portable archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Compress-Archive -Path 'dist/*' -DestinationPath 'adblock-ui-v1.75-unsigned-portable-launchfix2.zip' -Force
+          $file = 'adblock-ui-v1.75-unsigned-portable-launchfix2.zip'
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $file" | Set-Content -Encoding ascii SHA256SUMS.txt
+          Copy-Item 'tools/diagnose-preview-installer.ps1' 'diagnose-preview-installer.ps1'
+      - name: Publish separate non-latest unsigned prerelease
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release create $env:TAG 'adblock-ui-v1.75-unsigned-portable-launchfix2.zip' 'SHA256SUMS.txt' 'diagnose-preview-installer.ps1' `
+            --repo $env:GITHUB_REPOSITORY `
+            --target 9ea1a447f9ebfec513d7f2cf9762b77ffaedfb1e `
+            --prerelease --latest=false `
+            --title 'Windows v1.75 unsigned portable UI — fixed startup launchers' `
+            --notes 'Unsigned UI inspection only. Fixes invalid --bind loop in both bundled BAT launchers to --bind loopback and verifies that the batch launcher opens a GUI on a Windows CI runner. Still unsigned and may be blocked by Windows 11 Smart App Control or Defender. Do not turn off Windows security to run this preview. Normal signed release remains pending trusted signing credentials.'
+          if ($LASTEXITCODE -ne 0) { throw 'Preview release creation failed' }
