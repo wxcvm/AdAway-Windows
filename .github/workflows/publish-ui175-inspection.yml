@@ -1,0 +1,58 @@
+name: Publish Windows UI 1.75 inspection preview
+on:
+  push:
+    branches: [release/unsigned-ui175-inspection-20261017]
+    paths: ['.github/workflows/publish-ui175-inspection.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    if: github.repository == 'wxcvm/AdAway-Windows'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Verify known good original build
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=bcde5ee850707a0bb96459e21cfab085b936c96f
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')
+          test "$actual" = "$expected" || {
+            echo "::error::main moved since this preview was approved"; exit 1;
+          }
+          build=39005529286
+          status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$build" --jq '.conclusion')
+          source=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$build" --jq '.head_sha')
+          test "$status" = success && test "$source" = "$expected" || {
+            echo "::error::Preview source/build identity mismatch"; exit 1;
+          }
+          if gh release view ui-preview-v1.75-20261017 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Preview tag already exists; refusing overwrite"; exit 1;
+          fi
+      - name: Obtain Windows portable ZIP from fully tested main CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          gh run download 39005529286 -n adblock-webserver-win64 -D artifacts
+          zip=artifacts/adblock-webserver-win64.zip
+          test -s "$zip"
+          unzip -t "$zip" >/dev/null
+          unzip -Z1 "$zip" | grep -qE '(^|/)webserver\.exe$'
+          cp "$zip" adblock-ui-v1.75-unsigned-portable.zip
+          sha256sum adblock-ui-v1.75-unsigned-portable.zip > SHA256SUMS.txt
+          printf 'Build commit: bcde5ee850707a0bb96459e21cfab085b936c96f\nOriginal CI run: 39005529286\nStatus: UNSIGNED UI inspection only; not a signed stable release.\nExtract into a SEPARATE folder; do not overwrite an existing install.\nNetwork-wide TUN/WFP capture and AdGuard auto-switch are not implemented.\n' > READ-ME-FIRST.txt
+      - name: Publish non-latest prerelease without changing stable update feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create ui-preview-v1.75-20261017 \
+            adblock-ui-v1.75-unsigned-portable.zip SHA256SUMS.txt READ-ME-FIRST.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target bcde5ee850707a0bb96459e21cfab085b936c96f \
+            --prerelease --latest=false \
+            --title 'AdAway Windows v1.75 UI inspection (unsigned portable)' \
+            --notes 'WARNING: This is an **unsigned** portable UI inspection build, not a production-signed installer. Extract into a separate folder, avoid overwriting v1.74. Contents are taken byte-for-byte from the successful main CI run 39005529286. New 6-page native UI, Network Center, navigation/DPI improvements. Global capture and automatic AdGuard coexistence remain planned. Official signed v1.75 is blocked until the original PFX signing secrets are configured.'
