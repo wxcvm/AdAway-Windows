@@ -9,11 +9,11 @@ AppVersion=1.75
 AppVerName=ADBlock Preview 1.75 (UI inspection)
 AppPublisher=wxcvm
 #if MachineInstall
-DefaultDirName={autopf}\ADBlockPreview
+DefaultDirName={code:PreferredInstallDir}
 PrivilegesRequired=admin
 OutputBaseFilename=adblock-preview-machine-x64
 #else
-DefaultDirName={localappdata}\Programs\ADBlockPreview
+DefaultDirName={code:PreferredInstallDir}
 PrivilegesRequired=lowest
 OutputBaseFilename=adblock-preview-user-x64
 #endif
@@ -30,12 +30,28 @@ WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
 
+[Tasks]
+Name: "desktopicon"; Description: "Create desktop shortcut"; GroupDescription: "Additional options:"
+
 [Files]
 Source: "dist\*"; DestDir: "{app}"; Excludes: "resources\*"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "dist\resources\*"; DestDir: "{app}\resources"; Flags: recursesubdirs createallsubdirs onlyifdoesntexist
 
 [Icons]
 Name: "{group}\ADBlock Preview"; Filename: "{app}\webserver.exe"; WorkingDir: "{app}"; Parameters: "--resources ""{app}\resources"" --bind loopback --http-port 18080 --https-port 18443 --stats-port 18686"
+Name: "{autodesktop}\ADBlock Preview"; Filename: "{app}\webserver.exe"; WorkingDir: "{app}"; Parameters: "--resources ""{app}\resources"" --bind loopback --http-port 18080 --https-port 18443 --stats-port 18686"; Tasks: desktopicon
 Name: "{group}\Uninstall ADBlock Preview"; Filename: "{uninstallexe}"
 
-; No process killing, autostart registration, CA installation or post-install launch.
+; No process killing, autorun registration, or CA installation.
+[Run]
+Filename: "{app}\webserver.exe"; Parameters: "--resources ""{app}\resources"" --bind loopback --http-port 18080 --https-port 18443 --stats-port 18686"; WorkingDir: "{app}"; Description: "Launch ADBlock Preview now"; Flags: postinstall nowait skipifsilent
+
+[Code]
+function PreferredInstallDir(Param: String): String;
+begin
+  if DirExists('D:\') then
+    Result := 'D:\ADBlockPreview'
+  else
+    Result := ExpandConstant('{localappdata}\Programs\ADBlockPreview');
+end;
+
