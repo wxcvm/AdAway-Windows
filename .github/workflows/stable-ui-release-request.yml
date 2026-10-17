@@ -1,0 +1,39 @@
+name: One-time Windows v1.75 stable release request (2026-10-17)
+on:
+  push:
+    branches: ['release-request/stable-ui-20261017']
+    paths: ['.github/workflows/stable-ui-release-request.yml']
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  request-release:
+    if: github.repository == 'wxcvm/AdAway-Windows'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require tested merged v1.75 source and absent release
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=bcde5ee850707a0bb96459e21cfab085b936c96f
+          gh run watch 39005529286 --repo "$GITHUB_REPOSITORY" --exit-status
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')
+          test "$actual" = "$expected" || {
+            echo "::error::main changed since v1.75 was approved; refusing to publish"
+            exit 1
+          }
+          if gh release view win11-webserver-v1.75 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::v1.75 release already exists; refusing to overwrite"
+            exit 1
+          fi
+      - name: Trigger original signed Windows production workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run windows-release.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Dispatched official Windows v1.75 release with signer parity guards"
