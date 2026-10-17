@@ -1900,7 +1900,9 @@ static void draw_statusbar(HDC hdc) {
              up ? L"服务器运行中" : L"服务器未连接",
              g_http_port, g_https_port);
     SetTextColor(hdc, up ? C_GREEN_TXT : RGB(190, 70, 70));
-    TextOutW(hdc, S(40), S(643), main, (int)wcslen(main));
+    RECT service_label = {S(40), S(640), S(415), S(662)};
+    DrawTextW(hdc, main, -1, &service_label,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     char cert_path[1024];
     snprintf(cert_path, sizeof(cert_path), "%s/localhost-2410.crt", g_res);
@@ -1917,7 +1919,11 @@ static void draw_statusbar(HDC hdc) {
     else
         swprintf(cert, 200, L"CA 证书已过期 - 删除 %hs 后重启", cert_path);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(430), S(643), cert, (int)wcslen(cert));
+    /* Long CA paths are common (especially under non-ASCII user profiles).
+     * Clip rather than painting through the clock at the right edge. */
+    RECT certificate_label = {S(430), S(640), S(904), S(662)};
+    DrawTextW(hdc, cert, -1, &certificate_label,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     SYSTEMTIME st;
     GetLocalTime(&st);
@@ -1927,7 +1933,9 @@ static void draw_statusbar(HDC hdc) {
     TextOutW(hdc, S(920), S(643), tm, (int)wcslen(tm));
 
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(16), S(661), g_status, (int)wcslen(g_status));
+    RECT status_message = {S(16), S(660), S(980), S(680)};
+    DrawTextW(hdc, g_status, -1, &status_message,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     SelectObject(hdc, old);
     DeleteObject(f);
