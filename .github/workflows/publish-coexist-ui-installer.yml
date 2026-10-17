@@ -1,0 +1,126 @@
+name: Windows 1.75 installed GUI coexistence release
+on:
+  push:
+    branches: [release/ui175-coexist-installers-20261017]
+    paths: [.github/workflows/publish-coexist-ui-installer.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_SOURCE: 0f62653c5fe138136b7ee842ee44fe9a2ef9fc44
+      SOURCE_RUN: 39012161359
+      TAG: ui-preview-v1.75-coexist-installer-20261017
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require exact newly tested main commit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh run watch $env:SOURCE_RUN --repo $env:GITHUB_REPOSITORY --exit-status
+          if ($LASTEXITCODE -ne 0) { throw 'Source main CI failed' }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:SOURCE_RUN" | ConvertFrom-Json
+          $head = gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq '.sha'
+          if ($run.conclusion -ne 'success' -or $run.head_sha -ne $env:EXPECTED_SOURCE -or $head.Trim() -ne $env:EXPECTED_SOURCE) {
+            throw 'Source or CI mismatch'
+          }
+          $tags = @(gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName --jq '.[].tagName')
+          if ($tags -contains $env:TAG) { throw 'Refusing to overwrite existing release' }
+      - name: Retrieve verified new and old executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path pkg, old, dist | Out-Null
+          gh run download $env:SOURCE_RUN --repo $env:GITHUB_REPOSITORY -n adblock-webserver-win64 -D pkg
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path 'pkg/adblock-webserver-win64.zip')) { throw 'New CI artifact unavailable' }
+          Expand-Archive 'pkg/adblock-webserver-win64.zip' -DestinationPath dist -Force
+          if (-not (Test-Path dist/webserver.exe) -or -not (Test-Path dist/resources)) { throw 'New GUI packaging incomplete' }
+          gh release download win11-webserver-v1.74 --repo $env:GITHUB_REPOSITORY --pattern 'adblock-webserver-win64.zip' --dir old
+          if ($LASTEXITCODE -ne 0) { throw 'Old stable download failed' }
+          $hash = (Get-FileHash 'old/adblock-webserver-win64.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne 'e60308930369cc497c117fbf3264c01c6968e7017bf7b9f81bfa813a6afae8ca') { throw 'Old stable ZIP hash mismatch' }
+          Expand-Archive 'old/adblock-webserver-win64.zip' -DestinationPath 'old/stable' -Force
+          if (-not (Test-Path 'old/stable/webserver.exe')) { throw 'Old stable exe missing' }
+      - name: Build per-user installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Get-Content installer-preview.iss -Raw
+          if ($script -notmatch '--bind loopback' -or $script -match '--bind loop(?!back)') { throw 'Invalid installed shortcut args' }
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup unavailable' }
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer-preview.iss
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path 'dist-installer/adblock-preview-user-x64.exe')) { throw 'Installer build failed' }
+      - name: Install real shortcut while official v1.74 is running
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $oldDir = (Resolve-Path 'old/stable').Path
+          $oldExe = Join-Path $oldDir 'webserver.exe'
+          $oldRes = Join-Path $oldDir 'resources'
+          $newDir = Join-Path $env:RUNNER_TEMP 'AdblockPreviewCoexistence'
+          $old = $null
+          try {
+            $oldArgs = @('--resources', ('"' + $oldRes + '"'), '--http-port','18170','--https-port','18171','--stats-port','18172')
+            $old = Start-Process -FilePath $oldExe -WorkingDirectory $oldDir -ArgumentList $oldArgs -PassThru
+            Start-Sleep -Seconds 4
+            $old.Refresh()
+            if ($old.HasExited) { throw "Old stable stopped with $($old.ExitCode)" }
+            $installer = (Resolve-Path 'dist-installer/adblock-preview-user-x64.exe').Path
+            $setup = Start-Process -FilePath $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$newDir") -Wait -PassThru
+            if ($setup.ExitCode -ne 0) { throw "Installation failed with $($setup.ExitCode)" }
+            $newExe = Join-Path $newDir 'webserver.exe'
+            $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ADBlock Preview\ADBlock Preview.lnk'
+            if (-not (Test-Path $newExe) -or -not (Test-Path $shortcut)) { throw 'Installed files or shortcut missing' }
+            $link = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut)
+            if ($link.Arguments -notmatch '--bind loopback') { throw 'Shortcut CLI invalid' }
+            if ($link.TargetPath -ine $newExe) { throw 'Shortcut targets another installation' }
+            Start-Process -FilePath $shortcut
+            $newPid = 0
+            $deadline = (Get-Date).AddSeconds(35)
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Milliseconds 500
+              $old.Refresh()
+              if ($old.HasExited) { throw 'Old stable was stopped by new installation' }
+              $newApps = @(Get-CimInstance Win32_Process -Filter "Name = 'webserver.exe'" | Where-Object { $_.ExecutablePath -ieq $newExe })
+              foreach ($newApp in $newApps) {
+                $proc = Get-Process -Id $newApp.ProcessId -ErrorAction SilentlyContinue
+                if ($proc -and $proc.MainWindowHandle -ne 0) { $newPid = $proc.Id; break }
+              }
+              if ($newPid) { break }
+            }
+            if (-not $newPid) {
+              $log = Join-Path $newDir 'resources\webserver.log'
+              if (Test-Path $log) { Get-Content $log -Tail 30 }
+              throw 'Installed Start Menu shortcut did not create a GUI alongside stable'
+            }
+            Write-Host "PASS: old stable PID=$($old.Id) coexists with installed new GUI PID=$newPid"
+          } finally {
+            $newExe = Join-Path $newDir 'webserver.exe'
+            @(Get-CimInstance Win32_Process -Filter "Name = 'webserver.exe'" | Where-Object { $_.ExecutablePath -ieq $newExe }) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            if ($old) {
+              $old.Refresh()
+              if (-not $old.HasExited) { Stop-Process -Id $old.Id -Force -ErrorAction SilentlyContinue }
+            }
+          }
+      - name: Publish checksum-verified unsigned UI inspection installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'dist-installer/adblock-preview-user-x64.exe'
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  adblock-preview-user-x64.exe" | Set-Content SHA256SUMS.txt -Encoding ascii
+          @'
+          Windows v1.75 UI preview installer — UNSIGNED test build.
+          Tested with official stable v1.74 still running and new Start Menu shortcut.
+          Main CI run 39012161359, commit 0f62653c5fe138136b7ee842ee44fe9a2ef9fc44.
+          Preview and stable have distinct app identities and folders.
+          Do not disable Windows Security, Smart App Control, or Defender to run unsigned software.
+          Official signed 1.75 remains unavailable until original signing credentials are configured.
+          '@ | Set-Content README-PREVIEW.txt -Encoding utf8
+          gh release create $env:TAG $exe SHA256SUMS.txt README-PREVIEW.txt --repo $env:GITHUB_REPOSITORY --target $env:EXPECTED_SOURCE --prerelease --latest=false --title 'Windows v1.75 UI preview — installed GUI coexistence fix' --notes 'Unsigned inspection installer. Fixes singleton collision making preview exit when stable v1.74 is already running. Tests install and launch the real Start Menu shortcut with official stable v1.74 running. Do not disable Windows security to run unsigned software.'
+          if ($LASTEXITCODE -ne 0) { throw 'Preview Release publication failed' }
