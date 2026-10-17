@@ -1237,6 +1237,10 @@ static DWORD WINAPI check_thread(LPVOID param) {
 }
 
 void update_check_async(HWND hwnd) {
+#ifdef ADBLOCK_PREVIEW_BUILD
+    MessageBoxW(hwnd, L"这是进度预览版。请从 GitHub 预览 Release 手动下载更新；不会使用正式版更新通道。", L"ADBlock Preview", MB_OK | MB_ICONINFORMATION);
+    return;
+#endif
     /*
      * One pipeline at a time: a second click while a check (or a download) is
      * running is ignored instead of starting a competing thread. The state is
@@ -2146,6 +2150,11 @@ portable_fallback:
 }
 
 void update_apply_async(HWND hwnd, const struct update_info *info) {
+#ifdef ADBLOCK_PREVIEW_BUILD
+    (void)info;
+    MessageBoxW(hwnd, L"预览版请从 GitHub 预览 Release 手动更新。", L"ADBlock Preview", MB_OK | MB_ICONINFORMATION);
+    return;
+#endif
     if (InterlockedCompareExchange(&s_update_state, UPDATE_STATE_DOWNLOADING,
                                    UPDATE_STATE_IDLE) != UPDATE_STATE_IDLE) {
         win32_log_line("update: refusing to start a second download (state=%d)",
