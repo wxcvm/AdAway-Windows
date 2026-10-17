@@ -3774,16 +3774,22 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
         return -1;
     }
     {
-        double sc = GetDpiForSystem() / 96.0;
-        HWND hwnd = CreateWindowExW(0, L"ADBlockDashWin11", g_title,
+        UINT dpi = GetDpiForSystem();
+        double sc = dpi / 96.0;
+        const DWORD style =
             (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
-             WS_MAXIMIZEBOX | WS_THICKFRAME |
-             /* WS_CLIPCHILDREN: without it the parent repaints over the child
-                controls on every statistics tick (1 Hz), which shows up as a
-                constantly flickering window. */
-             WS_CLIPCHILDREN),
-            CW_USEDEFAULT, CW_USEDEFAULT,
-            (int)(1024 * sc), (int)(678 * sc),
+             WS_MAXIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN);
+        /* The canvas uses 1024x680 logical *CLIENT* coordinates. Passing
+         * those as the outer window dimensions clips the bottom status bar
+         * behind the title bar and resize borders on initial launch. */
+        RECT outer = {0, 0, (LONG)(1024 * sc), (LONG)(680 * sc)};
+        if (!AdjustWindowRectExForDpi(&outer, style, FALSE, 0, dpi)) {
+            /* Safe fallback for unexpected older API/runtime behavior. */
+            AdjustWindowRectEx(&outer, style, FALSE, 0);
+        }
+        HWND hwnd = CreateWindowExW(0, L"ADBlockDashWin11", g_title,
+            style, CW_USEDEFAULT, CW_USEDEFAULT,
+            outer.right - outer.left, outer.bottom - outer.top,
             NULL, NULL, hinst, (LPVOID)args);
         if (!hwnd) {
             WSACleanup();
