@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          gh run download 39005529286 -n adblock-webserver-win64 -D artifacts
+          gh run download 39005529286 --repo "$GITHUB_REPOSITORY" -n adblock-webserver-win64 -D artifacts
           zip=artifacts/adblock-webserver-win64.zip
           test -s "$zip"
           unzip -t "$zip" >/dev/null
