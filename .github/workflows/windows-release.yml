@@ -22,6 +22,9 @@ jobs:
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
       TAG: win11-webserver-v1.75
+      # User-approved temporary release policy: unsigned Windows distributions.
+      # Switch to '0' only after trusted Authenticode release signing is ready.
+      WINDOWS_UNSIGNED_RELEASE: '1'
       ADBLOCK_PREVIEW_BUILD: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -32,7 +35,7 @@ jobs:
       # Never print the PFX or password. Real signature and production signer
       # parity are still checked after the executable and installers exist.
       - name: Preflight original Windows signing credentials for preview
-        if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
+        if: env.WINDOWS_UNSIGNED_RELEASE != '1' && github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
         shell: bash
         env:
           EXISTING_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
@@ -680,10 +683,14 @@ jobs:
           SIGN_CERT_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
           SIGN_CERT_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
+          if [ "$WINDOWS_UNSIGNED_RELEASE" = "1" ]; then
+            echo "::warning::UNSIGNED WINDOWS RELEASE: Authenticode intentionally skipped; leave Windows security protections enabled"
+            exit 0
+          fi
           if [ -z "$SIGN_CERT_B64" ] || [ -z "$SIGN_CERT_PASS" ]; then
             if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
                [ "$GITHUB_REF" = "refs/heads/main" ]; then
-              echo "::error::Official Windows release requires original production PFX and password"
+              echo "::error::Signed Windows release requires original production PFX and password"
               exit 1
             fi
             case "$GITHUB_REF" in
@@ -859,7 +866,7 @@ jobs:
           }
 
       - name: Verify production signer parity and sign BOTH preview installers
-        if: (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
+        if: env.WINDOWS_UNSIGNED_RELEASE != '1' && (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
         shell: msys2 {0}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -901,7 +908,7 @@ jobs:
           openssl x509 -in "$pem" -noout -fingerprint -sha256
 
       - name: Verify original production signature and sign official installer
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        if: env.WINDOWS_UNSIGNED_RELEASE != '1' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: msys2 {0}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -936,8 +943,9 @@ jobs:
           echo "Official EXE and installer match the previously published Windows signing certificate"
 
       # Publishing is push/dispatch only: a pull_request run must never create
-      # or overwrite a public release. Only publish after installer signature verification.
-      - name: Publish signed official Windows Release (ZIP and installer)
+      # or overwrite a public release. Unsigned releases must be prominently
+      # identified and never advertised as signed/SmartScreen-trusted.
+      - name: Publish Windows Release (ZIP and installer; unsigned when configured)
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash
         run: |
@@ -952,8 +960,8 @@ jobs:
           gh release create "$TAG" adblock-webserver-win64.zip \
             dist-installer/adblock-webserver-setup.exe --repo "${{ github.repository }}" \
             --latest=false \
-            --title "ADBlock Windows v1.75 (x64)" \
-            --notes "正式版 1.75：六页原生界面、网络中心、键盘导航、DPI 与排版修复。保留现有过滤和监听；全系统 TUN/WFP 接管、AdGuard 自动协同尚未启用。HTTPS 内容过滤受证书信任和证书固定限制。"
+            --title "ADBlock Windows v1.75 (x64 · 未签名)" \
+            --notes "Windows 1.75 正式构建（未签名）：默认优先安装到 D:\\ADBlock（无 D 盘时回退到用户目录），支持开始菜单/桌面快捷方式、完成后启动。此版本的 EXE 和安装器不带 Authenticode 数字签名，Windows 可能拒绝执行；请勿为使用本软件关闭 Defender、SmartScreen 或智能应用控制。支持现有过滤和监听；TUN/WFP 全局接管、AdGuard 自动协同仍未实现。"
         env:
           GH_TOKEN: ${{ github.token }}
 
