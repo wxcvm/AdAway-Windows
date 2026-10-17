@@ -97,9 +97,15 @@ AdGuard Home 协同向导（只给出建议，不改第三方设置）：
   * 统计 / SNI 缓存落盘做了节流（最多每 15 秒 / 60 秒一次），
     避免无意义的磁盘写入。
 
-Windows SmartScreen / 杀毒软件：
-  未签名的 exe 可能提示"Windows 已保护你的电脑" → 更多信息 → 仍要运行。
-  仓库配置 WINDOWS_CERT_PFX_B64 / WINDOWS_CERT_PASSWORD 后会自动签名。
+Windows SmartScreen / 智能应用控制：
+  当前 v1.75 UI 检查版的安装器和 EXE 未签名，可能被 Windows 11
+  Smart App Control、SmartScreen 或 Defender 直接拦截；某些拦截
+  根本没有“更多信息”按钮，也不会生成 webserver.log。
+  不要为了启动预览版关闭系统保护。检查 Windows 安全中心 →
+  应用和浏览器控制 → 智能应用控制，以及“保护历史记录”。
+  tools/diagnose-preview-installer.ps1 提供只读哈希、签名和日志检查。
+  正式签名版需由仓库维护者配置可信代码签名证书并重新构建，
+  仅改快捷方式参数不能解决操作系统对未签名安装器的拦截。
 
 平台差异：
   * 透明代理（--proxy-filter，依赖 iptables 重定向）只在 Android/Linux 上
