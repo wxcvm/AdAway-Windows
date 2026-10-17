@@ -1,0 +1,125 @@
+name: Verify and publish D-drive Windows UI inspection installer
+on:
+  push:
+    branches: [release/windows-v175-d-install-check-20261017]
+    paths: [.github/workflows/d-drive-installer-check.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  installer:
+    if: github.repository == 'wxcvm/AdAway-Windows'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN: bdd6bf04b9003ef299b31f52e687ce61aa11733d
+      MAIN_RUN: 39017134748
+      TAG: ui-preview-v1.75-d-drive-installer-20261017
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require exact tested official source and unique preview tag
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh run watch $env:MAIN_RUN --repo $env:GITHUB_REPOSITORY --exit-status
+          if ($LASTEXITCODE -ne 0) { throw 'New main Windows CI failed; refuse package' }
+          $head = gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq '.sha'
+          $tested = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:MAIN_RUN" --jq '.head_sha'
+          if ($head.Trim() -ne $env:EXPECTED_MAIN -or $tested.Trim() -ne $env:EXPECTED_MAIN) {
+            throw 'Source changed after review; refuse package'
+          }
+          $tags = @(gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName --jq '.[].tagName')
+          if ($LASTEXITCODE -ne 0 -or $tags -contains $env:TAG) { throw 'Tag guard failed' }
+      - name: Recover exact program tested on main
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path downloaded -Force | Out-Null
+          gh run download $env:MAIN_RUN --repo $env:GITHUB_REPOSITORY -n adblock-webserver-win64 -D downloaded
+          if ($LASTEXITCODE -ne 0) { throw 'Build artifact not available' }
+          Expand-Archive 'downloaded/adblock-webserver-win64.zip' -DestinationPath dist -Force
+          if (-not (Test-Path dist/webserver.exe) -or -not (Test-Path dist/resources)) {
+            throw 'Tested executable or resources missing'
+          }
+      - name: Compile fixed official and isolated inspection installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup compiler unavailable' }
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          & $iscc installer.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Official installer script does not compile' }
+          & $iscc installer-preview.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated preview installer script does not compile' }
+          if (-not (Test-Path 'dist-installer/adblock-preview-user-x64.exe')) {
+            throw 'Preview installer missing'
+          }
+      - name: Test default D/fallback, installed shortcuts and real GUI startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = (Resolve-Path 'dist-installer/adblock-preview-user-x64.exe').Path
+          $setup = Start-Process -FilePath $installer -ArgumentList @(
+            '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'
+          ) -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Installation error: $($setup.ExitCode)" }
+          $expected = if (Test-Path 'D:\') { 'D:\ADBlockPreview' } else { Join-Path $env:LOCALAPPDATA 'Programs\ADBlockPreview' }
+          $exe = Join-Path $expected 'webserver.exe'
+          if (-not (Test-Path $exe)) { throw "Default D/fallback install did not create $exe" }
+          $startmenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ADBlock Preview\ADBlock Preview.lnk'
+          $desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ADBlock Preview.lnk'
+          if (-not (Test-Path $startmenu) -or -not (Test-Path $desktop)) {
+            throw 'Expected Start Menu and desktop shortcuts are not both installed'
+          }
+          $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($startmenu)
+          if ($lnk.TargetPath -ine $exe -or $lnk.WorkingDirectory -ine $expected -or
+              $lnk.Arguments -notmatch '--bind loopback' -or $lnk.Arguments -notmatch '--resources') {
+            throw 'Installed shortcut points to wrong program, working directory or arguments'
+          }
+          $cfg = Get-Content installer-preview.iss -Raw
+          if ($cfg -notmatch 'Flags: postinstall nowait skipifsilent') {
+            throw 'Interactive installer does not offer post-install launch'
+          }
+          Start-Process -FilePath $startmenu
+          $pidFound = 0
+          try {
+            $until = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $until) {
+              Start-Sleep -Milliseconds 500
+              $apps = @(Get-CimInstance Win32_Process -Filter "Name='webserver.exe'" |
+                Where-Object { $_.ExecutablePath -ieq $exe })
+              foreach ($app in $apps) {
+                $proc = Get-Process -Id $app.ProcessId -ErrorAction SilentlyContinue
+                if ($proc -and $proc.MainWindowHandle -ne 0) {
+                  $pidFound = $proc.Id
+                  break
+                }
+              }
+              if ($pidFound) { break }
+            }
+            if (-not $pidFound) { throw 'Installed Start Menu shortcut failed to open GUI' }
+            Write-Host "PASS D-drive/fallback=$expected, Start Menu, desktop, GUI PID=$pidFound"
+          } finally {
+            if ($pidFound) { Stop-Process -Id $pidFound -Force -ErrorAction SilentlyContinue }
+          }
+      - name: Publish explicitly unsigned D-drive inspection installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $f = 'dist-installer/adblock-preview-user-x64.exe'
+          $sha = (Get-FileHash $f -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sha  adblock-preview-user-x64.exe" | Set-Content -Encoding ascii SHA256SUMS.txt
+          @'
+          UNSIGNED Windows 1.75 UI inspection only — not the signed stable release.
+          Installs by default to D:\ADBlockPreview when D: exists.
+          Otherwise installs to %LOCALAPPDATA%\Programs\ADBlockPreview.
+          Adds Start Menu and desktop shortcuts by default.
+          Offers launch immediately after interactive installation.
+          Tested actual default install and Start Menu-launched GUI on Windows CI.
+          Do not disable Windows Defender, Smart App Control or SmartScreen.
+          Official stable installer signing is blocked by missing original PFX and password.
+          '@ | Set-Content -Encoding utf8 README-INSPECTION.txt
+          gh release create $env:TAG $f SHA256SUMS.txt README-INSPECTION.txt --repo $env:GITHUB_REPOSITORY --target $env:EXPECTED_MAIN --prerelease --latest=false --title 'Windows 1.75 D-drive installer + shortcuts — unsigned inspection' --notes 'Unsigned preview only. New compiled GUI from approved main, default D drive with C fallback, automatic Start Menu and desktop shortcuts, launch-after-install option. CI installed it to its default location and started the real GUI via the installed shortcut. It is not the officially signed release; signing secrets are still missing.'
+          if ($LASTEXITCODE -ne 0) { throw 'Preview Release publish failed' }
