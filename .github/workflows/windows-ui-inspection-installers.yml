@@ -19,7 +19,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       EXPECTED_MAIN_SHA: bcde5ee850707a0bb96459e21cfab085b936c96f
       PREVIEW_SOURCE_TAG: ui-preview-v1.75-20261017
-      PREVIEW_INSTALLER_TAG: ui-preview-v1.75-installers-20261017
+      PREVIEW_INSTALLER_TAG: ui-preview-v1.75-installers-hotfix1-20261017
     steps:
       - name: Checkout vetted installer script
         uses: actions/checkout@v6
@@ -45,8 +45,12 @@ jobs:
           if ($tags -contains $env:PREVIEW_INSTALLER_TAG) {
             throw 'Refusing to overwrite an existing installer prerelease'
           }
-          if ((Get-Content installer-preview.iss -Raw) -notmatch 'AppVersion=1\.75') {
+          $script = Get-Content installer-preview.iss -Raw
+          if ($script -notmatch 'AppVersion=1\.75') {
             throw 'Preview installer must be version 1.75'
+          }
+          if ($script -notmatch '--bind loopback' -or $script -match '--bind loop(?!back)') {
+            throw 'Preview shortcut uses an unsupported binding option'
           }
 
       - name: Recover and verify exact prebuilt portable UI payload
@@ -85,16 +89,44 @@ jobs:
             if (-not (Test-Path "dist-installer/$_")) { throw "Missing $($_)" }
           }
 
+      - name: Install preview and verify that its UI starts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = Join-Path $env:RUNNER_TEMP 'AdblockUiLaunchTest'
+          $installer = (Resolve-Path 'dist-installer/adblock-preview-user-x64.exe').Path
+          $args = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/DIR=$installDir")
+          $setup = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Installer returned $($setup.ExitCode)" }
+          $exe = Join-Path $installDir 'webserver.exe'
+          if (-not (Test-Path $exe)) { throw 'Installed webserver.exe not found' }
+          $resources = Join-Path $installDir 'resources'
+          $p = Start-Process -FilePath $exe -WorkingDirectory $installDir `
+             -ArgumentList @('--resources', "`"$resources`"", '--bind','loopback', `
+                             '--http-port','18764','--https-port','18465','--stats-port','18685') -PassThru
+          try {
+            Start-Sleep -Seconds 9
+            $p.Refresh()
+            if ($p.HasExited) { throw "Installed GUI immediately exited with $($p.ExitCode)" }
+            if ((Get-Process -Id $p.Id -ErrorAction Stop).MainWindowHandle -eq 0) {
+              throw 'No visible GUI window created by installed preview'
+            }
+            Write-Host 'PASS: Installed preview has a visible GUI window'
+          } finally {
+            $p.Refresh()
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          }
+
       - name: Package checksums and non-production safety instructions
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           Copy-Item 'source/adblock-ui-v1.75-unsigned-portable.zip' '.'
           @'
-          Windows UI v1.75 inspection builds (UNSIGNED preview)
+          Windows UI v1.75 inspection hotfix (UNSIGNED preview)
           Compiled program source: bcde5ee850707a0bb96459e21cfab085b936c96f
           Original verified Windows CI run: 39005529286
-          Installer source: release/ui175-installers-20261017
+          Installer source: release/ui175-installers-20261017 (fixed --bind loopback)
           User installer: adblock-preview-user-x64.exe (does not require elevation)
           Machine installer: adblock-preview-machine-x64.exe (requires admin)
           These use a separate Inno Setup AppId and separate data/install directory.
@@ -125,6 +157,6 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target $env:EXPECTED_MAIN_SHA `
             --prerelease --latest=false `
-            --title 'AdAway Windows v1.75 - unsigned UI inspection installers' `
-            --notes 'UNSIGNED UI preview installers using a separate AppId. Contains the verified 1.75 GUI and six pages. Choose per-user or all-users; these do not update stable 1.74 and do not affect the stable update feed. Keep SmartScreen enabled. Formal signed release remains blocked pending original Windows signing credentials.'
+            --title 'AdAway Windows v1.75 - preview installer launch fix' `
+            --notes 'UNSIGNED UI preview installers with fixed --bind loopback startup and a separate AppId. Contains the verified 1.75 GUI and six pages. Choose per-user or all-users; these do not update stable 1.74 and do not affect the stable update feed. Keep SmartScreen enabled. Formal signed release remains blocked pending original Windows signing credentials.'
           if ($LASTEXITCODE -ne 0) { throw 'Installer prerelease publication failed' }
