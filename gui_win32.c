@@ -2953,7 +2953,9 @@ static void draw_subs_page(HDC hdc) {
     {
         static const wchar_t *H1 =
             L"粘贴订阅链接后点「添加」（hosts / 纯域名 / ||域名^ 三种格式都能解析），再点「立即更新全部」";
-        TextOutW(hdc, S(218), S(44), H1, (int) wcslen(H1));
+        RECT intro_rect = {S(218), S(43), S(994), S(66)};
+        DrawTextW(hdc, H1, -1, &intro_rect,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     {
         wchar_t sum[400];
@@ -2967,13 +2969,17 @@ static void draw_subs_page(HDC hdc) {
                      L"%d 个源 · 上次写入 %d 条域名到 subscriptions.txt（服务端会自行去重）",
                      s_sub_count, s_sub_written);
         SetTextColor(hdc, g_pal.text);
-        TextOutW(hdc, S(218), S(534), sum, (int) wcslen(sum));
+        RECT summary_rect = {S(218), S(532), S(992), S(554)};
+        DrawTextW(hdc, sum, -1, &summary_rect,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     {
         static const wchar_t *H2 =
             L"源列表存在 resources\\subscription_urls.txt，可以直接用记事本编辑；改完点「立即更新全部」即可生效。";
         SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(218), S(560), H2, (int) wcslen(H2));
+        RECT file_hint_rect = {S(218), S(558), S(992), S(583)};
+        DrawTextW(hdc, H2, -1, &file_hint_rect,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
     SelectObject(hdc, old);
     DeleteObject(hf);
