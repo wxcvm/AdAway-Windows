@@ -835,7 +835,7 @@ jobs:
           if ($installed.ExitCode -ne 0) { throw "Installer failed: $($installed.ExitCode)" }
           $exe = Join-Path $dest 'webserver.exe'
           if (-not (Test-Path $exe)) { throw 'Installed executable missing' }
-          $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ADBlock\ADBlock 仪表盘.lnk'
+          $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ADBlock\ADBlock Dashboard.lnk'
           if (-not (Test-Path $lnk)) { throw 'Start Menu shortcut missing' }
           $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk)
           $actualTarget = $target.TargetPath
