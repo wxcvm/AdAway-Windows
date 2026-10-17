@@ -1939,7 +1939,11 @@ static bool nav_hit(int x, int y, int which) {
 }
 
 static void draw_sidebar(HDC hdc) {
-    RECT sb = {S(0), S(0), S(190), S(680)};         /* AUDIT V8: was unscaled */
+    /* Cover the whole drawable height, including taller windows/DPI layouts.
+     * The former fixed 680px background left a blank strip after resize. */
+    RECT client_clip;
+    GetClipBox(hdc, &client_clip);
+    RECT sb = {S(0), S(0), S(190), client_clip.bottom};
     HBRUSH bg = CreateSolidBrush(g_pal.sidebar);
     FillRect(hdc, &sb, bg);
     DeleteObject(bg);
@@ -2076,9 +2080,11 @@ static void draw_sidebar(HDC hdc) {
             HBRUSH ib = CreateSolidBrush(active ? C_ACCENT : g_pal.nav_text);
             HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
             HGDIOBJ ob = SelectObject(hdc, ib);
-            RoundRect(hdc, S(34), S(ny + 22), S(41), S(30), S(2), S(2));
-            RoundRect(hdc, S(45), S(16), S(52), S(30), S(2), S(2));
-            RoundRect(hdc, S(56), S(10), S(63), S(30), S(2), S(2));
+            /* All coordinates must be relative to ny. Previous end points
+             * used absolute y=30, drawing inverted/outside the nav row. */
+            RoundRect(hdc, S(34), S(ny + 22), S(41), S(ny + 30), S(2), S(2));
+            RoundRect(hdc, S(45), S(ny + 16), S(52), S(ny + 30), S(2), S(2));
+            RoundRect(hdc, S(56), S(ny + 10), S(63), S(ny + 30), S(2), S(2));
             SelectObject(hdc, op);
             SelectObject(hdc, ob);
             DeleteObject(ib);
@@ -2087,9 +2093,9 @@ static void draw_sidebar(HDC hdc) {
             HPEN ip = CreatePen(PS_SOLID, S(2), active ? C_ACCENT : g_pal.nav_text);
             HGDIOBJ op = SelectObject(hdc, ip);
             HGDIOBJ ob2 = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            Ellipse(hdc, S(34), S(10), S(62), S(30));
-            MoveToEx(hdc, S(48), S(10), NULL);
-            LineTo(hdc, S(48), S(30));
+            Ellipse(hdc, S(34), S(ny + 10), S(62), S(ny + 30));
+            MoveToEx(hdc, S(48), S(ny + 10), NULL);
+            LineTo(hdc, S(48), S(ny + 30));
             SelectObject(hdc, ob2);
             SelectObject(hdc, op);
             DeleteObject(ip);
