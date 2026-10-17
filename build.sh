@@ -19,6 +19,8 @@ if [ ! -f "$JNI/webserver.c" ]; then
 fi
 
 OUT="$HERE/dist"
+CORE_SOURCE="$HERE/.build-core/webserver.c"
+python3 tools/build-rule-core.py "$JNI/webserver.c" "$CORE_SOURCE"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 echo "==> Building pinned official OpenSSL 3.5.9 ..."
@@ -46,10 +48,12 @@ gcc \
   -D MG_ENABLE_IPV6 -DMG_TLS=MG_TLS_OPENSSL -DMG_ENABLE_POLL=1 \
   -I"$HERE" \
   -I"$JNI" \
+  -I"$HERE/shared-contract" \
   -I"$SSL_PREFIX/include" \
   -I"$MINGW_PREFIX/include" \
   -o "$OUT/webserver.exe" \
-  "$JNI/webserver.c" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/update_win32.c" \
+  "$CORE_SOURCE" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/update_win32.c" \
+  "$HERE/subscription_update_win32.c" \
   "$HERE/traffic_mode_policy.c" "$HERE/traffic_observer_win32.c" \
   "$HERE/adguard_home_plan.c" "$HERE/windows_capture_plan.c" \
   "$HERE/wintun_probe_win32.c" "$HERE/windows_network_inventory_win32.c" \

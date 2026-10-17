@@ -1,5 +1,7 @@
 jni/
 shared-contract/
+.build-core/
+__pycache__/
 app/src/main/assets/
 .adblock-upstream-manifest.json
 .upstream/

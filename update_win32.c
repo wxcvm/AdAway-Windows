@@ -858,8 +858,8 @@ static const char *narrow_path(const wchar_t *path) {
     return buf;
 }
 
-static int http_download_to_file(const wchar_t *url, const wchar_t *file,
-                                 const wchar_t *extra_headers) {
+static int http_download_to_file_limit(const wchar_t *url, const wchar_t *file,
+                                 const wchar_t *extra_headers, unsigned long long max_bytes, unsigned budget_ms, bool resume) {
     wchar_t host[256] = L"", path[1024] = L"", mapped[1200] = L"";
     const wchar_t *p = wcsstr(url, L"://");
     p = p ? p + 3 : url;
@@ -874,13 +874,14 @@ static int http_download_to_file(const wchar_t *url, const wchar_t *file,
     const wchar_t *connect_host = mirror_map(host, path, mapped, 1200);
     const wchar_t *connect_path = connect_host == host ? path : mapped;
 
-    unsigned long long have = partial_size(file);
+    unsigned long long have = resume ? partial_size(file) : 0;
+    if (!max_bytes || !budget_ms || have > max_bytes) return 0;
     unsigned long long started = GetTickCount64();
     for (int attempt = 1; attempt <= UPDATE_DOWNLOAD_ATTEMPTS; attempt++) {
-        if (GetTickCount64() - started > UPDATE_DOWNLOAD_BUDGET_MS) {
+        if (GetTickCount64() - started > budget_ms) {
             win32_log_line("update: download budget of %u s exhausted (%llu bytes on disk) "
                            "- trying the fallback endpoint",
-                           (unsigned) (UPDATE_DOWNLOAD_BUDGET_MS / 1000), have);
+                           (unsigned) (budget_ms / 1000), have);
             break;
         }
         HINTERNET session = NULL, connect = NULL, request = NULL;
@@ -934,9 +935,9 @@ static int http_download_to_file(const wchar_t *url, const wchar_t *file,
                  * and give up on a package it already had; hand it to the
                  * SHA-256 check instead, which is the real judge.
                  */
-                if (status == 416 && have > 0) complete = 1;
-                if ((status == 200 || status == 206) &&
-                    have + declared <= (unsigned long long) UPDATE_DOWNLOAD_MAX_BYTES) {
+                if (resume && status == 416 && have > 0) complete = 1;
+                if ((status == 200 || (resume && status == 206)) &&
+                    have + declared <= (unsigned long long) max_bytes) {
                     out = _wfopen(file, have > 0 ? L"ab" : L"wb");
                     if (out != NULL) {
                     } else {
@@ -951,15 +952,16 @@ static int http_download_to_file(const wchar_t *url, const wchar_t *file,
                         for (;;) {
                             DWORD avail = 0, read = 0;
                             char buffer[65536];
-                            if (!WinHttpQueryDataAvailable(request, &avail) || avail == 0) break;
+                            if (!WinHttpQueryDataAvailable(request, &avail)) { io_ok = 0; break; }
+                            if (avail == 0) break;
                             if (avail > sizeof(buffer)) avail = (DWORD) sizeof(buffer);
                             if (!WinHttpReadData(request, buffer, avail, &read) || read == 0) { io_ok = 0; break; }
                             have += read;
-                            if (have > (unsigned long long) UPDATE_DOWNLOAD_MAX_BYTES ||
+                            if (have > (unsigned long long) max_bytes ||
                                 fwrite(buffer, 1, read, out) != read) { io_ok = 0; break; }
                             if (total > 0) post_progress((int) (have * 100ULL / total));
-                            /* Trickling link guard - see UPDATE_DOWNLOAD_BUDGET_MS. */
-                            if (GetTickCount64() - started > UPDATE_DOWNLOAD_BUDGET_MS) {
+                            /* Trickling link guard - see budget_ms. */
+                            if (GetTickCount64() - started > budget_ms) {
                                 io_ok = 0;
                                 break;
                             }
@@ -969,7 +971,7 @@ static int http_download_to_file(const wchar_t *url, const wchar_t *file,
                 }
             }
         }
-        if (out != NULL) fclose(out);
+        if (out != NULL && fclose(out) != 0) complete = 0;
         if (request != NULL) WinHttpCloseHandle(request);
         if (connect != NULL) WinHttpCloseHandle(connect);
         WinHttpCloseHandle(session);
@@ -981,7 +983,7 @@ static int http_download_to_file(const wchar_t *url, const wchar_t *file,
             return 1;
         }
         /* Keep whatever arrived and try to continue it after a short pause. */
-        have = partial_size(file);
+        have = resume ? partial_size(file) : 0;
         win32_log_line("update: download attempt %d/%d incomplete (%llu bytes on disk)",
                        attempt, UPDATE_DOWNLOAD_ATTEMPTS, have);
         if (attempt < UPDATE_DOWNLOAD_ATTEMPTS) Sleep(1000 * attempt);
@@ -991,6 +993,10 @@ static int http_download_to_file(const wchar_t *url, const wchar_t *file,
        been started or stopped since it was probed. */
     s_proxy_resolved = 0;
     return 0;
+}
+
+static int http_download_to_file(const wchar_t *url, const wchar_t *file, const wchar_t *extra_headers) {
+    return http_download_to_file_limit(url, file, extra_headers, UPDATE_DOWNLOAD_MAX_BYTES, UPDATE_DOWNLOAD_BUDGET_MS, true);
 }
 
 /* Decimal id after ".../releases/assets/" (the /releases/assets/<id> endpoint). */
@@ -1524,6 +1530,11 @@ static void update_temp_file(const wchar_t *temp, DWORD pid, DWORD stamp,
 int adblock_http_download(const wchar_t *url, const wchar_t *file) {
     if (url == NULL || file == NULL || url[0] == 0 || file[0] == 0) return 0;
     return http_download_to_file(url, file, NULL);
+}
+
+int adblock_http_download_bounded(const wchar_t *url, const wchar_t *file, unsigned long long max_bytes, unsigned budget_ms) {
+    if (!url || !file || !url[0] || !file[0]) return 0;
+    return http_download_to_file_limit(url, file, NULL, max_bytes, budget_ms, false);
 }
 
 static DWORD WINAPI apply_thread(LPVOID param) {
