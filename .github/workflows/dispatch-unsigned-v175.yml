@@ -1,0 +1,45 @@
+name: One-time Windows v1.75 unsigned official release request
+on:
+  push:
+    branches:
+      - release-request/unsigned-v175-20261017
+    paths:
+      - .github/workflows/dispatch-unsigned-v175.yml
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  request:
+    if: github.repository == 'wxcvm/AdAway-Windows'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Require successful new main CI and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=11bfa971919c8e84a5c44ce5b983a79c7d5576ed
+          gh run watch 39020834280 --repo "$GITHUB_REPOSITORY" --exit-status
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')
+          test "$actual" = "$expected" || {
+            echo "::error::Windows main changed since release approval; refusing to publish"
+            exit 1
+          }
+          test "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/39020834280" --jq '.head_sha')" = "$expected"
+          if gh release view win11-webserver-v1.75 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Windows 1.75 already exists, refusing to overwrite assets"
+            exit 1
+          fi
+      - name: Run existing official Windows v1.75 release (unsigned policy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Main workflow uses WINDOWS_UNSIGNED_RELEASE=1. It builds source,
+          # packages stable Inno install/portable ZIP, uploads checksum, and
+          # makes v1.75 latest. This only requests the real publish pipeline.
+          gh workflow run windows-release.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo "Triggered Windows v1.75 official unsigned release from verified main"
