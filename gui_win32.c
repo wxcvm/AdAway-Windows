@@ -2998,9 +2998,11 @@ static void update_prompt_notify(HWND hwnd) {
     }
 }
 
-/* The sidebar is custom painted, not composed of Win32 tab controls.
- * Provide a keyboard path so navigation is not mouse-only.
- * Alt+1..6 jumps to a page; Ctrl+Tab cycles while the main view owns focus. */
+/* Registered accelerators also work when focus is inside a child control. */
+#define UI_ACCEL_NAV_FIRST 47000
+#define UI_ACCEL_NAV_NEXT  47006
+#define UI_ACCEL_NAV_PREV  47007
+
 static void ui_navigate_to(HWND hwnd, int next_tab) {
     if (next_tab < 0 || next_tab >= 6 || next_tab == g_tab) return;
     g_tab = next_tab;
@@ -3199,19 +3201,6 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_ui_visible) InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
-    case WM_SYSKEYDOWN:
-        if ((GetKeyState(VK_MENU) & 0x8000) && wp >= '1' && wp <= '6') {
-            ui_navigate_to(hwnd, (int)(wp - '1'));
-            return 0;
-        }
-        return DefWindowProcW(hwnd, msg, wp, lp);
-    case WM_KEYDOWN:
-        if (wp == VK_TAB && (GetKeyState(VK_CONTROL) & 0x8000)) {
-            int direction = (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1;
-            ui_navigate_to(hwnd, (g_tab + 6 + direction) % 6);
-            return 0;
-        }
-        return DefWindowProcW(hwnd, msg, wp, lp);
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         int new_tab = -1;
@@ -3226,6 +3215,18 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_COMMAND:
+        if (HIWORD(wp) == 1) { /* keyboard accelerator */
+            int id = LOWORD(wp);
+            if (id >= UI_ACCEL_NAV_FIRST && id < UI_ACCEL_NAV_FIRST + 6) {
+                ui_navigate_to(hwnd, id - UI_ACCEL_NAV_FIRST);
+                return 0;
+            }
+            if (id == UI_ACCEL_NAV_NEXT || id == UI_ACCEL_NAV_PREV) {
+                ui_navigate_to(hwnd, (g_tab + 6 +
+                    (id == UI_ACCEL_NAV_NEXT ? 1 : -1)) % 6);
+                return 0;
+            }
+        }
         if (HIWORD(wp) == BN_CLICKED) {
             int id = LOWORD(wp);
             if (id == IDM_TRUST || id == IDM_UNTRUST) {
@@ -3784,11 +3785,28 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
         }
         ShowWindow(hwnd, g_start_minimized ? SW_HIDE : SW_SHOW);
         UpdateWindow(hwnd);
+        /* Keyboard shortcuts are active even when a settings edit field
+         * owns focus; relying on WM_KEYDOWN in the parent misses that case. */
+        ACCEL nav_keys[] = {
+            {FVIRTKEY | FALT, '1', UI_ACCEL_NAV_FIRST},
+            {FVIRTKEY | FALT, '2', UI_ACCEL_NAV_FIRST + 1},
+            {FVIRTKEY | FALT, '3', UI_ACCEL_NAV_FIRST + 2},
+            {FVIRTKEY | FALT, '4', UI_ACCEL_NAV_FIRST + 3},
+            {FVIRTKEY | FALT, '5', UI_ACCEL_NAV_FIRST + 4},
+            {FVIRTKEY | FALT, '6', UI_ACCEL_NAV_FIRST + 5},
+            {FVIRTKEY | FCONTROL, VK_TAB, UI_ACCEL_NAV_NEXT},
+            {FVIRTKEY | FCONTROL | FSHIFT, VK_TAB, UI_ACCEL_NAV_PREV},
+        };
+        HACCEL nav_accel = CreateAcceleratorTableW(
+            nav_keys, (int)(sizeof(nav_keys) / sizeof(nav_keys[0])));
         MSG msg;
         while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if (nav_accel == NULL || !TranslateAcceleratorW(hwnd, nav_accel, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
+        if (nav_accel != NULL) DestroyAcceleratorTable(nav_accel);
         WSACleanup();
         return 0;
     }
