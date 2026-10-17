@@ -1,0 +1,125 @@
+name: Windows 1.75 inspection installers
+on:
+  push:
+    branches:
+      - release/ui175-installers-20261017
+    paths:
+      - installer-preview.iss
+      - .github/workflows/windows-ui-inspection-installers.yml
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish-installers:
+    if: github.repository == 'wxcvm/AdAway-Windows'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN_SHA: bcde5ee850707a0bb96459e21cfab085b936c96f
+      PREVIEW_SOURCE_TAG: ui-preview-v1.75-20261017
+      PREVIEW_INSTALLER_TAG: ui-preview-v1.75-installers-20261017
+    steps:
+      - name: Checkout vetted installer script
+        uses: actions/checkout@v6
+
+      - name: Check tested program source and immutable preview release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = gh api "repos/$env:GITHUB_REPOSITORY/commits/main" --jq '.sha'
+          if ($LASTEXITCODE -ne 0 -or $actual.Trim() -ne $env:EXPECTED_MAIN_SHA) {
+            throw 'Windows main source changed; installer cannot be associated with the tested v1.75 build'
+          }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/39005529286" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $run.conclusion -ne 'success' -or $run.head_sha -ne $env:EXPECTED_MAIN_SHA) {
+            throw 'Original Windows UI 1.75 native build is not verified'
+          }
+          gh release view $env:PREVIEW_SOURCE_TAG --repo $env:GITHUB_REPOSITORY
+          if ($LASTEXITCODE -ne 0) { throw 'Expected portable UI prerelease is missing' }
+          gh release view $env:PREVIEW_INSTALLER_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Refusing to overwrite an existing installer prerelease' }
+          if ((Get-Content installer-preview.iss -Raw) -notmatch 'AppVersion=1\.75') {
+            throw 'Preview installer must be version 1.75'
+          }
+
+      - name: Recover and verify exact prebuilt portable UI payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path source | Out-Null
+          gh release download $env:PREVIEW_SOURCE_TAG --repo $env:GITHUB_REPOSITORY --dir source --pattern 'adblock-ui-v1.75-unsigned-portable.zip' --pattern 'SHA256SUMS.txt'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download vetted ZIP and its SHA256 checksum' }
+          $zip = 'source/adblock-ui-v1.75-unsigned-portable.zip'
+          if (-not (Test-Path $zip)) { throw 'Portable UI ZIP missing' }
+          $manifest = Get-Content source/SHA256SUMS.txt
+          $entry = $manifest | Where-Object { $_ -match '^[0-9a-fA-F]{64}\s+\*?adblock-ui-v1\.75-unsigned-portable\.zip$' } | Select-Object -First 1
+          if (-not $entry) { throw 'No usable SHA256 entry for the portable ZIP' }
+          $expected = ($entry -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expected -ne $actual) { throw 'Downloaded portable ZIP hash mismatch' }
+          Expand-Archive -LiteralPath $zip -DestinationPath dist -Force
+          if (-not (Test-Path 'dist/webserver.exe')) { throw 'Compiled UI executable missing from portable ZIP' }
+          if (-not (Test-Path 'dist/resources')) { throw 'Expected resources directory missing' }
+          Write-Host "Verified original UI executable and ZIP SHA256: $actual"
+
+      - name: Build separate per-user and all-users UI installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+          $compiler = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup compiler missing' }
+          & $compiler installer-preview.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Per-user preview installer build failed' }
+          & $compiler /DMachineInstall=1 installer-preview.iss
+          if ($LASTEXITCODE -ne 0) { throw 'All-users preview installer build failed' }
+          @('adblock-preview-user-x64.exe', 'adblock-preview-machine-x64.exe') | ForEach-Object {
+            if (-not (Test-Path "dist-installer/$_")) { throw "Missing $($_)" }
+          }
+
+      - name: Package checksums and non-production safety instructions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item 'source/adblock-ui-v1.75-unsigned-portable.zip' '.'
+          @'
+          Windows UI v1.75 inspection builds (UNSIGNED preview)
+          Compiled program source: bcde5ee850707a0bb96459e21cfab085b936c96f
+          Original verified Windows CI run: 39005529286
+          Installer source: release/ui175-installers-20261017
+          User installer: adblock-preview-user-x64.exe (does not require elevation)
+          Machine installer: adblock-preview-machine-x64.exe (requires admin)
+          These use a separate Inno Setup AppId and separate data/install directory.
+          Do not install over stable v1.74 or reuse its certificates.
+          No autostart, no root/CA installation and no automatic launch.
+          Signatures: NOT SIGNED. These files are for optional UI evaluation only.
+          Keep Windows Defender and SmartScreen enabled. Do not bypass warnings.
+          The future TUN/WFP capture and AdGuard automatic coexistence are not active.
+          '@ | Set-Content -Encoding utf8 'READ-ME-FIRST.txt'
+          $names = @('adblock-preview-user-x64.exe','adblock-preview-machine-x64.exe','adblock-ui-v1.75-unsigned-portable.zip')
+          $lines = foreach ($name in $names) {
+            $file = if ($name.EndsWith('.exe')) { "dist-installer/$name" } else { $name }
+            $digest = (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$digest  $name"
+          }
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+
+      - name: Publish clearly labeled installer prerelease
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release create $env:PREVIEW_INSTALLER_TAG `
+            'dist-installer/adblock-preview-user-x64.exe' `
+            'dist-installer/adblock-preview-machine-x64.exe' `
+            'adblock-ui-v1.75-unsigned-portable.zip' `
+            'SHA256SUMS.txt' 'READ-ME-FIRST.txt' `
+            --repo $env:GITHUB_REPOSITORY `
+            --target $env:EXPECTED_MAIN_SHA `
+            --prerelease --latest=false `
+            --title 'AdAway Windows v1.75 - unsigned UI inspection installers' `
+            --notes 'UNSIGNED UI preview installers using a separate AppId. Contains the verified 1.75 GUI and six pages. Choose per-user or all-users; these do not update stable 1.74 and do not affect the stable update feed. Keep SmartScreen enabled. Formal signed release remains blocked pending original Windows signing credentials.'
+          if ($LASTEXITCODE -ne 0) { throw 'Installer prerelease publication failed' }
