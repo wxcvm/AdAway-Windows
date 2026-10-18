@@ -97,6 +97,7 @@ Set-Page 2
 # Switch only the disposable runner's preview appearance.
 [void][UiReviewNative]::SendMessage([UiReviewNative]::GetDlgItem($window,1006),0xF1,[IntPtr]1,[IntPtr]::Zero)
 [void][UiReviewNative]::SendMessage($window,0x111,[IntPtr]1006,[IntPtr]::Zero)
+Start-Sleep -Milliseconds 2200 # Include a stats refresh before checking the operation-result surface.
 Save-Window 'settings-dark'
 # Hosted desktops can cap a top-level window at screen width. Compare a
 # compact 2/3 canvas against the standard canvas rather than assuming an
