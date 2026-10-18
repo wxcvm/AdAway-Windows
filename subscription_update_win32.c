@@ -1,4 +1,5 @@
 #include "subscription_import.h"
+#include "block_rule_snapshot.h"
 #include "subscription_update_win32.h"
 #include <io.h>
 #include <wchar.h>
@@ -33,6 +34,17 @@ struct subscription_update_result subscription_update(const wchar_t *directory,
     result.status = SUB_UPDATE_IO_FAILED;
     if (ferror(output) || fflush(output) != 0 || _commit(_fileno(output)) != 0) goto cleanup;
     if (fclose(output) != 0) { output = NULL; goto cleanup; } output = NULL;
+    // Validate the actual production index and name-pool bound before replacing
+    // the last valid file. Successful text parsing alone is not a reload guarantee.
+    result.status = SUB_UPDATE_PARSE_FAILED;
+    FILE *verified = _wfopen(staging, L"rb");
+    if (!verified) goto cleanup;
+    struct bs_builder prepared; memset(&prepared, 0, sizeof(prepared));
+    bool valid = bs_parse_file(verified, &prepared);
+    if (fclose(verified) != 0) valid = false;
+    valid = valid && bs_finish(&prepared);
+    bs_free_builder(&prepared);
+    if (!valid) goto cleanup;
     result.status = SUB_UPDATE_PUBLISH_FAILED;
     if (!MoveFileExW(staging, target, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) goto cleanup;
     staging[0] = 0; result.status = SUB_UPDATE_OK; result.entries = stats.entries; result.unsupported = stats.unsupported;
