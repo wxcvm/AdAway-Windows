@@ -21,8 +21,8 @@ public static class UiReviewNative {
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr w);
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr w, int id);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool SetWindowTextW(IntPtr w, string text);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr w, System.Text.StringBuilder text, int capacity);
+  [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr SetTextTimeout(IntPtr w, uint msg, IntPtr wp, string text, uint flags, uint timeout, out IntPtr result);
+  [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr GetTextTimeout(IntPtr w, uint msg, IntPtr wp, [Out] System.Text.StringBuilder text, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr SendMessageTimeoutW(IntPtr w, uint msg, IntPtr wp, IntPtr lp, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr w, IntPtr dc, uint flags);
   [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetObjectW(IntPtr obj, int size, out Font font);
@@ -34,6 +34,16 @@ $guiProcess.Refresh()
 $window = $guiProcess.MainWindowHandle
 if (!$window) { throw 'Dashboard window missing' }
 $records = [System.Collections.Generic.List[object]]::new()
+# Cross-process edit controls require WM_SETTEXT / WM_GETTEXT, not caption APIs.
+function Read-ControlText([IntPtr]$Control) {
+    $buffer=[Text.StringBuilder]::new(1024)
+    $messageResult=[IntPtr]::Zero
+    if ([UiReviewNative]::GetTextTimeout($Control,0xD,[IntPtr]1024,$buffer,2,10000,[ref]$messageResult) -eq [IntPtr]::Zero) {
+        throw 'Edit text read did not return within 10 seconds'
+    }
+    return $buffer.ToString()
+}
+
 function Set-Page([int]$Tab) {
     [void][UiReviewNative]::SendMessage($window, 0x111, [IntPtr](65536 + 47000 + $Tab), [IntPtr]::Zero)
 }
@@ -102,10 +112,11 @@ if ($ResourceDirectory) {
     $sourceInput = [UiReviewNative]::GetDlgItem($window,1140)
     $candidate = 'https://example.test/extra'
     Write-Output 'Source settings GUI: populate candidate input'
-    if (![UiReviewNative]::SetWindowTextW($sourceInput,$candidate)) { throw 'Unable to populate source input' }
-    $beforeSave = [Text.StringBuilder]::new(1024)
-    [void][UiReviewNative]::GetWindowTextW($sourceInput,$beforeSave,1024)
-    if ($beforeSave.ToString() -ne $candidate) { throw 'Source input did not retain candidate text' }
+    $setResult=[IntPtr]::Zero
+    if ([UiReviewNative]::SetTextTimeout($sourceInput,0xC,[IntPtr]::Zero,$candidate,2,10000,[ref]$setResult) -eq [IntPtr]::Zero -or $setResult -eq [IntPtr]::Zero) {
+        throw 'Unable to populate cross-process source input'
+    }
+    if ((Read-ControlText $sourceInput) -ne $candidate) { throw 'Source input did not retain candidate text' }
     $readerLock = [IO.File]::Open($sourcePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
         Write-Output 'Source settings GUI: add while replacement is blocked'
@@ -115,9 +126,8 @@ if ($ResourceDirectory) {
         }
         Write-Output 'Source settings GUI: blocked add returned; check preserved input, count and file'
         $afterFailure = [UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
-        $retained = [Text.StringBuilder]::new(1024)
-        [void][UiReviewNative]::GetWindowTextW($sourceInput,$retained,1024)
-        if ($afterFailure -ne $count -or $retained.ToString() -ne $candidate -or [IO.File]::ReadAllText($sourcePath) -ne $original) {
+        $retained = Read-ControlText $sourceInput
+        if ($afterFailure -ne $count -or $retained -ne $candidate -or [IO.File]::ReadAllText($sourcePath) -ne $original) {
             throw 'Failed source save changed the list, input or previous file'
         }
         Save-Window 'subscriptions-save-failed'
@@ -129,8 +139,7 @@ if ($ResourceDirectory) {
     }
     Write-Output 'Source settings GUI: retry returned; check committed file and UI'
     $afterSuccess = [UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
-    $cleared = [Text.StringBuilder]::new(1024)
-    [void][UiReviewNative]::GetWindowTextW($sourceInput,$cleared,1024)
+    $cleared = Read-ControlText $sourceInput
     if ($afterSuccess -ne $count + 1 -or $cleared.Length -ne 0 -or ![IO.File]::ReadAllText($sourcePath).Contains($candidate)) {
         throw 'Successful source save did not commit file and UI together'
     }
