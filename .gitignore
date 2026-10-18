@@ -1,5 +1,8 @@
 jni/
 shared-contract/
+dns-contract/
+dns-loopback-probe.exe
+dns-loopback-results.json
 .build-core/
 __pycache__/
 app/src/main/assets/
