@@ -116,7 +116,7 @@ int main(void) {
 
     // Actual subscription importer -> serialized staging file -> production index -> DNS encoder.
     FILE *source = tmpfile(), *staged = tmpfile(); assert(source && staged);
-    assert(fputs("||blocked.test^\n192.0.2.8 redirect.test\n@@||allow.blocked.test^\n", source) >= 0); rewind(source);
+    assert(fputs("||blocked.test^\n192.0.2.8 redirect.test\n@@||allow.blocked.test^\n::ffff:192.0.2.9 mapped.test\n", source) >= 0); rewind(source);
     struct si_stats stats = {0}; assert(si_import_source(source, staged, &stats, 2)); rewind(staged);
     struct bs_builder builder; memset(&builder, 0, sizeof(builder));
     assert(bs_parse_file(staged, &builder)); assert(bs_finish(&builder));
@@ -127,6 +127,11 @@ int main(void) {
     length = make_query("redirect.test", 1, query);
     assert(dns_policy_respond_from_rules(&rules,query,length,response,sizeof(response),&written));
     assert(response[written - 1] == 8);
+    length = make_query("mapped.test", 1, query);
+    assert(dns_policy_respond_from_rules(&rules,query,length,response,sizeof(response),&written));
+    assert(response[written - 1] == 9);
+    length = make_query("mapped.test", 28, query);
+    assert(!dns_policy_respond_from_rules(&rules,query,length,response,sizeof(response),&written));
     length = make_query("redirect.test", 28, query);
     assert(!dns_policy_respond_from_rules(&rules,query,length,response,sizeof(response),&written));
     length = make_query("sub.allow.blocked.test", 1, query);

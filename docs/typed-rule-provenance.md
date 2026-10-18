@@ -21,7 +21,9 @@ allow > replacement > block; then exact > suffix > wildcard, longer pattern,
 lower source ID and earlier source entry. User ties instead take the latest
 entry. Remaining ties use lexical domain/action/binary-address ordering.
 ABP suffixes match only apex/label boundaries. Unsupported conditions remain
-skipped; replacement family mismatch returns PASS/INVALID_DATA. Existing
+skipped; replacement family mismatch returns PASS/INVALID_DATA. IPv4-mapped
+IPv6 literals normalize to IPv4 before zero classification, matching Guava;
+typed file reload uses the same canonical address family. Existing
 manual HTTP exemption files are separate from subscription provenance.
 
 Production bs_decide returns copied action/address/source/order/scope/legacy
@@ -37,7 +39,7 @@ use required literal-anchor buckets prepared once per generation. No query
 unconditionally scans every rule. Existing 500k entry/32 MiB pool/64 MiB file
 bounds remain; index/record metadata increases memory usage and is not a
 measured device memory guarantee. Invalid, stale, malformed or failed updates
-retain the previous published table. 26 shared query vectors compare scope,
+retain the previous published table. 30 shared query vectors compare scope,
 action, address and provenance. Native input stays ASCII-only while Android
 retains its IDN conversion; Unicode-source equivalence is not claimed.
 

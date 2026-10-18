@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch proposed portable M1 contracts independently of the production server.
 set -euo pipefail
-PIN="cab11a0b97f14143cb903729b11bd752bd1dbf33"
+PIN="4ab304c7dca81758bdbf5428d580bcd0794ee932"
 verify() {
   python3 - "$PIN" <<'PY'
 import hashlib,json,pathlib,sys
