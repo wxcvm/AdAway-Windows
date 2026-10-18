@@ -105,7 +105,7 @@ Set-ClientSize 688 452
 Save-Window 'settings-dark-compact'
 Set-Page 4; Save-Window 'subscriptions-dark-compact'
 Set-ClientSize 1032 678
-Save-Window 'subscriptions-dark' 
+Save-Window 'subscriptions-dark'
 $records | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutputDirectory 'layout-evidence.json')
 $compact=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark-compact').FontHeight)
 $standard=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark').FontHeight)
