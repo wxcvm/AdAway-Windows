@@ -20,3 +20,11 @@ Source URL and status files now use a bounded UTF-8 staged write, flush/commit a
 The real GUI inspection holds an open reader to deny source-file replacement, attempts an add, and checks that the list/file/input remain unchanged. It then releases the reader, retries and verifies that both file and list commit and the input clears. The fixture stays in the temporary installation copy, with screenshots for both outcomes. A separate strict C test covers UTF-8, lock and replace failure, newline injection rejection and empty settings saves.
 
 Cross-process edit automation uses bounded WM_SETTEXT / WM_GETTEXT messages; GetWindowText/SetWindowText are caption APIs with cross-process control limitations. All injected save commands have a 10-second bound and the GUI CI step has its own timeout.
+
+## Long sources and inline validation
+
+The subscription list now measures row text using its current native font and updates its horizontal scroll extent after list changes and window scaling. Selecting a row exposes the full URL in a read-only, selectable edit field. This field follows keyboard or mouse selection and allows copying without repurposing the Add input.
+
+Blank/space-only input disables Add. Invalid scheme, empty authority, embedded whitespace, duplicate source and persistence failure use page-local feedback and preserve input. Existing 1023-character content limits remain in place. Native EN_MAXTEXT marks truncated input as unsafe to save until the user shortens it; a separate length check rejects programmatic overlong content before reading a bounded buffer. This avoids saving a silently shortened URL. Syntax checks are deliberately minimal; actual fetch/parser validation still runs during subscription updates.
+
+The real-window inspection exercises invalid/oversized text, insertion at the native limit, correction/retry, long-address selection and horizontal scroll extent, together with the prior file-lock failure path. It operates exclusively in the disposable CI installation copy.

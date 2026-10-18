@@ -36,12 +36,24 @@ if (!$window) { throw 'Dashboard window missing' }
 $records = [System.Collections.Generic.List[object]]::new()
 # Cross-process edit controls require WM_SETTEXT / WM_GETTEXT, not caption APIs.
 function Read-ControlText([IntPtr]$Control) {
-    $buffer=[Text.StringBuilder]::new(1024)
+    $buffer=[Text.StringBuilder]::new(4096)
     $messageResult=[IntPtr]::Zero
-    if ([UiReviewNative]::GetTextTimeout($Control,0xD,[IntPtr]1024,$buffer,2,10000,[ref]$messageResult) -eq [IntPtr]::Zero) {
+    if ([UiReviewNative]::GetTextTimeout($Control,0xD,[IntPtr]4096,$buffer,2,10000,[ref]$messageResult) -eq [IntPtr]::Zero) {
         throw 'Edit text read did not return within 10 seconds'
     }
     return $buffer.ToString()
+}
+function Set-ControlText([IntPtr]$Control, [string]$Text) {
+    $result=[IntPtr]::Zero
+    if ([UiReviewNative]::SetTextTimeout($Control,0xC,[IntPtr]::Zero,$Text,2,10000,[ref]$result) -eq [IntPtr]::Zero -or $result -eq [IntPtr]::Zero) {
+        throw 'Unable to populate cross-process source input'
+    }
+}
+function Send-BoundedMessage([IntPtr]$Control, [uint32]$Message, [IntPtr]$WParam, [IntPtr]$LParam) {
+    $result=[IntPtr]::Zero
+    if ([UiReviewNative]::SendMessageTimeoutW($Control,$Message,$WParam,$LParam,2,10000,[ref]$result) -eq [IntPtr]::Zero) {
+        throw "UI message $Message did not return within 10 seconds"
+    }
 }
 
 function Set-Page([int]$Tab) {
@@ -110,12 +122,33 @@ if ($ResourceDirectory) {
     $sourcePath = Join-Path $ResourceDirectory 'subscription_urls.txt'
     $original = [IO.File]::ReadAllText($sourcePath)
     $sourceInput = [UiReviewNative]::GetDlgItem($window,1140)
-    $candidate = 'https://example.test/extra'
-    Write-Output 'Source settings GUI: populate candidate input'
-    $setResult=[IntPtr]::Zero
-    if ([UiReviewNative]::SetTextTimeout($sourceInput,0xC,[IntPtr]::Zero,$candidate,2,10000,[ref]$setResult) -eq [IntPtr]::Zero -or $setResult -eq [IntPtr]::Zero) {
-        throw 'Unable to populate cross-process source input'
+    $add = [UiReviewNative]::GetDlgItem($window,1142)
+    if ([UiReviewNative]::IsWindowEnabled($add)) { throw 'Blank source must not enable Add' }
+    foreach ($invalid in @('ftp://example.test/hosts', 'https://', ('https://example.test/' + ('a' * 1100)))) {
+        Set-ControlText $sourceInput $invalid
+        Send-BoundedMessage $window 0x111 ([IntPtr]1142) ([IntPtr]::Zero)
+        if ([UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64() -ne $count -or
+            (Read-ControlText $sourceInput) -ne $invalid -or [IO.File]::ReadAllText($sourcePath) -ne $original) {
+            throw 'Invalid/oversized source changed the stored file/list/input'
+        }
     }
+    # WM_SETTEXT bypasses the native edit limit. Also exercise real user-style
+    # insertion at that limit, which must flag truncation and block saving.
+    $prefix = 'https://example.test/'
+    Set-ControlText $sourceInput ($prefix + ('b' * (1023 - $prefix.Length)))
+    Send-BoundedMessage $sourceInput 0xB1 ([IntPtr]1023) ([IntPtr]1023) # EM_SETSEL
+    Send-BoundedMessage $sourceInput 0x102 ([IntPtr]99) ([IntPtr]1) # WM_CHAR
+    if ([UiReviewNative]::IsWindowEnabled($add)) { throw 'Truncated source input must not enable Add' }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1142) ([IntPtr]::Zero)
+    if ([UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64() -ne $count -or
+        [IO.File]::ReadAllText($sourcePath) -ne $original) { throw 'Truncated source was saved' }
+    Save-Window 'subscriptions-input-too-long'
+    Set-ControlText $sourceInput '   '
+    if ([UiReviewNative]::IsWindowEnabled($add)) { throw 'Whitespace source must not enable Add' }
+    $candidate = 'https://example.test/extra?inspection=' + ('a' * 480)
+    Write-Output 'Source settings GUI: populate candidate input'
+    Set-ControlText $sourceInput $candidate
+    if (![UiReviewNative]::IsWindowEnabled($add)) { throw 'Corrected source must enable Add' }
     if ((Read-ControlText $sourceInput) -ne $candidate) { throw 'Source input did not retain candidate text' }
     $readerLock = [IO.File]::Open($sourcePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
@@ -144,6 +177,15 @@ if ($ResourceDirectory) {
         throw 'Successful source save did not commit file and UI together'
     }
     Save-Window 'subscriptions-saved'
+    [void][UiReviewNative]::SendMessage($list,0x186,[IntPtr]$count,[IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr](65536+1141)) $list
+    $selected = [UiReviewNative]::GetDlgItem($window,1146)
+    if ((Read-ControlText $selected) -ne $candidate) { throw 'Selected source does not expose its complete address' }
+    $listBounds=[UiReviewNative+Rect]::new()
+    [void][UiReviewNative]::GetClientRect($list,[ref]$listBounds)
+    $extent=[UiReviewNative]::SendMessage($list,0x193,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
+    if ($extent -le $listBounds.Right) { throw 'Long source rows must allow horizontal scrolling' }
+    Save-Window 'subscriptions-long-source'
 }
 
 Set-Page 2
@@ -164,4 +206,4 @@ $records | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutputDirectory 'la
 $compact=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark-compact').FontHeight)
 $standard=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark').FontHeight)
 if ($standard -le $compact) { throw 'Native control font did not scale with the window' }
-Write-Output 'UI inspection passed: no overlapping native controls; selection state and scaled fonts verified.'
+Write-Output 'UI inspection passed: input bounds/rollback, complete selected URL, horizontal scrolling, non-overlapping controls and scaled fonts verified.'
