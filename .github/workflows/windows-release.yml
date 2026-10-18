@@ -454,6 +454,8 @@ jobs:
         shell: pwsh
         run: |
           $res3 = (Resolve-Path "dist\resources").Path
+          # Offline fixture: management / selection only, no update is triggered.
+          Set-Content -LiteralPath (Join-Path $res3 'subscription_urls.txt') -Encoding utf8 -Value @('https://example.test/hosts','https://example.test/allow')
           $p3 = Start-Process -FilePath "dist\webserver.exe" -ArgumentList @("--resources",$res3,"--http-port","18083","--https-port","18446") -PassThru -WorkingDirectory "dist" -RedirectStandardOutput "server3.log" -RedirectStandardError "server3.err"
           # Wait for the GUI process to serve its main port, then make sure it
           # is still alive a moment later: proves the dashboard thread and the

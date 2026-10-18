@@ -8,7 +8,7 @@ public static class UiReviewNative {
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
   [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct Font {
     public int Height, Width, Escapement, Orientation, Weight;
-    public byte Italic, Underline, StrikeOut, CharSet, OutPrecision, ClipPrecision, Quality, PitchAndFamily;
+    public byte Italic, Underline, StrikeOut, CharsetByte, OutPrecision, ClipPrecision, Quality, PitchAndFamily;
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string FaceName;
   }
   public delegate bool EnumChild(IntPtr hwnd, IntPtr data);
@@ -62,7 +62,6 @@ function Check-Controls([string]$Name) {
         }
     }
     $client = [UiReviewNative+Rect]::new(); [void][UiReviewNative]::GetClientRect($window,[ref]$client)
-    $fontHandle = [UiReviewNative]::SendMessage([UiReviewNative]::GetDlgItem($window,1110),0x31,[IntPtr]::Zero,[IntPtr]::Zero)
     # Record a known subscription field's font (shared with all settings controls).
     $fontHandle = [UiReviewNative]::SendMessage([UiReviewNative]::GetDlgItem($window,1140),0x31,[IntPtr]::Zero,[IntPtr]::Zero)
     $font = [UiReviewNative+Font]::new()

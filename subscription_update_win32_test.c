@@ -51,6 +51,16 @@ int main(void) {
     CHECK(result.status == SUB_UPDATE_OK && result.entries == 2 && result.unsupported == 1);
     char bytes[256] = {0}; FILE *file = _wfopen(target, L"rb"); CHECK(file); CHECK(fread(bytes, 1, sizeof(bytes) - 1, file) > 0); CHECK(fclose(file) == 0);
     CHECK(strcmp(bytes, "@adaway-rule-v1\t2\t1\t0\t0\tnew.test\t-\n@adaway-rule-v1\t3\t1\t1\t1\tnew.test\t-\n") == 0);
+    fixture.calls = 0;
+    reader = CreateFileW(target, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    CHECK(reader != INVALID_HANDLE_VALUE);
+    result = subscription_update(directory, urls, 0, download, &fixture);
+    CHECK(result.status == SUB_UPDATE_PUBLISH_FAILED && fixture.calls == 0);
+    CHECK(CloseHandle(reader));
+    file = _wfopen(target, L"rb"); CHECK(file); CHECK(fgetc(file) == '@'); CHECK(fclose(file) == 0);
+    result = subscription_update(directory, urls, 0, download, &fixture);
+    CHECK(result.status == SUB_UPDATE_OK && result.entries == 0 && fixture.calls == 0);
+    file = _wfopen(target, L"rb"); CHECK(file); CHECK(fgetc(file) == EOF); CHECK(fclose(file) == 0);
     CHECK(DeleteFileW(target)); CHECK(DeleteFileW(lock_path)); CHECK(RemoveDirectoryW(directory));
     puts("Actual Windows subscription transaction: download/parse/lock/atomic-replace failure rollback and complete success passed; no networking or OS changes");
     return 0;

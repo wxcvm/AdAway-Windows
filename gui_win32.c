@@ -2912,7 +2912,8 @@ static void subs_start_update(HWND hwnd) {
     if (s_subs_running) return;
     subs_load();
     if (!s_sub_count) {
-        MessageBoxW(hwnd, L"还没有订阅源。请先添加订阅链接。", L"订阅", MB_OK | MB_ICONINFORMATION | MB_TOPMOST); return;
+        if (MessageBoxW(hwnd, L"没有配置订阅源。清空先前导入的订阅规则？手动配置不受影响。",
+                        L"清空订阅规则", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
     }
     struct subs_job *job = (struct subs_job *)calloc(1, sizeof(*job));
     if (!job) return;
@@ -2933,8 +2934,8 @@ static void subs_controls_refresh(HWND hwnd) {
     EnableWindow(GetDlgItem(hwnd, IDC_SUB_URL), !busy);
     EnableWindow(GetDlgItem(hwnd, IDC_SUB_ADD), !busy && s_sub_count < SUBS_MAX);
     EnableWindow(GetDlgItem(hwnd, IDC_SUB_DEL), !busy && selected >= 0 && selected < s_sub_count);
-    EnableWindow(GetDlgItem(hwnd, IDC_SUB_UPD), !busy && s_sub_count > 0);
-    SetDlgItemTextW(hwnd, IDC_SUB_UPD, busy ? L"正在验证并更新…" : L"立即更新全部");
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_UPD), !busy);
+    SetDlgItemTextW(hwnd, IDC_SUB_UPD, busy ? L"正在验证并更新…" : (s_sub_count ? L"立即更新全部" : L"清空已导入规则"));
 }
 
 static void subs_refresh_list(HWND hwnd) {
@@ -2977,7 +2978,7 @@ static void draw_subs_page(HDC hdc) {
     {
         wchar_t sum[400];
         if (s_sub_count == 0)
-            swprintf(sum, 400, L"添加第一个订阅源，然后更新以导入规则。");
+            swprintf(sum, 400, L"尚未配置来源 · 可添加订阅，或清空先前导入的订阅规则。");
         else if (s_subs_running)
             swprintf(sum, 400, L"正在验证 %d 个来源 · 完成前继续使用上一份有效规则", s_sub_count);
         else
@@ -3250,6 +3251,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
         }
+        if (LOWORD(wp) == IDC_SUB_LIST && HIWORD(wp) == LBN_SELCHANGE) {
+            subs_controls_refresh(hwnd);
+            return 0;
+        }
         if (HIWORD(wp) == BN_CLICKED) {
             int id = LOWORD(wp);
             if (id == IDM_TRUST || id == IDM_UNTRUST) {
@@ -3308,8 +3313,6 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             swprintf(g_status, 4096,
                      L"已切换为便携包更新模式（zip 就地替换，跳过安装器），正在检查更新…");
             update_check_async(hwnd);
-        } else if (id == IDC_SUB_LIST && HIWORD(wp) == LBN_SELCHANGE) {
-                subs_controls_refresh(hwnd);
         } else if (id == IDC_SUB_ADD) {
                 if (s_subs_running) return 0;
                 wchar_t url[SUBS_URL_MAX];
@@ -3361,7 +3364,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     subs_save_urls();
                     subs_save_status();
                     subs_refresh_list(hwnd);
-                    swprintf(g_status, 4096, L"已移除来源，剩 %d 个；当前规则保持不变，请更新全部", s_sub_count);
+                    swprintf(g_status, 4096, L"已移除来源，剩 %d 个；当前规则保留，请更新或清空已导入规则", s_sub_count);
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_SUB_UPD) {

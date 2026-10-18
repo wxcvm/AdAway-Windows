@@ -8,7 +8,7 @@ struct subscription_update_result subscription_update(const wchar_t *directory,
         const wchar_t urls[][SUBSCRIPTION_URL_CAPACITY], unsigned count,
         subscription_download download, void *context) {
     struct subscription_update_result result; memset(&result, 0, sizeof(result)); result.status = SUB_UPDATE_IO_FAILED;
-    if (!directory || !*directory || !urls || !count || count > SUBSCRIPTION_MAX_SOURCES || !download
+    if (!directory || !*directory || !urls || count > SUBSCRIPTION_MAX_SOURCES || !download
             || wcslen(directory) > MAX_PATH - 40) return result;
     wchar_t target[MAX_PATH], lock_path[MAX_PATH], staging[MAX_PATH] = L"", input_path[MAX_PATH] = L"";
     if (swprintf(target, MAX_PATH, L"%ls\\subscriptions.txt", directory) < 0
