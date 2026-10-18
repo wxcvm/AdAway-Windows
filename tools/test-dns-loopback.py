@@ -142,9 +142,13 @@ def run(executable, policy_vectors):
             fixture = Fixture(mode, query_type)
             try:
                 begin = time.monotonic()
-                completed = subprocess.run([str(executable), str(source), str(fixture.port), '230' if mode in ('slow','silent') else '1000',
-                                            'A' if query_type == 1 else 'AAAA'],
-                                           capture_output=True, text=True, timeout=5)
+                arguments = [str(executable), str(source), str(fixture.port)]
+                # Keep the original shortest CLI invocation under regression:
+                # omitting both optional arguments still means A / 1200 ms.
+                if not (mode == 'udp' and query_type == 1 and vector is None):
+                    arguments += ['230' if mode in ('slow','silent') else '1000',
+                                  'A' if query_type == 1 else 'AAAA']
+                completed = subprocess.run(arguments, capture_output=True, text=True, timeout=5)
                 elapsed = time.monotonic()-begin
                 result = json.loads(completed.stdout)
                 assert result['status'] == status, (mode, result, completed.stderr)
