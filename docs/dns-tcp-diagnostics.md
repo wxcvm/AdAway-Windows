@@ -24,7 +24,8 @@ does not print input paths, subscription URLs or system network configuration.
 
 The reply contract and 23 vectors are independently fixed at Android commit
 `6f1f9c69a2513a4ccb18b8da90f0c8527ab6f955` by `fetch-dns-contract.sh`.
-Its cache has a file SHA-256 manifest. Existing production portable core and
+Its cache is checked against fixed file SHA-256 values as well as the manifest;
+modifying both cached content and its manifest is rejected. Existing production portable core and
 shared rule-contract pins are unchanged; this tool is a separate CI artifact,
 not linked into or enabled by the default GUI/server package.
 
