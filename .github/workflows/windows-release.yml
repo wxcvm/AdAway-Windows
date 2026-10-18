@@ -954,7 +954,8 @@ jobs:
           name: windows-typed-rules-inspection
           path: |
             adblock-webserver-win64.zip
-            dist-installer/*.exe
+            dist-installer/adblock-preview-user-x64.exe
+            dist-installer/adblock-preview-machine-x64.exe
           if-no-files-found: error
           retention-days: 14
 
