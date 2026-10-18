@@ -11,3 +11,10 @@ Subscription controls follow job state and selection. Updating locks edits and r
 The local transaction regression verifies both explicit empty-source clearing and rollback when an open reader prevents replacement. Existing shared rule core pins and production portable-core overlay remain unchanged. No daily-host installation, CA trust, default routes, TUN or WFP activation is part of this UI change. The PR produces inspection artifacts only.
 
 The UI runner uses a complete temporary installation copy, so fixture subscription URLs and persisted test appearance/port preferences cannot reach distribution files. Packaging rejects known fixture URLs and a smoke-test webserver.ini before archiving.
+
+
+## Rule/source management follow-up
+
+Source URL and status files now use a bounded UTF-8 staged write, flush/commit and atomic replacement. Failed source saves keep the previous file, UI list and typed input; source deletion restores its in-memory entry if persistence fails. A shared settings lock prevents competing file writes. Status cache writes use the same atomic helper. URL path case is retained when checking duplicate entries. UTF-8 byte buffers accommodate the existing 1024-wide-character limit without increasing that character bound.
+
+The real GUI inspection holds an open reader to deny source-file replacement, attempts an add, and checks that the list/file/input remain unchanged. It then releases the reader, retries and verifies that both file and list commit and the input clears. The fixture stays in the temporary installation copy, with screenshots for both outcomes. A separate strict C test covers UTF-8, lock and replace failure, newline injection rejection and empty settings saves.

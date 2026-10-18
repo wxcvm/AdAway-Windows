@@ -42,6 +42,7 @@
 #include "windows_capture_plan.h"
 #include "windows_network_inventory_win32.h"
 #include "subscription_update_win32.h"
+#include "subscription_settings_win32.h"
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
    system) while the rest of the code treats such strings as UTF-8, which made
@@ -2815,7 +2816,7 @@ static void subs_load(void) {
     subs_path(path, MAX_PATH, L"subscription_urls.txt");
     FILE *f = _wfopen(path, L"r");
     if (f != NULL) {
-        char line[SUBS_URL_MAX];
+        char line[SUBS_URL_MAX * 4 + 4];
         while (s_sub_count < SUBS_MAX && fgets(line, sizeof(line), f) != NULL) {
             char *p = subs_trim(line);
             if (p[0] == 0 || p[0] == '#') continue;
@@ -2830,7 +2831,7 @@ static void subs_load(void) {
     subs_path(path, MAX_PATH, L"subscription_status.txt");
     f = _wfopen(path, L"r");
     if (f != NULL) {
-        char line[1600];
+        char line[SUBS_URL_MAX * 4 + SUBSCRIPTION_STATUS_CAPACITY * 4 + 4];
         while (fgets(line, sizeof(line), f) != NULL) {
             char *tab = strchr(line, '\t');
             if (tab == NULL) continue;
@@ -2840,7 +2841,7 @@ static void subs_load(void) {
             wchar_t wurl[SUBS_URL_MAX];
             if (MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, SUBS_URL_MAX) <= 0) continue;
             for (int i = 0; i < s_sub_count; i++) {
-                if (_wcsicmp(s_sub_urls[i], wurl) == 0) {
+                if (wcscmp(s_sub_urls[i], wurl) == 0) {
                     MultiByteToWideChar(CP_UTF8, 0, st, -1, s_sub_status[i], 160);
                     break;
                 }
@@ -2850,35 +2851,19 @@ static void subs_load(void) {
     }
 }
 
-static void subs_save_urls(void) {
-    wchar_t path[MAX_PATH];
-    subs_path(path, MAX_PATH, L"subscription_urls.txt");
-    FILE *f = _wfopen(path, L"w");
-    if (f == NULL) return;
-    fprintf(f, "# ADBlock 订阅源列表：一行一个 URL，'#' 开头为注释。由仪表盘维护。\n");
-    for (int i = 0; i < s_sub_count; i++) {
-        char u8[SUBS_URL_MAX * 2];
-        if (WideCharToMultiByte(CP_UTF8, 0, s_sub_urls[i], -1, u8, sizeof(u8),
-                                NULL, NULL) <= 0) continue;
-        fprintf(f, "%s\n", u8);
-    }
-    fclose(f);
+static int subs_save_urls(unsigned count) {
+    wchar_t directory[MAX_PATH];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_res, -1, directory, MAX_PATH) <= 0) return 0;
+    return subscription_settings_save_urls(directory,
+            (const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])s_sub_urls, count);
 }
 
-static void subs_save_status(void) {
-    wchar_t path[MAX_PATH];
-    subs_path(path, MAX_PATH, L"subscription_status.txt");
-    FILE *f = _wfopen(path, L"w");
-    if (f == NULL) return;
-    for (int i = 0; i < s_sub_count; i++) {
-        char u8[SUBS_URL_MAX * 2], s8[700];
-        if (WideCharToMultiByte(CP_UTF8, 0, s_sub_urls[i], -1, u8, sizeof(u8),
-                                NULL, NULL) <= 0) continue;
-        if (WideCharToMultiByte(CP_UTF8, 0, s_sub_status[i], -1, s8, sizeof(s8),
-                                NULL, NULL) <= 0) s8[0] = 0;
-        fprintf(f, "%s\t%s\n", u8, s8);
-    }
-    fclose(f);
+static int subs_save_status(void) {
+    wchar_t directory[MAX_PATH];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_res, -1, directory, MAX_PATH) <= 0) return 0;
+    return subscription_settings_save_status(directory,
+            (const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])s_sub_urls,
+            (const wchar_t (*)[SUBSCRIPTION_STATUS_CAPACITY])s_sub_status, (unsigned)s_sub_count);
 }
 
 struct subs_job {
@@ -3307,7 +3292,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 subs_load();
                 bool dup = false;
                 for (int i = 0; i < s_sub_count; i++)
-                    if (_wcsicmp(s_sub_urls[i], s) == 0) dup = true;
+                    if (wcscmp(s_sub_urls[i], s) == 0) dup = true;
                 if (n < 8 || !url_has_http_scheme(s)) {
                     MessageBoxW(hwnd, L"请输入以 http:// 或 https:// 开头的订阅链接。",
                                 L"订阅", MB_OK | MB_ICONWARNING | MB_TOPMOST);
@@ -3322,11 +3307,15 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     wcsncpy(s_sub_urls[s_sub_count], s, SUBS_URL_MAX - 1);
                     s_sub_urls[s_sub_count][SUBS_URL_MAX - 1] = 0;
                     s_sub_status[s_sub_count][0] = 0;
-                    s_sub_count++;
-                    subs_save_urls();
-                    subs_refresh_list(hwnd);
-                    SetWindowTextW(GetDlgItem(hwnd, IDC_SUB_URL), L"");
-                    swprintf(g_status, 4096, L"已添加订阅源，共 %d 个 - 点「立即更新全部」开始下载", s_sub_count);
+                    if (subs_save_urls((unsigned)s_sub_count + 1)) {
+                        s_sub_count++;
+                        subs_refresh_list(hwnd);
+                        SetWindowTextW(GetDlgItem(hwnd, IDC_SUB_URL), L"");
+                        swprintf(g_status, 4096, L"已保存订阅源，共 %d 个；点“立即更新全部”下载规则", s_sub_count);
+                    } else {
+                        s_sub_urls[s_sub_count][0] = 0;
+                        swprintf(g_status, 4096, L"来源保存失败，本次添加未生效；已保留输入及原有来源，请检查文件占用或目录写入权限");
+                    }
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_SUB_DEL) {
@@ -3339,15 +3328,28 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 } else {
                     if (MessageBoxW(hwnd, L"从来源列表移除此订阅？已导入的规则会在下次成功更新后替换。",
                                     L"移除订阅", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return 0;
+                    wchar_t removed_url[SUBS_URL_MAX], removed_status[SUBSCRIPTION_STATUS_CAPACITY];
+                    memcpy(removed_url, s_sub_urls[sel], sizeof(removed_url));
+                    memcpy(removed_status, s_sub_status[sel], sizeof(removed_status));
                     for (int i = sel; i + 1 < s_sub_count; i++) {
-                        wcsncpy(s_sub_urls[i], s_sub_urls[i + 1], SUBS_URL_MAX - 1);
-                        wcsncpy(s_sub_status[i], s_sub_status[i + 1], 159);
+                        memcpy(s_sub_urls[i], s_sub_urls[i + 1], sizeof(s_sub_urls[i]));
+                        memcpy(s_sub_status[i], s_sub_status[i + 1], sizeof(s_sub_status[i]));
                     }
                     s_sub_count--;
-                    subs_save_urls();
-                    subs_save_status();
-                    subs_refresh_list(hwnd);
-                    swprintf(g_status, 4096, L"已移除来源，剩 %d 个；当前规则保留，请更新或清空已导入规则", s_sub_count);
+                    if (subs_save_urls((unsigned)s_sub_count)) {
+                        subs_save_status();
+                        subs_refresh_list(hwnd);
+                        swprintf(g_status, 4096, L"已移除来源，剩 %d 个；当前规则保留，请更新或清空已导入规则", s_sub_count);
+                    } else {
+                        for (int i = s_sub_count; i > sel; i--) {
+                            memcpy(s_sub_urls[i], s_sub_urls[i - 1], sizeof(s_sub_urls[i]));
+                            memcpy(s_sub_status[i], s_sub_status[i - 1], sizeof(s_sub_status[i]));
+                        }
+                        memcpy(s_sub_urls[sel], removed_url, sizeof(removed_url));
+                        memcpy(s_sub_status[sel], removed_status, sizeof(removed_status));
+                        s_sub_count++;
+                        swprintf(g_status, 4096, L"来源保存失败，本次移除未生效；原有来源与规则均保留，请检查文件占用或目录写入权限");
+                    }
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_SUB_UPD) {

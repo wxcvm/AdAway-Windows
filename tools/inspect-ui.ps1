@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][int]$GuiProcessId, [string]$OutputDirectory = 'ui-review')
+param([Parameter(Mandatory)][int]$GuiProcessId, [string]$OutputDirectory = 'ui-review', [string]$ResourceDirectory)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 Add-Type @"
@@ -21,6 +21,8 @@ public static class UiReviewNative {
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr w);
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr w, int id);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool SetWindowTextW(IntPtr w, string text);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr w, System.Text.StringBuilder text, int capacity);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr w, IntPtr dc, uint flags);
   [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetObjectW(IntPtr obj, int size, out Font font);
 }
@@ -93,6 +95,33 @@ if ($count -gt 0) {
     [void][UiReviewNative]::SendMessage($window,0x111,[IntPtr](65536+1141),$list)
     if (![UiReviewNative]::IsWindowEnabled($delete)) { throw 'Selected source cannot be managed' }
 }
+if ($ResourceDirectory) {
+    $sourcePath = Join-Path $ResourceDirectory 'subscription_urls.txt'
+    $original = [IO.File]::ReadAllText($sourcePath)
+    $sourceInput = [UiReviewNative]::GetDlgItem($window,1140)
+    $candidate = 'https://example.test/extra'
+    [void][UiReviewNative]::SetWindowTextW($sourceInput,$candidate)
+    $readerLock = [IO.File]::Open($sourcePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        [void][UiReviewNative]::SendMessage($window,0x111,[IntPtr]1142,[IntPtr]::Zero)
+        $afterFailure = [UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
+        $retained = [Text.StringBuilder]::new(1024)
+        [void][UiReviewNative]::GetWindowTextW($sourceInput,$retained,1024)
+        if ($afterFailure -ne $count -or $retained.ToString() -ne $candidate -or [IO.File]::ReadAllText($sourcePath) -ne $original) {
+            throw 'Failed source save changed the list, input or previous file'
+        }
+        Save-Window 'subscriptions-save-failed'
+    } finally { $readerLock.Dispose() }
+    [void][UiReviewNative]::SendMessage($window,0x111,[IntPtr]1142,[IntPtr]::Zero)
+    $afterSuccess = [UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
+    $cleared = [Text.StringBuilder]::new(1024)
+    [void][UiReviewNative]::GetWindowTextW($sourceInput,$cleared,1024)
+    if ($afterSuccess -ne $count + 1 -or $cleared.Length -ne 0 -or ![IO.File]::ReadAllText($sourcePath).Contains($candidate)) {
+        throw 'Successful source save did not commit file and UI together'
+    }
+    Save-Window 'subscriptions-saved'
+}
+
 Set-Page 2
 # Switch only the disposable runner's preview appearance.
 [void][UiReviewNative]::SendMessage([UiReviewNative]::GetDlgItem($window,1006),0xF1,[IntPtr]1,[IntPtr]::Zero)
