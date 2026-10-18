@@ -104,7 +104,7 @@ static double g_scale = 1.0;
 #define S(v) ((int)((double)(v) * g_scale))
 
 static HFONT mfont(int size, int weight) {
-    return CreateFontW(S(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+    return CreateFontW(-S(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
 }
@@ -2321,7 +2321,7 @@ static void update_layout_scale(HWND hwnd) {
 }
 
 static void layout_controls(HWND hwnd) {
-    HFONT next_font = mfont(13, FW_NORMAL);
+    HFONT next_font = mfont(15, FW_NORMAL);
     if (next_font) {
         for (int i = 0; i < s_ctrl_count; i++)
             SendMessageW(s_ctrls[i], WM_SETFONT, (WPARAM)next_font, TRUE);

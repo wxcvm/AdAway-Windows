@@ -98,11 +98,16 @@ Set-Page 2
 [void][UiReviewNative]::SendMessage([UiReviewNative]::GetDlgItem($window,1006),0xF1,[IntPtr]1,[IntPtr]::Zero)
 [void][UiReviewNative]::SendMessage($window,0x111,[IntPtr]1006,[IntPtr]::Zero)
 Save-Window 'settings-dark'
-Set-ClientSize 1548 1017
-Save-Window 'settings-dark-150pct'
-Set-Page 4; Save-Window 'subscriptions-dark-150pct'
-$normal=($records | Where-Object Name -eq 'settings-light').FontHeight
-$large=($records | Where-Object Name -eq 'settings-dark-150pct').FontHeight
-if ($large -le $normal) { throw 'Native control font did not scale with the window' }
+# Hosted desktops can cap a top-level window at screen width. Compare a
+# compact 2/3 canvas against the standard canvas rather than assuming an
+# off-screen 1548 px window was accepted by the window manager.
+Set-ClientSize 688 452
+Save-Window 'settings-dark-compact'
+Set-Page 4; Save-Window 'subscriptions-dark-compact'
+Set-ClientSize 1032 678
+Save-Window 'subscriptions-dark' 
 $records | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutputDirectory 'layout-evidence.json')
+$compact=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark-compact').FontHeight)
+$standard=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark').FontHeight)
+if ($standard -le $compact) { throw 'Native control font did not scale with the window' }
 Write-Output 'UI inspection passed: no overlapping native controls; selection state and scaled fonts verified.'
