@@ -25,6 +25,7 @@ class Fixture:
     def __init__(self, mode):
         self.mode, self.stop, self.errors = mode, threading.Event(), []
         self.udp_count = self.tcp_count = 0
+        self.tcp_query_received = False
         self.tcp = socket.socket(); self.tcp.bind(('127.0.0.1', 0)); self.tcp.listen(1)
         self.port = self.tcp.getsockname()[1]
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.udp.bind(('127.0.0.1', self.port))
@@ -37,8 +38,13 @@ class Fixture:
     def guard(self, task):
         try:
             task()
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # Client closes immediately when its deadline/frame validation fails.
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
+            # Windows may report WSAECONNABORTED instead of a reset after the
+            # client rejects a reply or expires its deadline. Only these TCP
+            # fixtures expect that close, after receiving the complete query.
+            if not (task == self.serve_tcp and self.tcp_query_received and
+                    self.mode in ('bad-id', 'tcp-tc', 'oversize', 'slow')):
+                self.errors.append(f'{self.mode}: {error!r}')
         except OSError as error:
             if not self.stop.is_set():
                 self.errors.append(repr(error))
@@ -73,6 +79,7 @@ class Fixture:
                 size, = struct.unpack('!H', exact(peer, 2))
                 assert size == 29
                 answer = bytearray(exact(peer, size)); answer[2] = 0x81
+                self.tcp_query_received = True
                 if self.mode == 'bad-id':
                     answer[0] ^= 1
                 if self.mode == 'tcp-tc':
