@@ -12,7 +12,7 @@ struct dns_probe_result {
     uint64_t generation; uint32_t source; int scope; int action;
 };
 struct bs_store;
-/* Fixed example.com A; only connects to 127.0.0.1:port. WSAStartup is caller-owned.
+/* Fixed example.com A/AAAA; only connects to 127.0.0.1:port. WSAStartup is caller-owned.
  * No listener, DNS lookup, route, OS settings, cache or automatic retry on timeout.
  * Budget is shared by UDP and one TC-triggered TCP exchange, maximum 1200 ms.
  * A signalled optional event cancels waits. Caller owns the event. */

@@ -94,7 +94,7 @@ enum dns_probe_status dns_probe_resolve(struct bs_store *rules, unsigned short p
     memset(result, 0, sizeof(*result));
     if (!rules || !port || !budget || budget > 1200 || !ddns_allowed(query, size)) return DNS_PROBE_INVALID;
     if (cancel && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0) return DNS_PROBE_CANCELLED;
-    struct bs_result resolved = bs_decide(rules, "example.com", 1, 1);
+    struct bs_result resolved = bs_decide(rules, "example.com", ddns_u16(query, 25), 1);
     if (!resolved.generation) return DNS_PROBE_INVALID;
     result->generation = resolved.generation; result->source = resolved.source;
     result->scope = (int)resolved.scope; result->action = (int)resolved.decision.action;

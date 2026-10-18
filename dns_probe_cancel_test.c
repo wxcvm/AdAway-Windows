@@ -38,7 +38,7 @@ int main(void) {
         HANDLE thread=CreateThread(NULL,0,serve,&f,0,NULL); assert(thread);
         struct bs_store rules=BS_STORE_INITIALIZER; struct bs_builder builder; memset(&builder,0,sizeof(builder));
         assert(bs_finish(&builder)); assert(bs_publish(&rules,&builder,1)); bs_free_builder(&builder);
-        uint8_t query[DDNS_QUERY_SIZE]; ddns_query(query,42); struct dns_probe_result result;
+        uint8_t query[DDNS_QUERY_SIZE]; assert(ddns_query_type(query,42,attempt % 2 ? 1 : 28)); struct dns_probe_result result;
         assert(dns_probe_resolve(&rules,ntohs(address.sin_port),query,sizeof(query),1200,f.cancel,&result) == DNS_PROBE_CANCELLED);
         assert(result.size == 0 && result.via_tcp);
         assert(WaitForSingleObject(thread,2000) == WAIT_OBJECT_0 && f.peer_closed);
