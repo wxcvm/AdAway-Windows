@@ -18,6 +18,7 @@
 #include <wincrypt.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
+#include <commctrl.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 
@@ -1475,34 +1476,34 @@ struct palette {
              text, muted, gridline, strip;
 };
 static const struct palette P_LIGHT = {
-    RGB(30, 37, 55), RGB(42, 54, 84), RGB(147, 163, 190),
-    RGB(243, 245, 248), RGB(255, 255, 255), RGB(229, 232, 238),
-    RGB(31, 41, 55), RGB(100, 116, 139), RGB(237, 240, 244),
+    RGB(22, 43, 41), RGB(33, 65, 60), RGB(175, 199, 192),
+    RGB(245, 248, 247), RGB(255, 255, 255), RGB(222, 231, 227),
+    RGB(27, 42, 37), RGB(86, 108, 99), RGB(236, 242, 239),
     RGB(255, 255, 255)
 };
 static const struct palette P_DARK = {
-    RGB(17, 21, 32), RGB(38, 46, 66), RGB(148, 163, 190),
-    RGB(22, 26, 36), RGB(31, 36, 49), RGB(48, 55, 71),
-    RGB(226, 232, 240), RGB(148, 163, 184), RGB(44, 51, 66),
-    RGB(31, 36, 49)
+    RGB(12, 24, 22), RGB(30, 58, 51), RGB(172, 196, 186),
+    RGB(17, 26, 23), RGB(25, 36, 31), RGB(51, 70, 61),
+    RGB(224, 234, 228), RGB(170, 190, 179), RGB(42, 58, 49),
+    RGB(25, 36, 31)
 };
 /* Active theme: starts as a literal copy of the light palette so it is valid
  * even before theme_apply() has run. */
 static struct palette g_pal = {
-    RGB(30, 37, 55), RGB(42, 54, 84), RGB(147, 163, 190),
-    RGB(243, 245, 248), RGB(255, 255, 255), RGB(229, 232, 238),
-    RGB(31, 41, 55), RGB(100, 116, 139), RGB(237, 240, 244),
+    RGB(22, 43, 41), RGB(33, 65, 60), RGB(175, 199, 192),
+    RGB(245, 248, 247), RGB(255, 255, 255), RGB(222, 231, 227),
+    RGB(27, 42, 37), RGB(86, 108, 99), RGB(236, 242, 239),
     RGB(255, 255, 255)
 };
 static void theme_apply(int dark) {
     g_pal = dark ? P_DARK : P_LIGHT;
 }
-#define C_ACCENT     RGB(59, 130, 246)
+#define C_ACCENT     RGB(34, 157, 131)
 #define C_BLUE_SOFT  RGB(219, 234, 254)
 #define C_BLUE       RGB(59, 130, 246)
 #define C_RED        RGB(239, 68, 68)
 #define C_GREEN      RGB(34, 197, 94)
-#define C_GREEN_TXT  RGB(22, 163, 74)
+#define C_GREEN_TXT  (g_dark ? RGB(139, 213, 194) : RGB(24, 112, 87))
 
 #ifdef ADBLOCK_PREVIEW_BUILD
 static const wchar_t *g_title = L"ADBlock Preview v" ADBLOCK_APP_VERSION_W;
@@ -1813,7 +1814,7 @@ static void draw_listener_card(HDC hdc, int x, int y, int w, int h,
     SetTextColor(hdc, !live ? g_pal.muted : (ok ? C_GREEN_TXT : RGB(200, 60, 60)));
     SIZE ps;
     GetTextExtentPoint32W(hdc, pill, (int)wcslen(pill), &ps);
-    int px = x + w - 18 - ps.cx;
+    int px = x + w - 18 - (int)(ps.cx / g_scale);
     if (px < x + 110) px = x + 110;
     TextOutW(hdc, S(px), S(y + 14), pill, (int)wcslen(pill));
     SelectObject(hdc, old);
@@ -1872,14 +1873,14 @@ static void draw_listener_card(HDC hdc, int x, int y, int w, int h,
 }
 
 static void draw_statusbar(HDC hdc) {
-    RECT strip = {S(0), S(630), S(1000), S(678)};   /* AUDIT V8: scale like everything else */
+    RECT strip = {S(0), S(630), S(1032), S(678)};   /* AUDIT V8: scale like everything else */
     HBRUSH sbg = CreateSolidBrush(g_pal.strip);
     FillRect(hdc, &strip, sbg);
     DeleteObject(sbg);
     HPEN tp = CreatePen(PS_SOLID, 1, g_pal.border);
     HGDIOBJ tpold = SelectObject(hdc, tp);
     MoveToEx(hdc, 0, S(630), NULL);
-    LineTo(hdc, S(1000), S(630));
+    LineTo(hdc, S(1032), S(630));
     SelectObject(hdc, tpold);
     DeleteObject(tp);
 
@@ -1921,7 +1922,7 @@ static void draw_statusbar(HDC hdc) {
     SetTextColor(hdc, g_pal.muted);
     /* Long CA paths are common (especially under non-ASCII user profiles).
      * Clip rather than painting through the clock at the right edge. */
-    RECT certificate_label = {S(430), S(640), S(904), S(662)};
+    RECT certificate_label = {S(430), S(640), S(934), S(662)};
     DrawTextW(hdc, cert, -1, &certificate_label,
               DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
@@ -1930,7 +1931,7 @@ static void draw_statusbar(HDC hdc) {
     wchar_t tm[64];
     swprintf(tm, 64, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(920), S(643), tm, (int)wcslen(tm));
+    TextOutW(hdc, S(950), S(643), tm, (int)wcslen(tm));
 
     SetTextColor(hdc, g_pal.muted);
     RECT status_message = {S(16), S(660), S(980), S(680)};
@@ -2261,33 +2262,26 @@ static void tray_menu(HWND hwnd) {
 /* control layout descriptors (logical units) */
 struct ctl_desc { int id; int x, y, w, h; const wchar_t *cls, *text; int style; };
 static const struct ctl_desc g_clayout[] = {
-    { IDC_HTTP_EDIT,  300, 54, 80, 24, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
-    { IDC_HTTPS_EDIT, 590, 54, 80, 24, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
-    { IDC_BIND_CHK,   210, 96, 260, 22, L"BUTTON", L"监听所有网卡（局域网）", BS_AUTOCHECKBOX },
-    { IDC_ADGUARD_HOME, 680, 96, 280, 26, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
-    { IDC_SAVE,       210, 130, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
-    { IDC_RESTART,    330, 130, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
-    { IDC_FIXPORT,    460, 130, 190, 28, L"BUTTON", L"改用备用端口 18080/18443", BS_PUSHBUTTON },
-    { IDM_DARK,       664, 132, 170, 24, L"BUTTON", L"深色外观", BS_AUTOCHECKBOX },
-    { IDM_TRUST,      210, 424, 96, 28, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
-    { IDM_UNTRUST,    316, 424, 96, 28, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
-    { IDM_TEST,       422, 424, 110, 28, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
-    { IDC_FLUSH,      542, 424, 96, 28, L"BUTTON", L"清空统计", BS_PUSHBUTTON },
-    { IDC_DIAG,       844, 434, 170, 26, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
-    { IDC_SUBRELOAD,  664, 456, 170, 26, L"BUTTON", L"重新加载订阅", BS_PUSHBUTTON },
-    { IDC_POLDEF,     664, 486, 170, 26, L"BUTTON", L"恢复推荐默认", BS_PUSHBUTTON },
-    /* Manual, dual-CA rotation: the new CA is created next to the old one and
-       both stay valid for 90 days (devices are migrated by hand), so the old
-       button that silently replaced the CA is gone. */
-   { IDC_CAROTATE,   210, 456, 200, 26, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
-    { IDC_CADROP,     210, 486, 200, 26, L"BUTTON", L"撤销旧 CA（90 天后）", BS_PUSHBUTTON },
-    /* Escape hatch for machines where policy/antivirus blocks running an
-       installer: switch to the portable in-place path and check right away. */
-    { IDC_PORTABLEUPD, 420, 456, 200, 26, L"BUTTON", L"用便携包更新", BS_PUSHBUTTON },
-    { IDM_AUTOSTART,  648, 426, 180, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
-    /* Below the "导出诊断信息" button (which sits at 844,434): the two used to
-       overlap in x 844-948 / y 434-452. */
-    { IDM_UPDATE,     844, 466, 170, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDC_HTTP_EDIT,  300, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
+    { IDC_HTTPS_EDIT, 590, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
+    { IDC_BIND_CHK,   218, 106, 300, 24, L"BUTTON", L"监听所有网卡（局域网）", BS_AUTOCHECKBOX },
+    { IDC_ADGUARD_HOME, 710, 106, 280, 26, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
+    { IDC_SAVE,       218, 140, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
+    { IDC_RESTART,    340, 140, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
+    { IDC_FIXPORT,    472, 140, 220, 28, L"BUTTON", L"改用备用端口 18080/18443", BS_PUSHBUTTON },
+    { IDM_DARK,       720, 142, 200, 24, L"BUTTON", L"深色外观", BS_AUTOCHECKBOX },
+    { IDM_TRUST,      218, 448, 160, 30, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
+    { IDM_UNTRUST,    390, 448, 160, 30, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
+    { IDM_TEST,       562, 448, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
+    { IDM_AUTOSTART,  760, 451, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
+    { IDC_CAROTATE,   218, 490, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
+    { IDC_CADROP,     480, 490, 250, 30, L"BUTTON", L"撤销旧 CA（90 天后）", BS_PUSHBUTTON },
+    { IDC_DIAG,       742, 490, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
+    { IDC_SUBRELOAD,  218, 532, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
+    { IDC_FLUSH,      480, 532, 250, 30, L"BUTTON", L"清空统计", BS_PUSHBUTTON },
+    { IDC_POLDEF,     742, 532, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 574, 250, 30, L"BUTTON", L"用便携包更新", BS_PUSHBUTTON },
+    { IDM_UPDATE,    480, 574, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
    be a hand-kept constant, and when IDM_UPDATE (检查更新) was appended the
@@ -2308,11 +2302,11 @@ static const struct ctl_desc g_sublayout[] = {
 };
 #define CL_SUB ((int) (sizeof(g_sublayout) / sizeof(g_sublayout[0])))
 
-/* The dashboard is painted in a fixed 1000x678 logical canvas (sidebar
+/* The dashboard is painted in a fixed 1032x678 logical canvas (sidebar
    0..190, content to x=1000, status bar to y=678). Deriving g_scale from the
    DPI alone left that canvas at design size in the top-left corner of a
    maximized window; the scale must follow the CLIENT size instead. */
-#define DASH_W 1000.0
+#define DASH_W 1032.0
 #define DASH_H 678.0
 static void update_layout_scale(HWND hwnd) {
     RECT rc;
@@ -2327,16 +2321,23 @@ static void update_layout_scale(HWND hwnd) {
 }
 
 static void layout_controls(HWND hwnd) {
+    HFONT next_font = mfont(13, FW_NORMAL);
+    if (next_font) {
+        for (int i = 0; i < s_ctrl_count; i++)
+            SendMessageW(s_ctrls[i], WM_SETFONT, (WPARAM)next_font, TRUE);
+        if (g_ctl_font) DeleteObject(g_ctl_font);
+        g_ctl_font = next_font;
+    }
     for (int i = 0; i < CL_MAIN; i++)
         SetWindowPos(GetDlgItem(hwnd, g_clayout[i].id), NULL,
                      S(g_clayout[i].x), S(g_clayout[i].y),
                      S(g_clayout[i].w), S(g_clayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
     /* policy checkboxes */
     for (int i = 0; i < POLICY_COUNT; i++) {
-        int cx = (i % 2 == 0) ? 210 : 440;
-        int cy = 208 + (i / 2) * 28;
+        int cx = (i % 2 == 0) ? 218 : 610;
+        int cy = 228 + (i / 2) * 28;
         HWND w = GetDlgItem(hwnd, IDC_POL0 + i);
-        if (w) SetWindowPos(w, NULL, S(cx), S(cy), S(200), S(24), SWP_NOZORDER | SWP_NOACTIVATE);
+        if (w) SetWindowPos(w, NULL, S(cx), S(cy), S(370), S(26), SWP_NOZORDER | SWP_NOACTIVATE);
     }
     /* 订阅 page controls */
     for (int i = 0; i < CL_SUB; i++)
@@ -2906,6 +2907,7 @@ static DWORD WINAPI subs_thread(LPVOID opaque) {
     }
     return 0;
 }
+static void subs_controls_refresh(HWND hwnd);
 static void subs_start_update(HWND hwnd) {
     if (s_subs_running) return;
     subs_load();
@@ -2922,11 +2924,23 @@ static void subs_start_update(HWND hwnd) {
     HANDLE thread = CreateThread(NULL, 0, subs_thread, job, 0, NULL);
     if (!thread) { InterlockedExchange(&s_subs_running, 0); free(job); return; }
     CloseHandle(thread);
+    subs_controls_refresh(hwnd);
+}
+
+static void subs_controls_refresh(HWND hwnd) {
+    int busy = InterlockedCompareExchange(&s_subs_running, 0, 0) != 0;
+    int selected = (int)SendDlgItemMessageW(hwnd, IDC_SUB_LIST, LB_GETCURSEL, 0, 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_URL), !busy);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_ADD), !busy && s_sub_count < SUBS_MAX);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_DEL), !busy && selected >= 0 && selected < s_sub_count);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_UPD), !busy && s_sub_count > 0);
+    SetDlgItemTextW(hwnd, IDC_SUB_UPD, busy ? L"正在验证并更新…" : L"立即更新全部");
 }
 
 static void subs_refresh_list(HWND hwnd) {
     HWND lb = GetDlgItem(hwnd, IDC_SUB_LIST);
     if (lb == NULL) return;
+    int selected = (int)SendMessageW(lb, LB_GETCURSEL, 0, 0);
     SendMessageW(lb, LB_RESETCONTENT, 0, 0);
     for (int i = 0; i < s_sub_count; i++) {
         wchar_t row[1200];
@@ -2936,6 +2950,9 @@ static void subs_refresh_list(HWND hwnd) {
             swprintf(row, 1200, L"%ls    —    尚未更新", s_sub_urls[i]);
         SendMessageW(lb, LB_ADDSTRING, 0, (LPARAM) row);
     }
+    if (selected >= s_sub_count) selected = s_sub_count - 1;
+    if (selected >= 0) SendMessageW(lb, LB_SETCURSEL, selected, 0);
+    subs_controls_refresh(hwnd);
 }
 
 
@@ -2960,13 +2977,12 @@ static void draw_subs_page(HDC hdc) {
     {
         wchar_t sum[400];
         if (s_sub_count == 0)
-            swprintf(sum, 400, L"还没有订阅源。");
+            swprintf(sum, 400, L"添加第一个订阅源，然后更新以导入规则。");
         else if (s_subs_running)
-            swprintf(sum, 400, L"正在更新…（%d 个源，本次已写入 %d 条）",
-                     s_sub_count, s_sub_written);
+            swprintf(sum, 400, L"正在验证 %d 个来源 · 完成前继续使用上一份有效规则", s_sub_count);
         else
             swprintf(sum, 400,
-                     L"%d 个源 · 上次写入 %d 条域名到 subscriptions.txt（服务端会自行去重）",
+                     L"%d 个订阅源 · 本次会话最近保存 %d 条规则",
                      s_sub_count, s_sub_written);
         SetTextColor(hdc, g_pal.text);
         RECT summary_rect = {S(218), S(532), S(992), S(554)};
@@ -2975,7 +2991,7 @@ static void draw_subs_page(HDC hdc) {
     }
     {
         static const wchar_t *H2 =
-            L"源列表存在 resources\\subscription_urls.txt，可以直接用记事本编辑；改完点「立即更新全部」即可生效。";
+            L"添加或移除来源后需更新全部；下载或校验失败时保留上一次完整规则。";
         SetTextColor(hdc, g_pal.muted);
         RECT file_hint_rect = {S(218), S(558), S(992), S(583)};
         DrawTextW(hdc, H2, -1, &file_hint_rect,
@@ -3075,31 +3091,32 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         for (int i = 0; i < CL_MAIN; i++) {
             const struct ctl_desc *d = &g_clayout[i];
             HWND w = CreateWindowExW(0, d->cls, d->text,
-                WS_CHILD | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
+                WS_CHILD | WS_TABSTOP | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
         for (int i = 0; i < CL_SUB; i++) {
             const struct ctl_desc *d = &g_sublayout[i];
             HWND w = CreateWindowExW(0, d->cls, d->text,
-                WS_CHILD | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
+                WS_CHILD | WS_TABSTOP | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
         for (int i = 0; i < POLICY_COUNT; i++) {
-            int cx = (i % 2 == 0) ? 210 : 440;
-            int cy = 208 + (i / 2) * 28;
+            int cx = (i % 2 == 0) ? 218 : 610;
+            int cy = 228 + (i / 2) * 28;
             s_ctrls[s_ctrl_count++] = CreateWindowExW(0, L"BUTTON", g_policy[i].label,
                 /* A plain button whose caption IS the current method
                    ("图片：占位响应"); clicking cycles 占位 → 空响应 → 204 →
                    不拦截. The old BS_AUTO3STATE checkbox could not express
                    four methods and its three states were unreadable. */
-                WS_CHILD | BS_PUSHBUTTON, S(cx), S(cy), S(200), S(24), hwnd,
+                WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, S(cx), S(cy), S(370), S(26), hwnd,
                 (HMENU)(INT_PTR)g_policy[i].id, hinst, NULL);
         }
-        g_ctl_font = mfont(13, FW_NORMAL);
-        for (int i = 0; i < s_ctrl_count; i++)
-            SendMessageW(s_ctrls[i], WM_SETFONT, (WPARAM)g_ctl_font, TRUE);
+        layout_controls(hwnd);
+        SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETCUEBANNER, TRUE,
+                     (LPARAM)L"https://example.com/hosts.txt");
+        SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETLIMITTEXT, SUBS_URL_MAX - 1, 0);
         SendMessageW(GetDlgItem(hwnd, IDM_DARK), BM_SETCHECK,
                      g_dark ? BST_CHECKED : BST_UNCHECKED, 0);
         apply_control_theme(hwnd);
@@ -3193,13 +3210,13 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             pthread_mutex_lock(&g_snap_mutex);
             *g_sn = g_snap_next;
             pthread_mutex_unlock(&g_snap_mutex);
-            if (g_sn->valid) {
+            if (g_status[0] == 0 && g_sn->valid) {
                 SYSTEMTIME st;
                 GetLocalTime(&st);
                 swprintf(g_status, 4096,
                          L"实时数据 · 管理端口 %d · 更新于 %02d:%02d:%02d",
                          mgmt_port(), st.wHour, st.wMinute, st.wSecond);
-            } else {
+            } else if (g_status[0] == 0) {
                 swprintf(g_status, 4096,
                          L"服务器暂不可达（已尝试 %d 与 %d 端口）", g_stats_port, g_http_port);
             }
@@ -3291,6 +3308,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             swprintf(g_status, 4096,
                      L"已切换为便携包更新模式（zip 就地替换，跳过安装器），正在检查更新…");
             update_check_async(hwnd);
+        } else if (id == IDC_SUB_LIST && HIWORD(wp) == LBN_SELCHANGE) {
+                subs_controls_refresh(hwnd);
         } else if (id == IDC_SUB_ADD) {
                 if (s_subs_running) return 0;
                 wchar_t url[SUBS_URL_MAX];
@@ -3332,6 +3351,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     MessageBoxW(hwnd, L"请先在列表里选中一个订阅源。",
                                 L"订阅", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
                 } else {
+                    if (MessageBoxW(hwnd, L"从来源列表移除此订阅？已导入的规则会在下次成功更新后替换。",
+                                    L"移除订阅", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return 0;
                     for (int i = sel; i + 1 < s_sub_count; i++) {
                         wcsncpy(s_sub_urls[i], s_sub_urls[i + 1], SUBS_URL_MAX - 1);
                         wcsncpy(s_sub_status[i], s_sub_status[i + 1], 159);
@@ -3340,7 +3361,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     subs_save_urls();
                     subs_save_status();
                     subs_refresh_list(hwnd);
-                    swprintf(g_status, 4096, L"已删除，剩 %d 个订阅源", s_sub_count);
+                    swprintf(g_status, 4096, L"已移除来源，剩 %d 个；当前规则保持不变，请更新全部", s_sub_count);
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_SUB_UPD) {
@@ -3491,10 +3512,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 2) {
             /* settings page */
             /* grouped card backgrounds behind the native controls */
-            int pol_bottom = 208 + ((POLICY_COUNT + 1) / 2) * 28;
-            rounded_card(hdc, 202, 12, 812, 156, 12, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 178, 812, pol_bottom - 164, 12, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 372, 812, 92, 12, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 12, 812, 166, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 190, 812, 184, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 386, 812, 232, 16, g_pal.card, g_pal.border);
 
             HFONT shf = mfont(15, FW_SEMIBOLD);
             HFONT lf = mfont(12, FW_NORMAL);
@@ -3509,19 +3529,18 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                      L"本机访问：http://localhost:%d · 勾选“监听所有网卡”并重启后局域网可访问",
                      g_http_port);
             TextOutW(hdc, S(218), S(44), shint, (int)wcslen(shint));
-            TextOutW(hdc, S(218), S(60), L"HTTP 端口:", 9);
-            TextOutW(hdc, S(508), S(60), L"HTTPS 端口:", 10);
+            TextOutW(hdc, S(218), S(76), L"HTTP 端口:", 9);
+            TextOutW(hdc, S(500), S(76), L"HTTPS 端口:", 10);
             SelectObject(hdc, shf);
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(218), S(184), L"拦截策略（勾选后立即生效）", 12);
-            TextOutW(hdc, S(218), S(378), L"证书与维护", 5);
+            TextOutW(hdc, S(218), S(202), L"拦截策略 · 点击切换响应方式", (int)wcslen(L"拦截策略 · 点击切换响应方式"));
+            TextOutW(hdc, S(218), S(398), L"证书与维护", 5);
             SelectObject(hdc, lf);
             SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(218), S(400), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
+            TextOutW(hdc, S(218), S(422), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
             SelectObject(hdc, old);
             DeleteObject(shf);
             DeleteObject(lf);
-            draw_listener_card(hdc, 202, 474, 812, 142, g_sn, 1);
             draw_statusbar(hdc);
             BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
             SelectObject(mem, oldbmp);
@@ -3557,6 +3576,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 4) {
             /* 订阅 page */
             draw_subs_page(hdc);
+            draw_statusbar(hdc);
             BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
             SelectObject(mem, oldbmp);
             DeleteObject(bmp);
@@ -3779,10 +3799,10 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
         const DWORD style =
             (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
              WS_MAXIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN);
-        /* The canvas uses 1024x680 logical *CLIENT* coordinates. Passing
+        /* The canvas uses 1032x678 logical *CLIENT* coordinates. Passing
          * those as the outer window dimensions clips the bottom status bar
          * behind the title bar and resize borders on initial launch. */
-        RECT outer = {0, 0, (LONG)(1024 * sc), (LONG)(680 * sc)};
+        RECT outer = {0, 0, (LONG)(DASH_W * sc), (LONG)(DASH_H * sc)};
         if (!AdjustWindowRectExForDpi(&outer, style, FALSE, 0, dpi)) {
             /* Safe fallback for unexpected older API/runtime behavior. */
             AdjustWindowRectEx(&outer, style, FALSE, 0);
@@ -3813,7 +3833,8 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
             nav_keys, (int)(sizeof(nav_keys) / sizeof(nav_keys[0])));
         MSG msg;
         while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-            if (nav_accel == NULL || !TranslateAcceleratorW(hwnd, nav_accel, &msg)) {
+            if ((nav_accel == NULL || !TranslateAcceleratorW(hwnd, nav_accel, &msg)) &&
+                !IsDialogMessageW(hwnd, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

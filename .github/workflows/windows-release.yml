@@ -479,9 +479,18 @@ jobs:
             $p3.Refresh()
             if ($p3.HasExited) { throw "gui-mode server died after serving its first request" }
             Write-Output "gui-mode process alive and serving 18083 OK"
+            & ./tools/inspect-ui.ps1 -GuiProcessId $p3.Id -OutputDirectory ui-review
           } finally {
             Get-Process -Name webserver -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           }
+
+      - name: Upload desktop UI screenshots and layout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ui-review
+          path: ui-review/**
+          if-no-files-found: warn
 
       - name: Regression test separate stable and preview installations can both open GUIs
         shell: pwsh
