@@ -1,5 +1,9 @@
 # M1-R1 Windows production subscription integration
 
+Update (2026-10-18): the new typed/provenance and snapshot-to-DNS adapter stage
+is documented in [typed-rule-provenance.md](typed-rule-provenance.md). The
+sections below retain the original transaction-stage evidence.
+
 Depends on Windows draft #4 and Android draft #48. No merge, release, Wintun
 adapter, default route, DNS/OS change, CA installation or capture activation.
 
@@ -59,8 +63,9 @@ evidence belongs in the draft PR and workspace report.
 Remaining acceptance: no real subscription-network failure injection, physical
 Android/Windows networking, production DNS synthesis, cache/network-generation
 invalidation, protected TCP/UDP data plane or OS recovery is proven here.
-Android's effective Java snapshot still needs the typed suffix/provenance
-bridge documented in #48 before full M1-R1 cross-platform DNS acceptance.
+Android's Java snapshot now retains typed suffix/provenance metadata. Full
+platform DNS/capture acceptance remains separate from the shared ASCII
+decision and bounded DNS encoder tests.
 
 Failure rollback keeps the previous subscription file and live rule snapshot;
 staging files are removed on normal failure and never replayed on startup.

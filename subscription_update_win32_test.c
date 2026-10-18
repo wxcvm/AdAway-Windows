@@ -10,6 +10,11 @@ static int download(const wchar_t *url, const wchar_t *path, unsigned long long 
     if (fixture->failure == (int)call) return 0;
     const char *text = call ? fixture->second : fixture->first;
     FILE *file = _wfopen(path, L"wb"); CHECK(file);
+    if (strcmp(text, "__POOL_LIMIT__") == 0) {
+        for (unsigned i = 0; i < 340000; i++) CHECK(fprintf(file,
+                "0.0.0.0 h%u.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.test\n", i) > 0);
+        CHECK(fclose(file) == 0); return 1;
+    }
     CHECK(fwrite(text, 1, strlen(text), file) == strlen(text)); CHECK(fclose(file) == 0); return 1;
 }
 static void assert_old(const wchar_t *path) {
@@ -38,6 +43,10 @@ int main(void) {
     fixture = (struct fixture){0, -1, "0.0.0.0 new.test\n", "@@||new.test^\n||conditional.test^$script\n"};
     result = subscription_update(directory, urls, 2, download, &fixture);
     CHECK(result.status == SUB_UPDATE_PUBLISH_FAILED); CHECK(CloseHandle(reader)); assert_old(target);
+    fixture = (struct fixture){0, -1, "__POOL_LIMIT__", ""};
+    result = subscription_update(directory, urls, 1, download, &fixture);
+    CHECK(result.status == SUB_UPDATE_PARSE_FAILED); assert_old(target);
+    fixture = (struct fixture){0, -1, "0.0.0.0 new.test\n", "@@||new.test^\n||conditional.test^$script\n"};
     fixture.calls = 0; result = subscription_update(directory, urls, 2, download, &fixture);
     CHECK(result.status == SUB_UPDATE_OK && result.entries == 2 && result.unsupported == 1);
     char bytes[256] = {0}; FILE *file = _wfopen(target, L"rb"); CHECK(file); CHECK(fread(bytes, 1, sizeof(bytes) - 1, file) > 0); CHECK(fclose(file) == 0);
