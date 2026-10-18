@@ -457,6 +457,7 @@ jobs:
           }
 
       - name: GUI mode smoke test (process must stay alive, not die silently)
+        timeout-minutes: 3
         shell: pwsh
         run: |
           # Keep fixture URLs AND persisted GUI preferences outside packaged dist.

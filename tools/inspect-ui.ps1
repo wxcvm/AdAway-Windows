@@ -23,6 +23,7 @@ public static class UiReviewNative {
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern bool SetWindowTextW(IntPtr w, string text);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr w, System.Text.StringBuilder text, int capacity);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr SendMessageTimeoutW(IntPtr w, uint msg, IntPtr wp, IntPtr lp, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr w, IntPtr dc, uint flags);
   [DllImport("gdi32.dll", CharSet=CharSet.Unicode)] public static extern int GetObjectW(IntPtr obj, int size, out Font font);
 }
@@ -100,10 +101,19 @@ if ($ResourceDirectory) {
     $original = [IO.File]::ReadAllText($sourcePath)
     $sourceInput = [UiReviewNative]::GetDlgItem($window,1140)
     $candidate = 'https://example.test/extra'
-    [void][UiReviewNative]::SetWindowTextW($sourceInput,$candidate)
+    Write-Output 'Source settings GUI: populate candidate input'
+    if (![UiReviewNative]::SetWindowTextW($sourceInput,$candidate)) { throw 'Unable to populate source input' }
+    $beforeSave = [Text.StringBuilder]::new(1024)
+    [void][UiReviewNative]::GetWindowTextW($sourceInput,$beforeSave,1024)
+    if ($beforeSave.ToString() -ne $candidate) { throw 'Source input did not retain candidate text' }
     $readerLock = [IO.File]::Open($sourcePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
-        [void][UiReviewNative]::SendMessage($window,0x111,[IntPtr]1142,[IntPtr]::Zero)
+        Write-Output 'Source settings GUI: add while replacement is blocked'
+        $commandResult=[IntPtr]::Zero
+        if ([UiReviewNative]::SendMessageTimeoutW($window,0x111,[IntPtr]1142,[IntPtr]::Zero,2,10000,[ref]$commandResult) -eq [IntPtr]::Zero) {
+            throw 'Blocked-file source add did not return within 10 seconds'
+        }
+        Write-Output 'Source settings GUI: blocked add returned; check preserved input, count and file'
         $afterFailure = [UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
         $retained = [Text.StringBuilder]::new(1024)
         [void][UiReviewNative]::GetWindowTextW($sourceInput,$retained,1024)
@@ -112,7 +122,12 @@ if ($ResourceDirectory) {
         }
         Save-Window 'subscriptions-save-failed'
     } finally { $readerLock.Dispose() }
-    [void][UiReviewNative]::SendMessage($window,0x111,[IntPtr]1142,[IntPtr]::Zero)
+    Write-Output 'Source settings GUI: retry after releasing the reader'
+    $commandResult=[IntPtr]::Zero
+    if ([UiReviewNative]::SendMessageTimeoutW($window,0x111,[IntPtr]1142,[IntPtr]::Zero,2,10000,[ref]$commandResult) -eq [IntPtr]::Zero) {
+        throw 'Source add retry did not return within 10 seconds'
+    }
+    Write-Output 'Source settings GUI: retry returned; check committed file and UI'
     $afterSuccess = [UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
     $cleared = [Text.StringBuilder]::new(1024)
     [void][UiReviewNative]::GetWindowTextW($sourceInput,$cleared,1024)
