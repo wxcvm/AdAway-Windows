@@ -28,3 +28,11 @@ The subscription list now measures row text using its current native font and up
 Blank/space-only input disables Add. Invalid scheme, empty authority, embedded whitespace, duplicate source and persistence failure use page-local feedback and preserve input. Existing 1023-character content limits remain in place. Native EN_MAXTEXT marks truncated input as unsafe to save until the user shortens it; a separate length check rejects programmatic overlong content before reading a bounded buffer. This avoids saving a silently shortened URL. Syntax checks are deliberately minimal; actual fetch/parser validation still runs during subscription updates.
 
 The real-window inspection exercises invalid/oversized text, insertion at the native limit, correction/retry, long-address selection and horizontal scroll extent, together with the prior file-lock failure path. It operates exclusively in the disposable CI installation copy.
+
+## Inline source removal
+
+Removing a source now opens an inline confirmation on the subscription page instead of a modal message box. The full target stays in the read-only URL field; the list and competing edits/updates are disabled until confirmation or cancellation, and initial keyboard focus goes to Cancel. Leaving the page or pressing Escape cancels the pending removal. A captured URL and slot are checked again before commit.
+
+If persistence fails, the original array, visible list, selected target and pending confirmation remain available for retry or cancellation. Successful removal restores normal controls and explains that imported rules stay active until a successful update or explicit clear. Status-cache persistence failure after a successful URL removal is reported separately and does not claim that the committed source removal rolled back.
+
+Real GUI checks remove a middle source to exercise shifted-row rollback, verify cancel/navigation change no source configuration, inject replacement failure, retry after releasing the file, and compare imported-rule file hashes to show source removal alone does not clear imported rules. Fixtures remain isolated from packages, with explicit packaging guards.

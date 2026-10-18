@@ -467,6 +467,7 @@ jobs:
           $res3 = Join-Path $uiRoot 'resources'
           # Offline fixture: management / selection only, no update is triggered.
           Set-Content -LiteralPath (Join-Path $res3 'subscription_urls.txt') -Encoding utf8 -Value @('https://example.test/hosts','https://example.test/allow')
+          Set-Content -LiteralPath (Join-Path $res3 'subscriptions.txt') -Encoding utf8 -Value 'ads.removal-fixture.invalid'
           $uiExecutable = Join-Path $uiRoot 'webserver.exe'
           $p3 = Start-Process -FilePath $uiExecutable -ArgumentList @("--resources",$res3,"--http-port","18083","--https-port","18446") -PassThru -WorkingDirectory $uiRoot -RedirectStandardOutput "server3.log" -RedirectStandardError "server3.err"
           # Wait for the GUI process to serve its main port, then make sure it
@@ -805,8 +806,11 @@ jobs:
             echo "::error::release package still contains key material or runtime state: $leftover"
             exit 1
           fi
-          if [ -f resources/subscription_urls.txt ] && grep -Eq 'https://example[.]test/(hosts|allow)' resources/subscription_urls.txt; then
+          if [ -f resources/subscription_urls.txt ] && grep -Eq 'https://example[.]test/(hosts|allow|extra)' resources/subscription_urls.txt; then
             echo "::error::UI inspection fixture subscriptions leaked into the package"; exit 1
+          fi
+          if [ -f resources/subscriptions.txt ] && grep -Fq 'ads.removal-fixture.invalid' resources/subscriptions.txt; then
+            echo "::error::UI inspection fixture rules leaked into the package"; exit 1
           fi
           if [ -f webserver.ini ]; then
             echo "::error::Smoke-test GUI preferences leaked into the package"; exit 1

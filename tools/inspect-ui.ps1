@@ -19,6 +19,7 @@ public static class UiReviewNative {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr w);
   [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr w);
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr w);
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr w, int id);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
   [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr SetTextTimeout(IntPtr w, uint msg, IntPtr wp, string text, uint flags, uint timeout, out IntPtr result);
@@ -186,6 +187,67 @@ if ($ResourceDirectory) {
     $extent=[UiReviewNative]::SendMessage($list,0x193,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
     if ($extent -le $listBounds.Right) { throw 'Long source rows must allow horizontal scrolling' }
     Save-Window 'subscriptions-long-source'
+
+    $committedSources = [IO.File]::ReadAllText($sourcePath)
+    $rulePath = Join-Path $ResourceDirectory 'subscriptions.txt'
+    $ruleHash = (Get-FileHash -LiteralPath $rulePath -Algorithm SHA256).Hash
+    $confirmRemove = [UiReviewNative]::GetDlgItem($window,1147)
+    $cancelRemove = [UiReviewNative]::GetDlgItem($window,1148)
+    # Remove a middle entry so failed-save rollback must restore shifted rows.
+    $removeTarget = 'https://example.test/allow'
+    [void][UiReviewNative]::SendMessage($list,0x186,[IntPtr]1,[IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr](65536+1141)) $list
+    Send-BoundedMessage $window 0x111 ([IntPtr]1143) ([IntPtr]::Zero)
+    if (![UiReviewNative]::IsWindowVisible($confirmRemove) -or ![UiReviewNative]::IsWindowVisible($cancelRemove) -or
+        [UiReviewNative]::IsWindowEnabled($list) -or [UiReviewNative]::IsWindowEnabled($sourceInput) -or
+        [UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1144)) -or
+        (Read-ControlText $selected) -ne $removeTarget -or [IO.File]::ReadAllText($sourcePath) -ne $committedSources) {
+        throw 'Removal confirmation did not preserve and isolate the selected target'
+    }
+    Save-Window 'subscriptions-remove-confirm'
+    Send-BoundedMessage $window 0x111 ([IntPtr]1148) ([IntPtr]::Zero)
+    if ([UiReviewNative]::IsWindowVisible($confirmRemove) -or ![UiReviewNative]::IsWindowEnabled($list) -or
+        [IO.File]::ReadAllText($sourcePath) -ne $committedSources) { throw 'Cancel removal changed source state' }
+
+    Send-BoundedMessage $window 0x111 ([IntPtr]1143) ([IntPtr]::Zero)
+    if (![UiReviewNative]::PostMessageW($window,0x100,[IntPtr]27,[IntPtr]1)) { throw 'Unable to post Escape to GUI message loop' }
+    $escapeDeadline = (Get-Date).AddSeconds(3)
+    while ([UiReviewNative]::IsWindowVisible($confirmRemove) -and (Get-Date) -lt $escapeDeadline) { Start-Sleep -Milliseconds 50 }
+    if ([UiReviewNative]::IsWindowVisible($confirmRemove) -or [IO.File]::ReadAllText($sourcePath) -ne $committedSources) {
+        throw 'Escape did not cancel pending source removal'
+    }
+
+    # Leaving the page cancels pending removal instead of leaving a hidden action.
+    Send-BoundedMessage $window 0x111 ([IntPtr]1143) ([IntPtr]::Zero)
+    Set-Page 2
+    if ([UiReviewNative]::IsWindowVisible($confirmRemove)) { throw 'Confirmation leaked onto another page' }
+    Set-Page 4
+    if ([UiReviewNative]::IsWindowVisible($confirmRemove) -or [IO.File]::ReadAllText($sourcePath) -ne $committedSources) {
+        throw 'Navigation did not cancel removal without saving'
+    }
+
+    Send-BoundedMessage $window 0x111 ([IntPtr]1143) ([IntPtr]::Zero)
+    $readerLock = [IO.File]::Open($sourcePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        Send-BoundedMessage $window 0x111 ([IntPtr]1147) ([IntPtr]::Zero)
+        if ([UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64() -ne $count + 1 -or
+            [IO.File]::ReadAllText($sourcePath) -ne $committedSources -or
+            (Read-ControlText $selected) -ne $removeTarget -or
+            ![UiReviewNative]::IsWindowVisible($confirmRemove) -or ![UiReviewNative]::IsWindowEnabled($confirmRemove)) {
+            throw 'Failed removal did not retain its file, list, target and retry action'
+        }
+        Save-Window 'subscriptions-remove-failed'
+    } finally { $readerLock.Dispose() }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1147) ([IntPtr]::Zero)
+    $remaining = @([IO.File]::ReadAllLines($sourcePath) | Where-Object { $_ -and ! $_.StartsWith('#') })
+    if ([UiReviewNative]::SendMessage($list,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64() -ne $count -or
+        $remaining.Count -ne 2 -or $remaining[0] -ne 'https://example.test/hosts' -or $remaining[1] -ne $candidate -or
+        [UiReviewNative]::IsWindowVisible($confirmRemove) -or ![UiReviewNative]::IsWindowEnabled($list) -or
+        (Get-FileHash -LiteralPath $rulePath -Algorithm SHA256).Hash -ne $ruleHash) {
+        throw 'Removal retry did not commit only the source configuration and restore controls'
+    }
+    Save-Window 'subscriptions-removed'
+    Write-Output 'Removal GUI passed: cancel/navigation preserve sources; failed save retains target; retry removes only configuration and preserves imported rules.'
 }
 
 Set-Page 2
@@ -206,4 +268,4 @@ $records | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutputDirectory 'la
 $compact=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark-compact').FontHeight)
 $standard=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark').FontHeight)
 if ($standard -le $compact) { throw 'Native control font did not scale with the window' }
-Write-Output 'UI inspection passed: input bounds/rollback, complete selected URL, horizontal scrolling, non-overlapping controls and scaled fonts verified.'
+Write-Output 'UI inspection passed: removal confirmation/cancel/failure/retry, input bounds/rollback, complete selected URL, horizontal scrolling, layout and fonts verified.'
