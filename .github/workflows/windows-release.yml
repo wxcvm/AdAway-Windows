@@ -107,6 +107,8 @@ jobs:
           ./domain_rule_snapshot_test.exe shared-contract/source_loader_vectors.txt "$directory"
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/block_rule_snapshot_test.c -o block_rule_snapshot_test.exe -lws2_32
           ./block_rule_snapshot_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/typed_rule_snapshot_test.c -o typed_rule_snapshot_test.exe -lws2_32
+          ./typed_rule_snapshot_test.exe shared-contract/typed_rule_vectors.tsv
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -Ishared-contract subscription_update_win32.c subscription_update_win32_test.c -o subscription_update_win32_test.exe -lws2_32
           ./subscription_update_win32_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
@@ -118,7 +120,7 @@ jobs:
         shell: msys2 {0}
         run: |
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
-            dns_policy_wire.c dns_policy_wire_test.c -o dns_policy_wire_test.exe
+            -Ishared-contract dns_policy_wire.c dns_policy_wire_test.c -o dns_policy_wire_test.exe -lws2_32
           ./dns_policy_wire_test.exe
 
       - name: Test optional Wintun discovery does not execute DLL code
@@ -945,6 +947,17 @@ jobs:
       # Publishing is push/dispatch only: a pull_request run must never create
       # or overwrite a public release. Unsigned releases must be prominently
       # identified and never advertised as signed/SmartScreen-trusted.
+      - name: Upload typed-rule inspection binaries (PR artifact only)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-typed-rules-inspection
+          path: |
+            adblock-webserver-win64.zip
+            dist-installer/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Publish Windows Release (ZIP and installer; unsigned when configured)
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash

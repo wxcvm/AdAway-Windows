@@ -39,4 +39,9 @@ bool dns_policy_respond(const uint8_t *query, size_t query_size,
                         const uint8_t *address, size_t address_size,
                         uint8_t *output, size_t capacity, size_t *written);
 
+struct bs_store;
+/* Resolve action and replacement from ONE production rule generation. No listener is opened. */
+bool dns_policy_respond_from_rules(struct bs_store *rules, const uint8_t *query, size_t query_size,
+                        uint8_t *output, size_t capacity, size_t *written);
+
 #endif

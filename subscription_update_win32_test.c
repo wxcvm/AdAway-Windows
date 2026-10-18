@@ -41,7 +41,7 @@ int main(void) {
     fixture.calls = 0; result = subscription_update(directory, urls, 2, download, &fixture);
     CHECK(result.status == SUB_UPDATE_OK && result.entries == 2 && result.unsupported == 1);
     char bytes[256] = {0}; FILE *file = _wfopen(target, L"rb"); CHECK(file); CHECK(fread(bytes, 1, sizeof(bytes) - 1, file) > 0); CHECK(fclose(file) == 0);
-    CHECK(strcmp(bytes, "0.0.0.0 new.test\n@@||new.test^\n") == 0);
+    CHECK(strcmp(bytes, "@adaway-rule-v1\t2\t1\t0\t0\tnew.test\t-\n@adaway-rule-v1\t3\t1\t1\t1\tnew.test\t-\n") == 0);
     CHECK(DeleteFileW(target)); CHECK(DeleteFileW(lock_path)); CHECK(RemoveDirectoryW(directory));
     puts("Actual Windows subscription transaction: download/parse/lock/atomic-replace failure rollback and complete success passed; no networking or OS changes");
     return 0;

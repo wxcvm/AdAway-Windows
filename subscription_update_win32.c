@@ -26,7 +26,7 @@ struct subscription_update_result subscription_update(const wchar_t *directory,
         if (elapsed >= 180000u || !download(urls[i], input_path, DR_MAX_BYTES, (unsigned)(180000u - elapsed), context)) goto cleanup;
         FILE *input = _wfopen(input_path, L"rb"); if (!input) { result.status = SUB_UPDATE_IO_FAILED; goto cleanup; }
         size_t before = stats.entries;
-        bool parsed = si_import(input, output, &stats); if (fclose(input) != 0) parsed = false;
+        bool parsed = si_import_source(input, output, &stats, 2 + i); if (fclose(input) != 0) parsed = false;
         if (!parsed) { result.status = SUB_UPDATE_PARSE_FAILED; goto cleanup; }
         result.source_entries[i] = stats.entries - before;
     }
