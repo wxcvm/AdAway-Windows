@@ -2,6 +2,7 @@ $ErrorActionPreference='Stop'
 $exe=(Resolve-Path 'dist/webserver.exe').Path
 $res=Join-Path $env:RUNNER_TEMP 'listener-real-service'
 New-Item -ItemType Directory -Force -Path $res | Out-Null
+Copy-Item 'dist/resources/test.html' (Join-Path $res 'test.html') -Force
 function Invoke-Probe([string]$Ip,[int]$Http,[int]$Https) {
     $stdout=Join-Path $res 'probe.out'
     $p=Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList @('--check-listen','--bind-ip',$Ip,'--http-port',$Http,'--https-port',$Https) -Wait -PassThru -RedirectStandardOutput $stdout
