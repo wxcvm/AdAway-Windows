@@ -4,7 +4,7 @@ on:
   # Main-branch merges run CI only; publishing requires manual dispatch.
   workflow_dispatch:
   pull_request:
-    branches: [ main, feat/traffic-mode-foundation, feat/core-contract-v1, feat/rule-loader-atomic-v1 ]
+    branches: [ main, feat/dns-aaaa-diagnostics-v1, feat/dns-tcp-diagnostics-v1, feat/typed-rule-provenance-v1, feat/traffic-mode-foundation, feat/core-contract-v1, feat/rule-loader-atomic-v1 ]
   push:
     tags: ['progress-win-*']
     branches: [ main, 'preview/release-*' ]
@@ -98,6 +98,12 @@ jobs:
         shell: bash
         run: bash tests/fetch-upstream-test.sh
 
+      - name: Test atomic subscription source settings and save rollback
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic subscription_settings_win32.c subscription_settings_win32_test.c -o subscription_settings_win32_test.exe
+          ./subscription_settings_win32_test.exe
+
       - name: Test pinned shared rule and native core contracts
         shell: msys2 {0}
         run: |
@@ -107,6 +113,8 @@ jobs:
           ./domain_rule_snapshot_test.exe shared-contract/source_loader_vectors.txt "$directory"
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/block_rule_snapshot_test.c -o block_rule_snapshot_test.exe -lws2_32
           ./block_rule_snapshot_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/typed_rule_snapshot_test.c -o typed_rule_snapshot_test.exe -lws2_32
+          ./typed_rule_snapshot_test.exe shared-contract/typed_rule_vectors.tsv
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -Ishared-contract subscription_update_win32.c subscription_update_win32_test.c -o subscription_update_win32_test.exe -lws2_32
           ./subscription_update_win32_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
@@ -118,8 +126,63 @@ jobs:
         shell: msys2 {0}
         run: |
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic \
-            dns_policy_wire.c dns_policy_wire_test.c -o dns_policy_wire_test.exe
+            -Ishared-contract dns_policy_wire.c dns_policy_wire_test.c -o dns_policy_wire_test.exe -lws2_32
           ./dns_policy_wire_test.exe
+
+      - name: Build bounded loopback DNS diagnostic and pinned reply contract
+        shell: msys2 {0}
+        run: |
+          bash fetch-dns-contract.sh
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          root=pathlib.Path('dns-contract'); header=root/'diagnostic_dns_reply.h'; manifest=root/'manifest.json'
+          original=header.read_bytes(); saved=manifest.read_bytes()
+          try:
+              header.write_bytes(original+b'\n/* modified cached contract */\n')
+              document=json.loads(saved)
+              document['files'][header.name]=hashlib.sha256(header.read_bytes()).hexdigest()
+              manifest.write_text(json.dumps(document))
+              assert subprocess.run(['bash','fetch-dns-contract.sh'],capture_output=True).returncode!=0
+          finally:
+              header.write_bytes(original); manifest.write_bytes(saved)
+          print('Modified cache plus matching manifest correctly rejected')
+          PY
+          bash fetch-dns-contract.sh
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic dns-contract/diagnostic_dns_reply_test.c -o diagnostic_dns_reply_test.exe
+          ./diagnostic_dns_reply_test.exe dns-contract/diagnostic_dns_vectors.tsv
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -Ishared-contract -Idns-contract -I. \
+            dns_probe_win32.c dns_policy_wire.c dns_probe_cancel_test.c -o dns_probe_cancel_test.exe -lws2_32
+          ./dns_probe_cancel_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -Ishared-contract -Idns-contract -I. \
+            dns_probe_win32.c dns_policy_wire.c tools/dns-loopback-probe.c -o dns-loopback-probe.exe -municode -static-libgcc -lws2_32
+          objdump -p dns-loopback-probe.exe | grep 'DLL Name:'
+          if objdump -p dns-loopback-probe.exe | grep -Eiq 'DLL Name:.*(libgcc|libwinpthread|msys-|cygwin)'; then
+            echo 'Diagnostic requires development runtime DLLs'; exit 1
+          fi
+
+      - name: Verify real rule import and bounded UDP-to-TCP loopback exchanges
+        shell: pwsh
+        timeout-minutes: 2
+        run: |
+          $fixtureTemp = Join-Path $env:RUNNER_TEMP 'dns-probe-fixture'
+          New-Item -ItemType Directory -Force -Path $fixtureTemp | Out-Null
+          $env:TMP = $fixtureTemp
+          $env:TEMP = $fixtureTemp
+          python tools/test-dns-loopback.py ./dns-loopback-probe.exe > dns-loopback-results.json
+          if ($LASTEXITCODE -ne 0) { throw 'Loopback DNS regression failed' }
+
+      - name: Upload isolated DNS diagnostic tool and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: dns-tcp-diagnostics
+          path: |
+            dns-loopback-probe.exe
+            dns-loopback-results.json
+            dns-contract/manifest.json
+            dns-contract/diagnostic_dns_vectors.tsv
+            dns-contract/diagnostic_dns_policy_vectors.tsv
+            docs/dns-tcp-diagnostics.md
+          if-no-files-found: error
 
       - name: Test optional Wintun discovery does not execute DLL code
         shell: msys2 {0}
@@ -449,10 +512,19 @@ jobs:
           }
 
       - name: GUI mode smoke test (process must stay alive, not die silently)
+        timeout-minutes: 3
         shell: pwsh
         run: |
-          $res3 = (Resolve-Path "dist\resources").Path
-          $p3 = Start-Process -FilePath "dist\webserver.exe" -ArgumentList @("--resources",$res3,"--http-port","18083","--https-port","18446") -PassThru -WorkingDirectory "dist" -RedirectStandardOutput "server3.log" -RedirectStandardError "server3.err"
+          # Keep fixture URLs AND persisted GUI preferences outside packaged dist.
+          $uiRoot = Join-Path $env:RUNNER_TEMP 'adblock-ui-inspection'
+          New-Item -ItemType Directory -Force -Path $uiRoot | Out-Null
+          Copy-Item -Path 'dist/*' -Destination $uiRoot -Recurse -Force
+          $res3 = Join-Path $uiRoot 'resources'
+          # Offline fixture: management / selection only, no update is triggered.
+          Set-Content -LiteralPath (Join-Path $res3 'subscription_urls.txt') -Encoding utf8 -Value @('https://example.test/hosts','https://example.test/allow')
+          Set-Content -LiteralPath (Join-Path $res3 'subscriptions.txt') -Encoding utf8 -Value 'ads.removal-fixture.invalid'
+          $uiExecutable = Join-Path $uiRoot 'webserver.exe'
+          $p3 = Start-Process -FilePath $uiExecutable -ArgumentList @("--resources",$res3,"--http-port","18083","--https-port","18446") -PassThru -WorkingDirectory $uiRoot -RedirectStandardOutput "server3.log" -RedirectStandardError "server3.err"
           # Wait for the GUI process to serve its main port, then make sure it
           # is still alive a moment later: proves the dashboard thread and the
           # server thread coexist, without the old fixed 8 s wait.
@@ -477,9 +549,18 @@ jobs:
             $p3.Refresh()
             if ($p3.HasExited) { throw "gui-mode server died after serving its first request" }
             Write-Output "gui-mode process alive and serving 18083 OK"
+            & ./tools/inspect-ui.ps1 -GuiProcessId $p3.Id -OutputDirectory ui-review -ResourceDirectory $res3
           } finally {
             Get-Process -Name webserver -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           }
+
+      - name: Upload desktop UI screenshots and layout evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ui-review
+          path: ui-review/**
+          if-no-files-found: warn
 
       - name: Regression test separate stable and preview installations can both open GUIs
         shell: pwsh
@@ -780,6 +861,15 @@ jobs:
             echo "::error::release package still contains key material or runtime state: $leftover"
             exit 1
           fi
+          if [ -f resources/subscription_urls.txt ] && grep -Eq 'https://example[.]test/(hosts|allow|extra)' resources/subscription_urls.txt; then
+            echo "::error::UI inspection fixture subscriptions leaked into the package"; exit 1
+          fi
+          if [ -f resources/subscriptions.txt ] && grep -Fq 'ads.removal-fixture.invalid' resources/subscriptions.txt; then
+            echo "::error::UI inspection fixture rules leaked into the package"; exit 1
+          fi
+          if [ -f webserver.ini ]; then
+            echo "::error::Smoke-test GUI preferences leaked into the package"; exit 1
+          fi
           powershell -NoProfile -Command "Compress-Archive -Path .\* -DestinationPath '$GITHUB_WORKSPACE\adblock-webserver-win64.zip' -Force"
           ls -la "$GITHUB_WORKSPACE/adblock-webserver-win64.zip"
 
@@ -945,6 +1035,18 @@ jobs:
       # Publishing is push/dispatch only: a pull_request run must never create
       # or overwrite a public release. Unsigned releases must be prominently
       # identified and never advertised as signed/SmartScreen-trusted.
+      - name: Upload typed-rule inspection binaries (PR artifact only)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-typed-rules-inspection
+          path: |
+            adblock-webserver-win64.zip
+            dist-installer/adblock-preview-user-x64.exe
+            dist-installer/adblock-preview-machine-x64.exe
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Publish Windows Release (ZIP and installer; unsigned when configured)
         if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
         shell: bash

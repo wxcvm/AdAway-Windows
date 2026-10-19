@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fetch proposed portable M1 contracts independently of the production server.
 set -euo pipefail
-PIN="c87725ff74b231155166cc99025324aab5f46578"
+PIN="4ab304c7dca81758bdbf5428d580bcd0794ee932"
 verify() {
   python3 - "$PIN" <<'PY'
 import hashlib,json,pathlib,sys
@@ -30,7 +30,8 @@ else
   for name in traffic_core_contract.h traffic_core_contract_test.c traffic_core_vectors.txt \
       traffic_core_contract.schema.json rule_norm.h rule_norm_test.c rule_vectors.txt \
       domain_rule_snapshot.h domain_allow_snapshot.h block_rule_snapshot.h subscription_import.h \
-      domain_rule_snapshot_test.c block_rule_snapshot_test.c source_loader_vectors.txt; do
+      domain_rule_snapshot_test.c block_rule_snapshot_test.c source_loader_vectors.txt \
+      typed_rule_record.h typed_rule_snapshot_test.c typed_rule_vectors.tsv; do
     git -C "$stage" show "FETCH_HEAD:webserver/jni/$name" > "$stage/contract/$name"
     test -s "$stage/contract/$name"
   done

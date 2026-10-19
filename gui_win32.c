@@ -18,6 +18,7 @@
 #include <wincrypt.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
+#include <commctrl.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 
@@ -41,6 +42,7 @@
 #include "windows_capture_plan.h"
 #include "windows_network_inventory_win32.h"
 #include "subscription_update_win32.h"
+#include "subscription_settings_win32.h"
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
    system) while the rest of the code treats such strings as UTF-8, which made
@@ -103,7 +105,7 @@ static double g_scale = 1.0;
 #define S(v) ((int)((double)(v) * g_scale))
 
 static HFONT mfont(int size, int weight) {
-    return CreateFontW(S(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+    return CreateFontW(-S(size), 0, 0, 0, weight, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
 }
@@ -877,6 +879,9 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_SUB_DEL    1143
 #define IDC_SUB_UPD    1144
 #define IDC_SUB_OPEN   1145
+#define IDC_SUB_SELECTED 1146
+#define IDC_SUB_CONFIRM 1147
+#define IDC_SUB_CANCEL 1148
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
 
 /*
@@ -1475,34 +1480,34 @@ struct palette {
              text, muted, gridline, strip;
 };
 static const struct palette P_LIGHT = {
-    RGB(30, 37, 55), RGB(42, 54, 84), RGB(147, 163, 190),
-    RGB(243, 245, 248), RGB(255, 255, 255), RGB(229, 232, 238),
-    RGB(31, 41, 55), RGB(100, 116, 139), RGB(237, 240, 244),
+    RGB(22, 43, 41), RGB(33, 65, 60), RGB(175, 199, 192),
+    RGB(245, 248, 247), RGB(255, 255, 255), RGB(222, 231, 227),
+    RGB(27, 42, 37), RGB(86, 108, 99), RGB(236, 242, 239),
     RGB(255, 255, 255)
 };
 static const struct palette P_DARK = {
-    RGB(17, 21, 32), RGB(38, 46, 66), RGB(148, 163, 190),
-    RGB(22, 26, 36), RGB(31, 36, 49), RGB(48, 55, 71),
-    RGB(226, 232, 240), RGB(148, 163, 184), RGB(44, 51, 66),
-    RGB(31, 36, 49)
+    RGB(12, 24, 22), RGB(30, 58, 51), RGB(172, 196, 186),
+    RGB(17, 26, 23), RGB(25, 36, 31), RGB(51, 70, 61),
+    RGB(224, 234, 228), RGB(170, 190, 179), RGB(42, 58, 49),
+    RGB(25, 36, 31)
 };
 /* Active theme: starts as a literal copy of the light palette so it is valid
  * even before theme_apply() has run. */
 static struct palette g_pal = {
-    RGB(30, 37, 55), RGB(42, 54, 84), RGB(147, 163, 190),
-    RGB(243, 245, 248), RGB(255, 255, 255), RGB(229, 232, 238),
-    RGB(31, 41, 55), RGB(100, 116, 139), RGB(237, 240, 244),
+    RGB(22, 43, 41), RGB(33, 65, 60), RGB(175, 199, 192),
+    RGB(245, 248, 247), RGB(255, 255, 255), RGB(222, 231, 227),
+    RGB(27, 42, 37), RGB(86, 108, 99), RGB(236, 242, 239),
     RGB(255, 255, 255)
 };
 static void theme_apply(int dark) {
     g_pal = dark ? P_DARK : P_LIGHT;
 }
-#define C_ACCENT     RGB(59, 130, 246)
+#define C_ACCENT     RGB(34, 157, 131)
 #define C_BLUE_SOFT  RGB(219, 234, 254)
 #define C_BLUE       RGB(59, 130, 246)
 #define C_RED        RGB(239, 68, 68)
 #define C_GREEN      RGB(34, 197, 94)
-#define C_GREEN_TXT  RGB(22, 163, 74)
+#define C_GREEN_TXT  (g_dark ? RGB(139, 213, 194) : RGB(24, 112, 87))
 
 #ifdef ADBLOCK_PREVIEW_BUILD
 static const wchar_t *g_title = L"ADBlock Preview v" ADBLOCK_APP_VERSION_W;
@@ -1523,14 +1528,8 @@ static DWORD g_adguard_probe_tick = 0;
 static struct wintun_probe_result g_wintun_probe;
 
 static int g_tab = 0;               /* 0 = statistics, 1 = 应用日志, 2 = settings */
-/*
- * 打开窗口第一眼就能看到"装的是哪一版、这版有什么"：状态栏（底部常驻一行，见
- * draw_statusbar）直接以"本版新增"开头，直到被某个操作覆盖。此前这里只显示
- * "等待首次统计…"，用户根本看不出更新有没有生效、这版加了什么。
- */
-static wchar_t g_status[4096] =
-    L"v" ADBLOCK_APP_VERSION_W L" 本版新增：证书被拒/请求风暴显示、日志可翻 1000 行、"
-    L"更新改用安装包（不再解压 zip）、设置页新增六项可选开关";
+/* Operation results persist; live service and certificate state have dedicated labels. */
+static wchar_t g_status[4096] = L"就绪 · 使用左侧“订阅”管理规则来源";
 static HWND s_ctrls[64];
 static int s_ctrl_count = 0;
 static HFONT g_ctl_font = NULL;
@@ -1813,7 +1812,7 @@ static void draw_listener_card(HDC hdc, int x, int y, int w, int h,
     SetTextColor(hdc, !live ? g_pal.muted : (ok ? C_GREEN_TXT : RGB(200, 60, 60)));
     SIZE ps;
     GetTextExtentPoint32W(hdc, pill, (int)wcslen(pill), &ps);
-    int px = x + w - 18 - ps.cx;
+    int px = x + w - 18 - (int)(ps.cx / g_scale);
     if (px < x + 110) px = x + 110;
     TextOutW(hdc, S(px), S(y + 14), pill, (int)wcslen(pill));
     SelectObject(hdc, old);
@@ -1872,14 +1871,14 @@ static void draw_listener_card(HDC hdc, int x, int y, int w, int h,
 }
 
 static void draw_statusbar(HDC hdc) {
-    RECT strip = {S(0), S(630), S(1000), S(678)};   /* AUDIT V8: scale like everything else */
+    RECT strip = {S(0), S(630), S(1032), S(678)};   /* AUDIT V8: scale like everything else */
     HBRUSH sbg = CreateSolidBrush(g_pal.strip);
     FillRect(hdc, &strip, sbg);
     DeleteObject(sbg);
     HPEN tp = CreatePen(PS_SOLID, 1, g_pal.border);
     HGDIOBJ tpold = SelectObject(hdc, tp);
     MoveToEx(hdc, 0, S(630), NULL);
-    LineTo(hdc, S(1000), S(630));
+    LineTo(hdc, S(1032), S(630));
     SelectObject(hdc, tpold);
     DeleteObject(tp);
 
@@ -1921,7 +1920,7 @@ static void draw_statusbar(HDC hdc) {
     SetTextColor(hdc, g_pal.muted);
     /* Long CA paths are common (especially under non-ASCII user profiles).
      * Clip rather than painting through the clock at the right edge. */
-    RECT certificate_label = {S(430), S(640), S(904), S(662)};
+    RECT certificate_label = {S(430), S(640), S(934), S(662)};
     DrawTextW(hdc, cert, -1, &certificate_label,
               DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
@@ -1930,7 +1929,7 @@ static void draw_statusbar(HDC hdc) {
     wchar_t tm[64];
     swprintf(tm, 64, L"%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(920), S(643), tm, (int)wcslen(tm));
+    TextOutW(hdc, S(950), S(643), tm, (int)wcslen(tm));
 
     SetTextColor(hdc, g_pal.muted);
     RECT status_message = {S(16), S(660), S(980), S(680)};
@@ -2261,33 +2260,26 @@ static void tray_menu(HWND hwnd) {
 /* control layout descriptors (logical units) */
 struct ctl_desc { int id; int x, y, w, h; const wchar_t *cls, *text; int style; };
 static const struct ctl_desc g_clayout[] = {
-    { IDC_HTTP_EDIT,  300, 54, 80, 24, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
-    { IDC_HTTPS_EDIT, 590, 54, 80, 24, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
-    { IDC_BIND_CHK,   210, 96, 260, 22, L"BUTTON", L"监听所有网卡（局域网）", BS_AUTOCHECKBOX },
-    { IDC_ADGUARD_HOME, 680, 96, 280, 26, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
-    { IDC_SAVE,       210, 130, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
-    { IDC_RESTART,    330, 130, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
-    { IDC_FIXPORT,    460, 130, 190, 28, L"BUTTON", L"改用备用端口 18080/18443", BS_PUSHBUTTON },
-    { IDM_DARK,       664, 132, 170, 24, L"BUTTON", L"深色外观", BS_AUTOCHECKBOX },
-    { IDM_TRUST,      210, 424, 96, 28, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
-    { IDM_UNTRUST,    316, 424, 96, 28, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
-    { IDM_TEST,       422, 424, 110, 28, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
-    { IDC_FLUSH,      542, 424, 96, 28, L"BUTTON", L"清空统计", BS_PUSHBUTTON },
-    { IDC_DIAG,       844, 434, 170, 26, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
-    { IDC_SUBRELOAD,  664, 456, 170, 26, L"BUTTON", L"重新加载订阅", BS_PUSHBUTTON },
-    { IDC_POLDEF,     664, 486, 170, 26, L"BUTTON", L"恢复推荐默认", BS_PUSHBUTTON },
-    /* Manual, dual-CA rotation: the new CA is created next to the old one and
-       both stay valid for 90 days (devices are migrated by hand), so the old
-       button that silently replaced the CA is gone. */
-   { IDC_CAROTATE,   210, 456, 200, 26, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
-    { IDC_CADROP,     210, 486, 200, 26, L"BUTTON", L"撤销旧 CA（90 天后）", BS_PUSHBUTTON },
-    /* Escape hatch for machines where policy/antivirus blocks running an
-       installer: switch to the portable in-place path and check right away. */
-    { IDC_PORTABLEUPD, 420, 456, 200, 26, L"BUTTON", L"用便携包更新", BS_PUSHBUTTON },
-    { IDM_AUTOSTART,  648, 426, 180, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
-    /* Below the "导出诊断信息" button (which sits at 844,434): the two used to
-       overlap in x 844-948 / y 434-452. */
-    { IDM_UPDATE,     844, 466, 170, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDC_HTTP_EDIT,  300, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
+    { IDC_HTTPS_EDIT, 590, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
+    { IDC_BIND_CHK,   218, 106, 300, 24, L"BUTTON", L"监听所有网卡（局域网）", BS_AUTOCHECKBOX },
+    { IDC_ADGUARD_HOME, 710, 106, 280, 26, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
+    { IDC_SAVE,       218, 140, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
+    { IDC_RESTART,    340, 140, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
+    { IDC_FIXPORT,    472, 140, 220, 28, L"BUTTON", L"改用备用端口 18080/18443", BS_PUSHBUTTON },
+    { IDM_DARK,       720, 142, 200, 24, L"BUTTON", L"深色外观", BS_AUTOCHECKBOX },
+    { IDM_TRUST,      218, 448, 160, 30, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
+    { IDM_UNTRUST,    390, 448, 160, 30, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
+    { IDM_TEST,       562, 448, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
+    { IDM_AUTOSTART,  760, 451, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
+    { IDC_CAROTATE,   218, 490, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
+    { IDC_CADROP,     480, 490, 250, 30, L"BUTTON", L"撤销旧 CA（90 天后）", BS_PUSHBUTTON },
+    { IDC_DIAG,       742, 490, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
+    { IDC_SUBRELOAD,  218, 532, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
+    { IDC_FLUSH,      480, 532, 250, 30, L"BUTTON", L"清空统计", BS_PUSHBUTTON },
+    { IDC_POLDEF,     742, 532, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 574, 250, 30, L"BUTTON", L"用便携包更新", BS_PUSHBUTTON },
+    { IDM_UPDATE,    480, 574, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
    be a hand-kept constant, and when IDM_UPDATE (检查更新) was appended the
@@ -2301,19 +2293,24 @@ static const struct ctl_desc g_sublayout[] = {
     { IDC_SUB_URL,   218,  70, 560, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
     { IDC_SUB_ADD,   790,  70, 100, 26, L"BUTTON", L"添加", BS_PUSHBUTTON },
     { IDC_SUB_DEL,   898,  70, 104, 26, L"BUTTON", L"删除选中", BS_PUSHBUTTON },
-    { IDC_SUB_LIST,  218, 110, 784, 372, L"LISTBOX", L"",
-      WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
+    { IDC_SUB_LIST,  218, 110, 784, 326, L"LISTBOX", L"",
+      WS_BORDER | WS_VSCROLL | WS_HSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
+    { IDC_SUB_SELECTED, 218, 448, 784, 28, L"EDIT", L"", WS_BORDER | ES_READONLY | ES_AUTOHSCROLL },
     { IDC_SUB_UPD,   218, 500, 190, 28, L"BUTTON", L"立即更新全部", BS_PUSHBUTTON },
     { IDC_SUB_OPEN,  418, 500, 190, 28, L"BUTTON", L"打开订阅文件夹", BS_PUSHBUTTON },
+    { IDC_SUB_CONFIRM, 618, 500, 180, 28, L"BUTTON", L"确认移除", BS_PUSHBUTTON },
+    { IDC_SUB_CANCEL, 808, 500, 194, 28, L"BUTTON", L"取消", BS_PUSHBUTTON },
 };
 #define CL_SUB ((int) (sizeof(g_sublayout) / sizeof(g_sublayout[0])))
 
-/* The dashboard is painted in a fixed 1000x678 logical canvas (sidebar
+/* The dashboard is painted in a fixed 1032x678 logical canvas (sidebar
    0..190, content to x=1000, status bar to y=678). Deriving g_scale from the
    DPI alone left that canvas at design size in the top-left corner of a
    maximized window; the scale must follow the CLIENT size instead. */
-#define DASH_W 1000.0
+#define DASH_W 1032.0
 #define DASH_H 678.0
+static void subs_list_extent(HWND hwnd);
+static void subs_controls_refresh(HWND hwnd);
 static void update_layout_scale(HWND hwnd) {
     RECT rc;
     if (!hwnd || !GetClientRect(hwnd, &rc)) return;
@@ -2327,22 +2324,30 @@ static void update_layout_scale(HWND hwnd) {
 }
 
 static void layout_controls(HWND hwnd) {
+    HFONT next_font = mfont(15, FW_NORMAL);
+    if (next_font) {
+        for (int i = 0; i < s_ctrl_count; i++)
+            SendMessageW(s_ctrls[i], WM_SETFONT, (WPARAM)next_font, TRUE);
+        if (g_ctl_font) DeleteObject(g_ctl_font);
+        g_ctl_font = next_font;
+    }
     for (int i = 0; i < CL_MAIN; i++)
         SetWindowPos(GetDlgItem(hwnd, g_clayout[i].id), NULL,
                      S(g_clayout[i].x), S(g_clayout[i].y),
                      S(g_clayout[i].w), S(g_clayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
     /* policy checkboxes */
     for (int i = 0; i < POLICY_COUNT; i++) {
-        int cx = (i % 2 == 0) ? 210 : 440;
-        int cy = 208 + (i / 2) * 28;
+        int cx = (i % 2 == 0) ? 218 : 610;
+        int cy = 228 + (i / 2) * 28;
         HWND w = GetDlgItem(hwnd, IDC_POL0 + i);
-        if (w) SetWindowPos(w, NULL, S(cx), S(cy), S(200), S(24), SWP_NOZORDER | SWP_NOACTIVATE);
+        if (w) SetWindowPos(w, NULL, S(cx), S(cy), S(370), S(26), SWP_NOZORDER | SWP_NOACTIVATE);
     }
     /* 订阅 page controls */
     for (int i = 0; i < CL_SUB; i++)
         SetWindowPos(GetDlgItem(hwnd, g_sublayout[i].id), NULL,
                      S(g_sublayout[i].x), S(g_sublayout[i].y),
                      S(g_sublayout[i].w), S(g_sublayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
+    subs_list_extent(hwnd);
 }
 
 static void show_controls(HWND hwnd, int tab) {
@@ -2358,6 +2363,7 @@ static void show_controls(HWND hwnd, int tab) {
         ShowWindow(GetDlgItem(hwnd, IDC_POL0 + i), show ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < CL_SUB; i++)
         ShowWindow(GetDlgItem(hwnd, g_sublayout[i].id), subs ? SW_SHOW : SW_HIDE);
+    subs_controls_refresh(hwnd);
 }
 
 /* Click on one type: advance it to the next method and apply immediately. */
@@ -2798,6 +2804,19 @@ static int s_sub_count;
 static int s_sub_loaded;
 static int s_sub_written;
 static volatile LONG s_subs_running;
+static wchar_t s_sub_feedback[240];
+static bool s_sub_feedback_error;
+static bool s_sub_input_truncated;
+static int s_sub_remove_index = -1;
+static wchar_t s_sub_remove_url[SUBS_URL_MAX];
+
+static void subs_feedback(HWND hwnd, const wchar_t *text, bool error) {
+    wcsncpy(s_sub_feedback, text, 239);
+    s_sub_feedback[239] = 0;
+    s_sub_feedback_error = error;
+    swprintf(g_status, 4096, L"%ls", s_sub_feedback);
+    InvalidateRect(hwnd, NULL, FALSE);
+}
 
 static void subs_path(wchar_t *out, size_t cap, const wchar_t *name) {
     swprintf(out, cap, L"%hs\\%ls", g_res, name);
@@ -2820,7 +2839,7 @@ static void subs_load(void) {
     subs_path(path, MAX_PATH, L"subscription_urls.txt");
     FILE *f = _wfopen(path, L"r");
     if (f != NULL) {
-        char line[SUBS_URL_MAX];
+        char line[SUBS_URL_MAX * 4 + 4];
         while (s_sub_count < SUBS_MAX && fgets(line, sizeof(line), f) != NULL) {
             char *p = subs_trim(line);
             if (p[0] == 0 || p[0] == '#') continue;
@@ -2835,7 +2854,7 @@ static void subs_load(void) {
     subs_path(path, MAX_PATH, L"subscription_status.txt");
     f = _wfopen(path, L"r");
     if (f != NULL) {
-        char line[1600];
+        char line[SUBS_URL_MAX * 4 + SUBSCRIPTION_STATUS_CAPACITY * 4 + 4];
         while (fgets(line, sizeof(line), f) != NULL) {
             char *tab = strchr(line, '\t');
             if (tab == NULL) continue;
@@ -2845,7 +2864,7 @@ static void subs_load(void) {
             wchar_t wurl[SUBS_URL_MAX];
             if (MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, SUBS_URL_MAX) <= 0) continue;
             for (int i = 0; i < s_sub_count; i++) {
-                if (_wcsicmp(s_sub_urls[i], wurl) == 0) {
+                if (wcscmp(s_sub_urls[i], wurl) == 0) {
                     MultiByteToWideChar(CP_UTF8, 0, st, -1, s_sub_status[i], 160);
                     break;
                 }
@@ -2855,35 +2874,19 @@ static void subs_load(void) {
     }
 }
 
-static void subs_save_urls(void) {
-    wchar_t path[MAX_PATH];
-    subs_path(path, MAX_PATH, L"subscription_urls.txt");
-    FILE *f = _wfopen(path, L"w");
-    if (f == NULL) return;
-    fprintf(f, "# ADBlock 订阅源列表：一行一个 URL，'#' 开头为注释。由仪表盘维护。\n");
-    for (int i = 0; i < s_sub_count; i++) {
-        char u8[SUBS_URL_MAX * 2];
-        if (WideCharToMultiByte(CP_UTF8, 0, s_sub_urls[i], -1, u8, sizeof(u8),
-                                NULL, NULL) <= 0) continue;
-        fprintf(f, "%s\n", u8);
-    }
-    fclose(f);
+static int subs_save_urls(unsigned count) {
+    wchar_t directory[MAX_PATH];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_res, -1, directory, MAX_PATH) <= 0) return 0;
+    return subscription_settings_save_urls(directory,
+            (const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])s_sub_urls, count);
 }
 
-static void subs_save_status(void) {
-    wchar_t path[MAX_PATH];
-    subs_path(path, MAX_PATH, L"subscription_status.txt");
-    FILE *f = _wfopen(path, L"w");
-    if (f == NULL) return;
-    for (int i = 0; i < s_sub_count; i++) {
-        char u8[SUBS_URL_MAX * 2], s8[700];
-        if (WideCharToMultiByte(CP_UTF8, 0, s_sub_urls[i], -1, u8, sizeof(u8),
-                                NULL, NULL) <= 0) continue;
-        if (WideCharToMultiByte(CP_UTF8, 0, s_sub_status[i], -1, s8, sizeof(s8),
-                                NULL, NULL) <= 0) s8[0] = 0;
-        fprintf(f, "%s\t%s\n", u8, s8);
-    }
-    fclose(f);
+static int subs_save_status(void) {
+    wchar_t directory[MAX_PATH];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_res, -1, directory, MAX_PATH) <= 0) return 0;
+    return subscription_settings_save_status(directory,
+            (const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])s_sub_urls,
+            (const wchar_t (*)[SUBSCRIPTION_STATUS_CAPACITY])s_sub_status, (unsigned)s_sub_count);
 }
 
 struct subs_job {
@@ -2907,26 +2910,78 @@ static DWORD WINAPI subs_thread(LPVOID opaque) {
     return 0;
 }
 static void subs_start_update(HWND hwnd) {
-    if (s_subs_running) return;
+    if (s_subs_running || s_sub_remove_index >= 0) return;
     subs_load();
     if (!s_sub_count) {
-        MessageBoxW(hwnd, L"还没有订阅源。请先添加订阅链接。", L"订阅", MB_OK | MB_ICONINFORMATION | MB_TOPMOST); return;
+        if (MessageBoxW(hwnd, L"没有配置订阅源。清空先前导入的订阅规则？手动配置不受影响。",
+                        L"清空订阅规则", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
     }
     struct subs_job *job = (struct subs_job *)calloc(1, sizeof(*job));
-    if (!job) return;
+    if (!job) { subs_feedback(hwnd, L"无法准备更新；原有规则未变，请稍后重试。", true); return; }
     job->hwnd = hwnd; job->count = (unsigned)s_sub_count;
     memcpy(job->urls, s_sub_urls, sizeof(job->urls));
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_res, -1, job->directory, MAX_PATH) <= 0) { free(job); return; }
     if (InterlockedCompareExchange(&s_subs_running, 1, 0) != 0) { free(job); return; }
     swprintf(g_status, 4096, L"正在验证 %d 个订阅源；全部成功后一次替换规则", s_sub_count);
+    subs_feedback(hwnd, g_status, false);
     HANDLE thread = CreateThread(NULL, 0, subs_thread, job, 0, NULL);
-    if (!thread) { InterlockedExchange(&s_subs_running, 0); free(job); return; }
+    if (!thread) {
+        InterlockedExchange(&s_subs_running, 0); free(job);
+        subs_feedback(hwnd, L"未能启动更新；原有规则未变，请重试。", true);
+        return;
+    }
     CloseHandle(thread);
+    subs_controls_refresh(hwnd);
+}
+
+static void subs_controls_refresh(HWND hwnd) {
+    int busy = InterlockedCompareExchange(&s_subs_running, 0, 0) != 0;
+    bool pending = s_sub_remove_index >= 0;
+    int selected = (int)SendDlgItemMessageW(hwnd, IDC_SUB_LIST, LB_GETCURSEL, 0, 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_URL), !busy && !pending);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_LIST), !busy && !pending);
+    wchar_t input[SUBS_URL_MAX] = {0};
+    GetDlgItemTextW(hwnd, IDC_SUB_URL, input, SUBS_URL_MAX);
+    const wchar_t *text = input;
+    while (*text == L' ' || *text == L'\t') text++;
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_ADD), !busy && !pending && *text && !s_sub_input_truncated && s_sub_count < SUBS_MAX);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_DEL), !busy && !pending && selected >= 0 && selected < s_sub_count);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_UPD), !busy && !pending);
+    ShowWindow(GetDlgItem(hwnd, IDC_SUB_CONFIRM), g_tab == 4 && pending ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd, IDC_SUB_CANCEL), g_tab == 4 && pending ? SW_SHOW : SW_HIDE);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_CONFIRM), pending && !busy);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_CANCEL), pending && !busy);
+    SetDlgItemTextW(hwnd, IDC_SUB_UPD, busy ? L"正在验证并更新…" : (s_sub_count ? L"立即更新全部" : L"清空已导入规则"));
+    SetDlgItemTextW(hwnd, IDC_SUB_SELECTED,
+                   pending ? s_sub_remove_url : (selected >= 0 && selected < s_sub_count ? s_sub_urls[selected] : L""));
+}
+
+static void subs_list_extent(HWND hwnd) {
+    HWND list = GetDlgItem(hwnd, IDC_SUB_LIST);
+    if (!list) return;
+    HDC dc = GetDC(list);
+    if (!dc) return;
+    HFONT font = (HFONT)SendMessageW(list, WM_GETFONT, 0, 0);
+    HGDIOBJ previous = font ? SelectObject(dc, font) : NULL;
+    int widest = 0;
+    int count = (int)SendMessageW(list, LB_GETCOUNT, 0, 0);
+    for (int i = 0; i < count; i++) {
+        wchar_t row[1200];
+        LRESULT length = SendMessageW(list, LB_GETTEXTLEN, (WPARAM)i, 0);
+        if (length <= 0 || length >= 1200) continue;
+        if (SendMessageW(list, LB_GETTEXT, (WPARAM)i, (LPARAM)row) == LB_ERR) continue;
+        SIZE size;
+        if (GetTextExtentPoint32W(dc, row, (int)length, &size) && size.cx > widest) widest = size.cx;
+    }
+    if (previous) SelectObject(dc, previous);
+    ReleaseDC(list, dc);
+    SendMessageW(list, LB_SETHORIZONTALEXTENT, (WPARAM)(widest + S(20)), 0);
 }
 
 static void subs_refresh_list(HWND hwnd) {
     HWND lb = GetDlgItem(hwnd, IDC_SUB_LIST);
     if (lb == NULL) return;
+    int selected = (int)SendMessageW(lb, LB_GETCURSEL, 0, 0);
     SendMessageW(lb, LB_RESETCONTENT, 0, 0);
     for (int i = 0; i < s_sub_count; i++) {
         wchar_t row[1200];
@@ -2935,6 +2990,57 @@ static void subs_refresh_list(HWND hwnd) {
         else
             swprintf(row, 1200, L"%ls    —    尚未更新", s_sub_urls[i]);
         SendMessageW(lb, LB_ADDSTRING, 0, (LPARAM) row);
+    }
+    if (selected >= s_sub_count) selected = s_sub_count - 1;
+    if (selected >= 0) SendMessageW(lb, LB_SETCURSEL, selected, 0);
+    subs_list_extent(hwnd);
+    subs_controls_refresh(hwnd);
+}
+
+static void subs_cancel_remove(HWND hwnd) {
+    if (s_sub_remove_index < 0) return;
+    s_sub_remove_index = -1;
+    s_sub_remove_url[0] = 0;
+    subs_controls_refresh(hwnd);
+    subs_feedback(hwnd, L"已取消移除；来源和已导入规则未变。", false);
+}
+
+static void subs_confirm_remove(HWND hwnd) {
+    int sel = s_sub_remove_index;
+    if (s_subs_running || sel < 0) return;
+    if (sel >= s_sub_count || wcscmp(s_sub_urls[sel], s_sub_remove_url) != 0) {
+        subs_cancel_remove(hwnd);
+        subs_feedback(hwnd, L"待移除来源已变化，未执行删除；请重新选择。", true);
+        return;
+    }
+    wchar_t removed_url[SUBS_URL_MAX], removed_status[SUBSCRIPTION_STATUS_CAPACITY];
+    memcpy(removed_url, s_sub_urls[sel], sizeof(removed_url));
+    memcpy(removed_status, s_sub_status[sel], sizeof(removed_status));
+    for (int i = sel; i + 1 < s_sub_count; i++) {
+        memcpy(s_sub_urls[i], s_sub_urls[i + 1], sizeof(s_sub_urls[i]));
+        memcpy(s_sub_status[i], s_sub_status[i + 1], sizeof(s_sub_status[i]));
+    }
+    s_sub_count--;
+    if (subs_save_urls((unsigned)s_sub_count)) {
+        int status_saved = subs_save_status();
+        s_sub_remove_index = -1;
+        s_sub_remove_url[0] = 0;
+        subs_refresh_list(hwnd);
+        wchar_t saved[220];
+        swprintf(saved, 220, status_saved ?
+                 L"已移除来源，剩 %d 个；当前规则保留，请更新或清空已导入规则" :
+                 L"已移除来源，剩 %d 个；状态缓存保存失败，当前规则保留，请更新规则", s_sub_count);
+        subs_feedback(hwnd, saved, !status_saved);
+    } else {
+        for (int i = s_sub_count; i > sel; i--) {
+            memcpy(s_sub_urls[i], s_sub_urls[i - 1], sizeof(s_sub_urls[i]));
+            memcpy(s_sub_status[i], s_sub_status[i - 1], sizeof(s_sub_status[i]));
+        }
+        memcpy(s_sub_urls[sel], removed_url, sizeof(removed_url));
+        memcpy(s_sub_status[sel], removed_status, sizeof(removed_status));
+        s_sub_count++;
+        subs_controls_refresh(hwnd);
+        subs_feedback(hwnd, L"来源保存失败，移除未生效；原来源与规则均保留。解除文件占用后可重试“确认移除”，或取消。", true);
     }
 }
 
@@ -2960,13 +3066,12 @@ static void draw_subs_page(HDC hdc) {
     {
         wchar_t sum[400];
         if (s_sub_count == 0)
-            swprintf(sum, 400, L"还没有订阅源。");
+            swprintf(sum, 400, L"尚未配置来源 · 可添加订阅，或清空先前导入的订阅规则。");
         else if (s_subs_running)
-            swprintf(sum, 400, L"正在更新…（%d 个源，本次已写入 %d 条）",
-                     s_sub_count, s_sub_written);
+            swprintf(sum, 400, L"正在验证 %d 个来源 · 完成前继续使用上一份有效规则", s_sub_count);
         else
             swprintf(sum, 400,
-                     L"%d 个源 · 上次写入 %d 条域名到 subscriptions.txt（服务端会自行去重）",
+                     L"%d 个订阅源 · 本次会话最近保存 %d 条规则",
                      s_sub_count, s_sub_written);
         SetTextColor(hdc, g_pal.text);
         RECT summary_rect = {S(218), S(532), S(992), S(554)};
@@ -2975,11 +3080,18 @@ static void draw_subs_page(HDC hdc) {
     }
     {
         static const wchar_t *H2 =
-            L"源列表存在 resources\\subscription_urls.txt，可以直接用记事本编辑；改完点「立即更新全部」即可生效。";
+            L"添加或移除来源后需更新全部；下载或校验失败时保留上一次完整规则。";
         SetTextColor(hdc, g_pal.muted);
         RECT file_hint_rect = {S(218), S(558), S(992), S(583)};
         DrawTextW(hdc, H2, -1, &file_hint_rect,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    {
+        const wchar_t *feedback = s_sub_feedback[0] ? s_sub_feedback :
+            L"选中来源后可在下方链接框中查看完整地址，并用 Ctrl+C 复制。";
+        SetTextColor(hdc, s_sub_feedback_error ? C_RED : g_pal.muted);
+        RECT feedback_rect = {S(218), S(590), S(992), S(626)};
+        DrawTextW(hdc, feedback, -1, &feedback_rect, DT_WORDBREAK | DT_NOPREFIX);
     }
     SelectObject(hdc, old);
     DeleteObject(hf);
@@ -3011,6 +3123,7 @@ static void update_prompt_notify(HWND hwnd) {
 
 static void ui_navigate_to(HWND hwnd, int next_tab) {
     if (next_tab < 0 || next_tab >= 6 || next_tab == g_tab) return;
+    if (s_sub_remove_index >= 0) subs_cancel_remove(hwnd);
     g_tab = next_tab;
     show_controls(hwnd, g_tab);
     if (g_tab == 4) {
@@ -3075,31 +3188,34 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         for (int i = 0; i < CL_MAIN; i++) {
             const struct ctl_desc *d = &g_clayout[i];
             HWND w = CreateWindowExW(0, d->cls, d->text,
-                WS_CHILD | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
+                WS_CHILD | WS_TABSTOP | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
         for (int i = 0; i < CL_SUB; i++) {
             const struct ctl_desc *d = &g_sublayout[i];
             HWND w = CreateWindowExW(0, d->cls, d->text,
-                WS_CHILD | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
+                WS_CHILD | WS_TABSTOP | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
         for (int i = 0; i < POLICY_COUNT; i++) {
-            int cx = (i % 2 == 0) ? 210 : 440;
-            int cy = 208 + (i / 2) * 28;
+            int cx = (i % 2 == 0) ? 218 : 610;
+            int cy = 228 + (i / 2) * 28;
             s_ctrls[s_ctrl_count++] = CreateWindowExW(0, L"BUTTON", g_policy[i].label,
                 /* A plain button whose caption IS the current method
                    ("图片：占位响应"); clicking cycles 占位 → 空响应 → 204 →
                    不拦截. The old BS_AUTO3STATE checkbox could not express
                    four methods and its three states were unreadable. */
-                WS_CHILD | BS_PUSHBUTTON, S(cx), S(cy), S(200), S(24), hwnd,
+                WS_CHILD | WS_TABSTOP | BS_PUSHBUTTON, S(cx), S(cy), S(370), S(26), hwnd,
                 (HMENU)(INT_PTR)g_policy[i].id, hinst, NULL);
         }
-        g_ctl_font = mfont(13, FW_NORMAL);
-        for (int i = 0; i < s_ctrl_count; i++)
-            SendMessageW(s_ctrls[i], WM_SETFONT, (WPARAM)g_ctl_font, TRUE);
+        layout_controls(hwnd);
+        SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETCUEBANNER, TRUE,
+                     (LPARAM)L"https://example.com/hosts.txt");
+        SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETLIMITTEXT, SUBS_URL_MAX - 1, 0);
+        SendMessageW(GetDlgItem(hwnd, IDC_SUB_SELECTED), EM_SETCUEBANNER, TRUE,
+                     (LPARAM)L"选中来源查看完整链接（只读，可选中并复制）");
         SendMessageW(GetDlgItem(hwnd, IDM_DARK), BM_SETCHECK,
                      g_dark ? BST_CHECKED : BST_UNCHECKED, 0);
         apply_control_theme(hwnd);
@@ -3128,7 +3244,6 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_adguard_probe_tick = GetTickCount();
         /* Probe DLL APIs only, never create an adapter or route. */
         g_wintun_probe = wintun_probe_local();
-        swprintf(g_status, 4096, L"等待首次统计（http://127.0.0.1:%d/internal-stats）...", g_http_port);
         return 0;
     }
     case WM_TIMER: {
@@ -3193,16 +3308,6 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             pthread_mutex_lock(&g_snap_mutex);
             *g_sn = g_snap_next;
             pthread_mutex_unlock(&g_snap_mutex);
-            if (g_sn->valid) {
-                SYSTEMTIME st;
-                GetLocalTime(&st);
-                swprintf(g_status, 4096,
-                         L"实时数据 · 管理端口 %d · 更新于 %02d:%02d:%02d",
-                         mgmt_port(), st.wHour, st.wMinute, st.wSecond);
-            } else {
-                swprintf(g_status, 4096,
-                         L"服务器暂不可达（已尝试 %d 与 %d 端口）", g_stats_port, g_http_port);
-            }
             cert_refresh(false);
             if (g_ui_visible) InvalidateRect(hwnd, NULL, FALSE);
         }
@@ -3232,6 +3337,24 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     (id == UI_ACCEL_NAV_NEXT ? 1 : -1)) % 6);
                 return 0;
             }
+        }
+        if (LOWORD(wp) == IDC_SUB_LIST && HIWORD(wp) == LBN_SELCHANGE) {
+            subs_controls_refresh(hwnd);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_SUB_URL && HIWORD(wp) == EN_MAXTEXT) {
+            s_sub_input_truncated = true;
+            subs_feedback(hwnd, L"链接超过 1023 字符上限，未保存；请缩短后重新输入，避免使用被截断的地址。", true);
+            subs_controls_refresh(hwnd);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_SUB_URL && HIWORD(wp) == EN_CHANGE) {
+            if (GetWindowTextLengthW(GetDlgItem(hwnd, IDC_SUB_URL)) < SUBS_URL_MAX - 1)
+                s_sub_input_truncated = false;
+            if (!s_sub_input_truncated && s_sub_remove_index < 0) { s_sub_feedback[0] = 0; s_sub_feedback_error = false; }
+            subs_controls_refresh(hwnd);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
         }
         if (HIWORD(wp) == BN_CLICKED) {
             int id = LOWORD(wp);
@@ -3292,7 +3415,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                      L"已切换为便携包更新模式（zip 就地替换，跳过安装器），正在检查更新…");
             update_check_async(hwnd);
         } else if (id == IDC_SUB_ADD) {
-                if (s_subs_running) return 0;
+                if (s_subs_running || s_sub_remove_index >= 0) return 0;
+                if (s_sub_input_truncated || GetWindowTextLengthW(GetDlgItem(hwnd, IDC_SUB_URL)) >= SUBS_URL_MAX) {
+                    subs_feedback(hwnd, L"链接超过 1023 字符上限，未保存；请缩短后重新输入。", true);
+                    return 0;
+                }
                 wchar_t url[SUBS_URL_MAX];
                 GetWindowTextW(GetDlgItem(hwnd, IDC_SUB_URL), url, SUBS_URL_MAX);
                 wchar_t *s = url;
@@ -3302,47 +3429,58 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 subs_load();
                 bool dup = false;
                 for (int i = 0; i < s_sub_count; i++)
-                    if (_wcsicmp(s_sub_urls[i], s) == 0) dup = true;
-                if (n < 8 || !url_has_http_scheme(s)) {
-                    MessageBoxW(hwnd, L"请输入以 http:// 或 https:// 开头的订阅链接。",
-                                L"订阅", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                    if (wcscmp(s_sub_urls[i], s) == 0) dup = true;
+                const wchar_t *authority = wcsstr(s, L"://");
+                bool invalid_text = false;
+                for (const wchar_t *p = s; *p; p++)
+                    if (*p <= L' ' || *p == 127) invalid_text = true;
+                if (n < 8 || !url_has_http_scheme(s) || !authority || !authority[3] ||
+                    wcschr(L"/?#", authority[3]) || invalid_text) {
+                    subs_feedback(hwnd, L"请输入以 http:// 或 https:// 开头的完整订阅链接；本次未保存。", true);
                 } else if (dup) {
-                    MessageBoxW(hwnd, L"这个订阅已经加过了。",
-                                L"订阅", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                    subs_feedback(hwnd, L"这个订阅已经存在，未重复添加；输入已保留。", true);
                 } else if (s_sub_count >= SUBS_MAX) {
                     wchar_t full[160];
                     swprintf(full, 160, L"最多 32 个订阅源（当前 %d）。请先删掉不再需要的。", SUBS_MAX);
-                    MessageBoxW(hwnd, full, L"订阅", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                    subs_feedback(hwnd, full, true);
                 } else {
                     wcsncpy(s_sub_urls[s_sub_count], s, SUBS_URL_MAX - 1);
                     s_sub_urls[s_sub_count][SUBS_URL_MAX - 1] = 0;
                     s_sub_status[s_sub_count][0] = 0;
-                    s_sub_count++;
-                    subs_save_urls();
-                    subs_refresh_list(hwnd);
-                    SetWindowTextW(GetDlgItem(hwnd, IDC_SUB_URL), L"");
-                    swprintf(g_status, 4096, L"已添加订阅源，共 %d 个 - 点「立即更新全部」开始下载", s_sub_count);
+                    if (subs_save_urls((unsigned)s_sub_count + 1)) {
+                        s_sub_count++;
+                        subs_refresh_list(hwnd);
+                        SetWindowTextW(GetDlgItem(hwnd, IDC_SUB_URL), L"");
+                        wchar_t saved[160];
+                        swprintf(saved, 160, L"已保存订阅源，共 %d 个；点“立即更新全部”下载规则", s_sub_count);
+                        subs_feedback(hwnd, saved, false);
+                    } else {
+                        s_sub_urls[s_sub_count][0] = 0;
+                        subs_feedback(hwnd, L"来源保存失败，本次添加未生效；已保留输入及原有来源，请检查文件占用或目录写入权限", true);
+                    }
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_SUB_DEL) {
-                if (s_subs_running) return 0;
+                if (s_subs_running || s_sub_remove_index >= 0) return 0;
                 subs_load();
                 int sel = (int) SendMessageW(GetDlgItem(hwnd, IDC_SUB_LIST), LB_GETCURSEL, 0, 0);
                 if (sel < 0 || sel >= s_sub_count) {
-                    MessageBoxW(hwnd, L"请先在列表里选中一个订阅源。",
-                                L"订阅", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                    subs_feedback(hwnd, L"请先在列表里选中一个订阅源。", true);
                 } else {
-                    for (int i = sel; i + 1 < s_sub_count; i++) {
-                        wcsncpy(s_sub_urls[i], s_sub_urls[i + 1], SUBS_URL_MAX - 1);
-                        wcsncpy(s_sub_status[i], s_sub_status[i + 1], 159);
-                    }
-                    s_sub_count--;
-                    subs_save_urls();
-                    subs_save_status();
-                    subs_refresh_list(hwnd);
-                    swprintf(g_status, 4096, L"已删除，剩 %d 个订阅源", s_sub_count);
+                    s_sub_remove_index = sel;
+                    memcpy(s_sub_remove_url, s_sub_urls[sel], sizeof(s_sub_remove_url));
+                    wchar_t prompt[220];
+                    swprintf(prompt, 220, L"确认移除第 %d 个来源？完整链接见上方只读框。已导入规则会在下次成功更新后替换；也可取消。", sel + 1);
+                    subs_feedback(hwnd, prompt, false);
+                    subs_controls_refresh(hwnd);
+                    SetFocus(GetDlgItem(hwnd, IDC_SUB_CANCEL));
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
+        } else if (id == IDC_SUB_CONFIRM) {
+                subs_confirm_remove(hwnd);
+        } else if (id == IDC_SUB_CANCEL || (id == IDCANCEL && s_sub_remove_index >= 0)) {
+                subs_cancel_remove(hwnd);
+                SetFocus(GetDlgItem(hwnd, IDC_SUB_DEL));
         } else if (id == IDC_SUB_UPD) {
                 subs_start_update(hwnd);
                 InvalidateRect(hwnd, NULL, FALSE);
@@ -3491,10 +3629,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 2) {
             /* settings page */
             /* grouped card backgrounds behind the native controls */
-            int pol_bottom = 208 + ((POLICY_COUNT + 1) / 2) * 28;
-            rounded_card(hdc, 202, 12, 812, 156, 12, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 178, 812, pol_bottom - 164, 12, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 372, 812, 92, 12, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 12, 812, 166, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 190, 812, 184, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 386, 812, 232, 16, g_pal.card, g_pal.border);
 
             HFONT shf = mfont(15, FW_SEMIBOLD);
             HFONT lf = mfont(12, FW_NORMAL);
@@ -3509,19 +3646,18 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                      L"本机访问：http://localhost:%d · 勾选“监听所有网卡”并重启后局域网可访问",
                      g_http_port);
             TextOutW(hdc, S(218), S(44), shint, (int)wcslen(shint));
-            TextOutW(hdc, S(218), S(60), L"HTTP 端口:", 9);
-            TextOutW(hdc, S(508), S(60), L"HTTPS 端口:", 10);
+            TextOutW(hdc, S(218), S(76), L"HTTP 端口:", 9);
+            TextOutW(hdc, S(500), S(76), L"HTTPS 端口:", 10);
             SelectObject(hdc, shf);
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(218), S(184), L"拦截策略（勾选后立即生效）", 12);
-            TextOutW(hdc, S(218), S(378), L"证书与维护", 5);
+            TextOutW(hdc, S(218), S(202), L"拦截策略 · 点击切换响应方式", (int)wcslen(L"拦截策略 · 点击切换响应方式"));
+            TextOutW(hdc, S(218), S(398), L"证书与维护", 5);
             SelectObject(hdc, lf);
             SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(218), S(400), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
+            TextOutW(hdc, S(218), S(422), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
             SelectObject(hdc, old);
             DeleteObject(shf);
             DeleteObject(lf);
-            draw_listener_card(hdc, 202, 474, 812, 142, g_sn, 1);
             draw_statusbar(hdc);
             BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
             SelectObject(mem, oldbmp);
@@ -3557,6 +3693,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 4) {
             /* 订阅 page */
             draw_subs_page(hdc);
+            draw_statusbar(hdc);
             BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
             SelectObject(mem, oldbmp);
             DeleteObject(bmp);
@@ -3722,6 +3859,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                      job->result.status == SUB_UPDATE_PARSE_FAILED ? L"规则格式或大小不符合要求" :
                      job->result.status == SUB_UPDATE_PUBLISH_FAILED ? L"无法原子替换规则文件" : L"文件读写失败");
         }
+        subs_feedback(hwnd, g_status, job->result.status != SUB_UPDATE_OK);
         subs_save_status(); subs_refresh_list(hwnd); free(job);
         InvalidateRect(hwnd, NULL, FALSE); return 0;
     }
@@ -3779,10 +3917,10 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
         const DWORD style =
             (WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX |
              WS_MAXIMIZEBOX | WS_THICKFRAME | WS_CLIPCHILDREN);
-        /* The canvas uses 1024x680 logical *CLIENT* coordinates. Passing
+        /* The canvas uses 1032x678 logical *CLIENT* coordinates. Passing
          * those as the outer window dimensions clips the bottom status bar
          * behind the title bar and resize borders on initial launch. */
-        RECT outer = {0, 0, (LONG)(1024 * sc), (LONG)(680 * sc)};
+        RECT outer = {0, 0, (LONG)(DASH_W * sc), (LONG)(DASH_H * sc)};
         if (!AdjustWindowRectExForDpi(&outer, style, FALSE, 0, dpi)) {
             /* Safe fallback for unexpected older API/runtime behavior. */
             AdjustWindowRectEx(&outer, style, FALSE, 0);
@@ -3813,7 +3951,8 @@ int adblock_gui_run(const struct adblock_gui_args *args) {
             nav_keys, (int)(sizeof(nav_keys) / sizeof(nav_keys[0])));
         MSG msg;
         while (GetMessageW(&msg, NULL, 0, 0) > 0) {
-            if (nav_accel == NULL || !TranslateAcceleratorW(hwnd, nav_accel, &msg)) {
+            if ((nav_accel == NULL || !TranslateAcceleratorW(hwnd, nav_accel, &msg)) &&
+                !IsDialogMessageW(hwnd, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

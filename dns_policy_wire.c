@@ -1,5 +1,17 @@
 #include "dns_policy_wire.h"
+#include "block_rule_snapshot.h"
 #include <string.h>
+
+bool dns_policy_respond_from_rules(struct bs_store *rules, const uint8_t *query, size_t query_size,
+                        uint8_t *output, size_t capacity, size_t *written) {
+    if (written) *written = 0;
+    struct dns_policy_question question;
+    if (!rules || !dns_policy_parse_question(query, query_size, &question)) return false;
+    struct bs_result resolved = bs_decide(rules, question.domain, question.qtype, 1);
+    return resolved.generation && dns_policy_respond(query, query_size,
+            (enum dns_policy_action)resolved.decision.action, resolved.address,
+            resolved.family == 4 ? 4u : resolved.family == 6 ? 16u : 0u, output, capacity, written);
+}
 
 static uint16_t u16(const uint8_t *data, size_t offset) {
     return (uint16_t)(((uint16_t)data[offset] << 8) | data[offset + 1]);
