@@ -4,7 +4,7 @@ on:
   # Main-branch merges run CI only; publishing requires manual dispatch.
   workflow_dispatch:
   pull_request:
-    branches: [ main, feat/dns-tcp-diagnostics-v1, feat/typed-rule-provenance-v1, feat/traffic-mode-foundation, feat/core-contract-v1, feat/rule-loader-atomic-v1 ]
+    branches: [ main, feat/dns-aaaa-diagnostics-v1, feat/dns-tcp-diagnostics-v1, feat/typed-rule-provenance-v1, feat/traffic-mode-foundation, feat/core-contract-v1, feat/rule-loader-atomic-v1 ]
   push:
     tags: ['progress-win-*']
     branches: [ main, 'preview/release-*' ]

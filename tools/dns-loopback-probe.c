@@ -7,15 +7,20 @@
 #include <wchar.h>
 
 int wmain(int argc, wchar_t **argv) {
-    if (argc < 3 || argc > 5) { fputs("Usage: dns-loopback-probe.exe <hosts-or-abp-file> <loopback-port> [budget-ms] [A|AAAA]\nFixed example.com A/AAAA; budget 1..1200 ms; no DNS/route changes.\n", stderr); return 2; }
+    if (argc < 3 || argc > 6) { fputs("Usage: dns-loopback-probe.exe <hosts-or-abp-file> <loopback-port> [budget-ms] [A|AAAA] [ipv4|ipv6]\nFixed example.com A/AAAA; loopback only; budget 1..1200 ms; no DNS/route changes.\n", stderr); return 2; }
     wchar_t *end; long port = wcstol(argv[2], &end, 10);
     if (!*argv[2] || *end || port < 1 || port > 65535) return 2;
     long budget = 1200;
     if (argc >= 4) { budget = wcstol(argv[3], &end, 10); if (!*argv[3] || *end || budget < 1 || budget > 1200) return 2; }
     unsigned short type = 1;
-    if (argc == 5) {
+    if (argc >= 5) {
         if (!_wcsicmp(argv[4], L"AAAA")) type = 28;
         else if (_wcsicmp(argv[4], L"A")) return 2;
+    }
+    enum dns_probe_ip_version ip_version = DNS_PROBE_IPV4;
+    if (argc == 6) {
+        if (!_wcsicmp(argv[5], L"ipv6")) ip_version = DNS_PROBE_IPV6;
+        else if (_wcsicmp(argv[5], L"ipv4")) return 2;
     }
     FILE *file = _wfopen(argv[1], L"rb"); if (!file) { fputs("Cannot read rule file\n",stderr); return 2; }
     FILE *staged = tmpfile();
@@ -32,10 +37,10 @@ int wmain(int argc, wchar_t **argv) {
     uint8_t query[DDNS_QUERY_SIZE];
     if (!ddns_query_type(query,0x5353,type)) { WSACleanup(); bs_dispose(&rules); return 2; }
     struct dns_probe_result result;
-    enum dns_probe_status status = dns_probe_resolve(&rules,(unsigned short)port,query,sizeof(query),(unsigned)budget,NULL,&result);
-    printf("{\"status\":%d,\"transport\":\"%s\",\"bytes\":%llu,\"rule_action\":%d,\"source\":%lu,\"scope\":%d,\"generation\":%llu,\"query_type\":%u,\"response_hex\":\"",
+    enum dns_probe_status status = dns_probe_resolve_family(&rules,(unsigned short)port,query,sizeof(query),(unsigned)budget,NULL,ip_version,&result);
+    printf("{\"status\":%d,\"transport\":\"%s\",\"bytes\":%llu,\"rule_action\":%d,\"source\":%lu,\"scope\":%d,\"generation\":%llu,\"query_type\":%u,\"upstream_ip_version\":%d,\"response_hex\":\"",
         (int)status, result.size && !result.via_tcp && result.action ? "local" : result.via_tcp ? "tcp" : "udp",
-        (unsigned long long)result.size,result.action,(unsigned long)result.source,result.scope,(unsigned long long)result.generation,(unsigned)type);
+        (unsigned long long)result.size,result.action,(unsigned long)result.source,result.scope,(unsigned long long)result.generation,(unsigned)type,(int)ip_version);
     /* Only the fixed diagnostic response; never input paths or arbitrary traffic. */
     for (size_t i = 0; i < result.size; i++) printf("%02x", (unsigned)result.answer[i]);
     puts("\"}");

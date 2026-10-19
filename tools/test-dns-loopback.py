@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the shipped diagnostic CLI and real importer with loopback-only fixtures."""
 import json
+import errno
 import socket
 import struct
 import subprocess
@@ -22,14 +23,32 @@ def exact(stream, size):
 
 
 class Fixture:
-    def __init__(self, mode, query_type=1):
+    def __init__(self, mode, query_type=1, ip_version=4):
         self.mode, self.stop, self.errors = mode, threading.Event(), []
         self.query_type = query_type
         self.udp_count = self.tcp_count = 0
         self.tcp_query_received = False
-        self.tcp = socket.socket(); self.tcp.bind(('127.0.0.1', 0)); self.tcp.listen(1)
-        self.port = self.tcp.getsockname()[1]
-        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); self.udp.bind(('127.0.0.1', self.port))
+        family = socket.AF_INET6 if ip_version == 6 else socket.AF_INET
+        host = '::1' if ip_version == 6 else '127.0.0.1'
+        # TCP port zero does not reserve the same UDP port. Retry setup only
+        # on a real port collision; never reuse somebody else's listener.
+        for attempt in range(16):
+            self.tcp = socket.socket(family, socket.SOCK_STREAM)
+            self.udp = None
+            try:
+                self.udp = socket.socket(family, socket.SOCK_DGRAM)
+                if ip_version == 6:
+                    self.tcp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    self.udp.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                self.tcp.bind((host, 0)); self.port = self.tcp.getsockname()[1]
+                self.udp.bind((host, self.port)); self.tcp.listen(1)
+                break
+            except OSError as error:
+                self.tcp.close()
+                if self.udp is not None:
+                    self.udp.close()
+                if (error.errno != errno.EADDRINUSE and getattr(error, 'winerror', None) != 10048) or attempt == 15:
+                    raise
         self.tcp.settimeout(.1); self.udp.settimeout(.1)
         self.peers = []
         self.workers = [threading.Thread(target=self.guard, args=(self.serve_udp,)), threading.Thread(target=self.guard, args=(self.serve_tcp,))]
@@ -115,7 +134,7 @@ class Fixture:
         assert not self.errors, self.errors
 
 
-def run(executable, policy_vectors):
+def run(executable, policy_vectors, ip_version):
     records = []
     cases = [('udp', '', 0, 0), ('tcp', '', 0, 1), ('bad-udp', '', 4, 0),
              ('bad-id', '', 4, 1), ('tcp-tc', '', 4, 1), ('oversize', '', 4, 1),
@@ -139,15 +158,15 @@ def run(executable, policy_vectors):
         source = Path(root) / '规则 source.txt'
         for mode, rules, status, tcp_used, query_type, vector in cases:
             source.write_text(rules, encoding='utf-8')
-            fixture = Fixture(mode, query_type)
+            fixture = Fixture(mode, query_type, ip_version)
             try:
                 begin = time.monotonic()
                 arguments = [str(executable), str(source), str(fixture.port)]
                 # Keep the original shortest CLI invocation under regression:
                 # omitting both optional arguments still means A / 1200 ms.
-                if not (mode == 'udp' and query_type == 1 and vector is None):
+                if not (mode == 'udp' and query_type == 1 and vector is None and ip_version == 4):
                     arguments += ['230' if mode in ('slow','silent') else '1000',
-                                  'A' if query_type == 1 else 'AAAA']
+                                  'A' if query_type == 1 else 'AAAA', 'ipv6' if ip_version == 6 else 'ipv4']
                 completed = subprocess.run(arguments, capture_output=True, text=True, timeout=5)
                 elapsed = time.monotonic()-begin
                 result = json.loads(completed.stdout)
@@ -155,6 +174,7 @@ def run(executable, policy_vectors):
                 assert result['transport'] == ('local' if rules and not tcp_used else 'tcp' if tcp_used else 'udp'), result
                 assert completed.returncode == (0 if status == 0 else 1)
                 assert result['query_type'] == query_type
+                assert result['upstream_ip_version'] == ip_version
                 assert fixture.tcp_count == tcp_used, (mode, fixture.tcp_count)
                 if rules and not tcp_used:
                     assert fixture.udp_count == 0 and result['source'] == 2 and result['generation'] == 1
@@ -175,22 +195,31 @@ def run(executable, policy_vectors):
                 if mode in ('slow','silent'):
                     assert elapsed < 1.1, elapsed
                 records.append({'case': vector[0] if vector else mode, 'query_type': query_type,
-                                'rule_hit': bool(rules), 'result': result})
+                                'upstream_ip_version': ip_version, 'rule_hit': bool(rules), 'result': result})
             finally:
                 fixture.close()
-        fixture = Fixture('tcp')
+        fixture = Fixture('tcp', ip_version=ip_version)
         try:
             for invalid in ('MX', 'AAAAA', '', '28'):
-                failed = subprocess.run([str(executable), str(source), str(fixture.port), '1000', invalid],
+                failed = subprocess.run([str(executable), str(source), str(fixture.port), '1000', invalid,
+                                         'ipv6' if ip_version == 6 else 'ipv4'],
+                                        capture_output=True, text=True, timeout=5)
+                assert failed.returncode == 2 and not failed.stdout
+            for invalid in ('ipv5', '::1', ''):
+                failed = subprocess.run([str(executable), str(source), str(fixture.port), '1000', 'A', invalid],
                                         capture_output=True, text=True, timeout=5)
                 assert failed.returncode == 2 and not failed.stdout
             assert fixture.udp_count == 0 and fixture.tcp_count == 0
         finally:
             fixture.close()
     assert len(records) == 41
-    print(json.dumps({'loopback_only': True, 'policy_vectors': vector_count, 'invalid_types_rejected': 4, 'cases': records}, indent=2))
+    return records
 
 
 if __name__ == '__main__':
-    run(Path(sys.argv[1]).resolve(), Path(sys.argv[2]) if len(sys.argv) > 2
-        else Path(__file__).resolve().parents[1] / 'dns-contract' / 'diagnostic_dns_policy_vectors.tsv')
+    executable = Path(sys.argv[1]).resolve()
+    vectors = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).resolve().parents[1] / 'dns-contract' / 'diagnostic_dns_policy_vectors.tsv'
+    records = run(executable,vectors,4) + run(executable,vectors,6)
+    assert len(records) == 82
+    print(json.dumps({'loopback_only': True, 'ip_versions': [4,6], 'policy_vectors': 16,
+                      'invalid_types_rejected': 8, 'invalid_ip_versions_rejected': 6, 'cases': records}, indent=2))

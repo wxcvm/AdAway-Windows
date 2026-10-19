@@ -1,4 +1,5 @@
 #include "dns_probe_win32.h"
+#include <ws2tcpip.h>
 #include "diagnostic_dns_reply.h"
 #include "dns_policy_wire.h"
 #include "block_rule_snapshot.h"
@@ -33,22 +34,38 @@ static enum dns_probe_status transfer(SOCKET socket, uint8_t *bytes, size_t size
     if (cancel && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0) return DNS_PROBE_CANCELLED;
     return GetTickCount64() >= deadline ? DNS_PROBE_TIMEOUT : DNS_PROBE_OK;
 }
-static SOCKET open_socket(int type) {
-    SOCKET value = socket(AF_INET, type, type == SOCK_STREAM ? IPPROTO_TCP : IPPROTO_UDP);
+static SOCKET open_socket(int type, enum dns_probe_ip_version ip_version) {
+    SOCKET value = socket(ip_version == DNS_PROBE_IPV6 ? AF_INET6 : AF_INET,
+        type, type == SOCK_STREAM ? IPPROTO_TCP : IPPROTO_UDP);
     if (value == INVALID_SOCKET) return value;
+    if (ip_version == DNS_PROBE_IPV6) {
+        DWORD only = 1;
+        if (setsockopt(value,IPPROTO_IPV6,IPV6_V6ONLY,(const char *)&only,sizeof(only)) == SOCKET_ERROR) {
+            closesocket(value); return INVALID_SOCKET;
+        }
+    }
     u_long enabled = 1;
     if (ioctlsocket(value, FIONBIO, &enabled) == SOCKET_ERROR) { closesocket(value); return INVALID_SOCKET; }
     return value;
 }
 static enum dns_probe_status exchange(unsigned short port, const uint8_t *query, size_t size,
-    unsigned budget, HANDLE cancel, struct dns_probe_result *result) {
+    unsigned budget, HANDLE cancel, enum dns_probe_ip_version ip_version, struct dns_probe_result *result) {
     ULONGLONG deadline = GetTickCount64() + budget;
-    struct sockaddr_in endpoint; memset(&endpoint, 0, sizeof(endpoint));
-    endpoint.sin_family = AF_INET; endpoint.sin_port = htons(port); endpoint.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    union { struct sockaddr_in v4; struct sockaddr_in6 v6; } endpoint;
+    memset(&endpoint, 0, sizeof(endpoint)); int endpoint_size;
+    if (ip_version == DNS_PROBE_IPV6) {
+        endpoint.v6.sin6_family = AF_INET6; endpoint.v6.sin6_port = htons(port);
+        ((uint8_t *)&endpoint.v6.sin6_addr)[15] = 1; /* numeric ::1 only */
+        endpoint_size = sizeof(endpoint.v6);
+    } else {
+        endpoint.v4.sin_family = AF_INET; endpoint.v4.sin_port = htons(port);
+        endpoint.v4.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        endpoint_size = sizeof(endpoint.v4);
+    }
     enum dns_probe_status status = DNS_PROBE_IO;
-    SOCKET value = open_socket(SOCK_DGRAM);
+    SOCKET value = open_socket(SOCK_DGRAM,ip_version);
     if (value == INVALID_SOCKET) return status;
-    if (connect(value, (const struct sockaddr *)&endpoint, sizeof(endpoint)) == SOCKET_ERROR) goto done;
+    if (connect(value, (const struct sockaddr *)&endpoint, endpoint_size) == SOCKET_ERROR) goto done;
     status = ready(value, 1, deadline, cancel);
     if (status != DNS_PROBE_OK) goto done;
     if (send(value, (const char *)query, (int)size, 0) != (int)size) { status = DNS_PROBE_IO; goto done; }
@@ -61,10 +78,10 @@ static enum dns_probe_status exchange(unsigned short port, const uint8_t *query,
     enum ddns_reply kind = ddns_classify(query, size, buffer, (size_t)n);
     if (kind == DDNS_ACCEPT) { memcpy(result->answer, buffer, (size_t)n); result->size = (size_t)n; status = DNS_PROBE_OK; goto done; }
     if (kind != DDNS_RETRY_TCP) { status = DNS_PROBE_BAD_REPLY; goto done; }
-    closesocket(value); value = open_socket(SOCK_STREAM);
+    closesocket(value); value = open_socket(SOCK_STREAM,ip_version);
     if (value == INVALID_SOCKET) return DNS_PROBE_IO;
     result->via_tcp = 1;
-    if (connect(value, (const struct sockaddr *)&endpoint, sizeof(endpoint)) == SOCKET_ERROR) {
+    if (connect(value, (const struct sockaddr *)&endpoint, endpoint_size) == SOCKET_ERROR) {
         int error = WSAGetLastError();
         if (error != WSAEWOULDBLOCK && error != WSAEINPROGRESS) { status = DNS_PROBE_IO; goto done; }
     }
@@ -88,11 +105,13 @@ done:
     if (status != DNS_PROBE_OK) { result->size = 0; memset(result->answer, 0, sizeof(result->answer)); }
     return status;
 }
-enum dns_probe_status dns_probe_resolve(struct bs_store *rules, unsigned short port,
-    const uint8_t *query, size_t size, unsigned budget, HANDLE cancel, struct dns_probe_result *result) {
+enum dns_probe_status dns_probe_resolve_family(struct bs_store *rules, unsigned short port,
+    const uint8_t *query, size_t size, unsigned budget, HANDLE cancel,
+    enum dns_probe_ip_version ip_version, struct dns_probe_result *result) {
     if (!result) return DNS_PROBE_INVALID;
     memset(result, 0, sizeof(*result));
-    if (!rules || !port || !budget || budget > 1200 || !ddns_allowed(query, size)) return DNS_PROBE_INVALID;
+    if (!rules || !port || !budget || budget > 1200 || !ddns_allowed(query, size)
+            || (ip_version != DNS_PROBE_IPV4 && ip_version != DNS_PROBE_IPV6)) return DNS_PROBE_INVALID;
     if (cancel && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0) return DNS_PROBE_CANCELLED;
     struct bs_result resolved = bs_decide(rules, "example.com", ddns_u16(query, 25), 1);
     if (!resolved.generation) return DNS_PROBE_INVALID;
@@ -101,5 +120,10 @@ enum dns_probe_status dns_probe_resolve(struct bs_store *rules, unsigned short p
     if (dns_policy_respond(query, size, (enum dns_policy_action)resolved.decision.action,
             resolved.address, resolved.family == 4 ? 4u : resolved.family == 6 ? 16u : 0u,
             result->answer, sizeof(result->answer), &result->size)) return DNS_PROBE_OK;
-    return exchange(port, query, size, budget, cancel, result);
+    return exchange(port, query, size, budget, cancel, ip_version, result);
+}
+
+enum dns_probe_status dns_probe_resolve(struct bs_store *rules, unsigned short port,
+    const uint8_t *query, size_t size, unsigned budget, HANDLE cancel, struct dns_probe_result *result) {
+    return dns_probe_resolve_family(rules,port,query,size,budget,cancel,DNS_PROBE_IPV4,result);
 }
