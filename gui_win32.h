@@ -3,7 +3,7 @@
 #include <stdbool.h>
 
 /* Version marker - shown in the window title and the console startup log. */
-#define ADBLOCK_APP_VERSION "1.75"
+#define ADBLOCK_APP_VERSION "1.76"
 
 /*
  * Wide counterpart of ADBLOCK_APP_VERSION.
@@ -23,6 +23,7 @@ struct adblock_gui_args {
     int http_port;
     int https_port;
     int stats_port;             /* loopback management port (statistics/control) */
+    const char *bind_ip;        /* optional literal address, overrides bind_all */
     bool bind_all;              /* listen on all interfaces */
     bool start_minimized;       /* show only the tray icon (autostart) */
     bool owns_server;           /* true when this process runs the server thread */

@@ -1,54 +1,15 @@
-# Windows progress preview installation
+# 覆盖升级预览版
 
-This is a progress inspection build. Choose one of these routes:
+2026-10-19 起，发布的预览包使用正式版安装标识，不再另外安装 ADBlock Preview。
+安装前退出当前程序。运行 `adblock-webserver-setup.exe`，确认安装位置仍是原来的 ADBlock 目录。
+安装器保留已有设置、订阅、证书和统计。可选当前用户或所有用户；升级已有安装时保持原来的安装范围。
+PowerShell 用户可运行发布附件 `install-preview.ps1`；所有用户安装加 `-AllUsers`。
 
-| Route | Artifact | Scope |
-|---|---|---|
-| Normal install | `adblock-preview-user-x64.exe` | Current user; no administrator account required |
-| All users | `adblock-preview-machine-x64.exe` | Program Files; asks for administrator approval |
-| Portable | `adblock-webserver-win64.zip` | Extract into a new writable folder, run `start-preview.bat` |
-| PowerShell | `install-preview.ps1` | Downloads this exact release, checks its embedded SHA-256, then uses one of the three routes above |
+免安装用户：退出程序后备份原目录，将 ZIP 中程序文件覆盖到原目录；保留原有 `webserver.ini` 和 `resources`。
+不要把 ZIP 当成全新目录使用，否则配置、证书和统计自然不会迁移。
+压缩包不是导入按钮，不会通过“检查更新”强制重装当前版本。
 
-PowerShell examples after downloading and inspecting the script:
-
-```powershell
-.\install-preview.ps1 -Method User
-.\install-preview.ps1 -Method Machine
-.\install-preview.ps1 -Method Portable -InstallDirectory "$env:LOCALAPPDATA\ADBlockPreviewPortable"
-```
-
-GitHub CLI users can also download the portable package with
-`gh release download <progress-tag> -R wxcvm/AdAway-Windows -p adblock-webserver-win64.zip`.
-No winget/Chocolatey/Store registration is claimed by this release.
-
-Preview installers use their own AppId, installation directory and shortcuts.
-They do not stop a running production process, register autostart, install a
-CA or automatically run the server after installation. Shortcuts and
-`start-preview.bat` bind loopback only, with HTTP 18080, HTTPS 18443 and
-management 18686. In-app production updating is disabled in the preview
-binary. Closing the preview stops its listener; it does not represent OS
-route/DNS recovery or global capture.
-
-The v1.75 UI inspection installer and its embedded webserver.exe are
-**unsigned**. On Windows 11 with Smart App Control in enforcement mode,
-the installer may be blocked before any dialog or log is created. There
-may be **no** "More info" override. Do not disable Defender, SmartScreen
-or Smart App Control for this preview. An unsigned portable build may
-also be blocked by the same policy; it is an alternative diagnostic,
-not a security workaround.
-
-To distinguish a damaged download from an unsigned-app block, check the
-release SHA256SUMS and the Windows Security > Protection history, then
-Windows Security > App & browser control > Smart App Control settings.
-The read-only script `tools/diagnose-preview-installer.ps1` reports
-the SHA-256 hash, Authenticode signature state and relevant recent Code
-Integrity events. It does not execute the installer or alter security settings.
-
-Use the portable route only when Windows policy permits it and only if
-you trust the release. Do not extract over an existing production folder.
-Check `SHA256SUMS.txt` against downloaded files. The normal production preview publication workflow requires the **original production Authenticode certificate** for the Windows executable and preview installers. A separate UI-inspection build from October 17, 2026 was intentionally published **without a signature** because no production PFX was configured. The unsigned inspection Release is not a substitute for the signed channel, and may be blocked on a protected Windows 11 PC. A checksum only verifies downloaded bytes; it cannot establish trusted publisher identity.
-MSI, MSIX and public package-manager distribution remain future work.
-
-Current implementation and incomplete platform acceptance are described in
-`IMPLEMENTATION-STATUS.md`. Keep the original production installation/data;
-this preview is not the production update feed.
+预览 Release 附有源码提交和 SHA-256。当前 Windows 包按仓库现有策略未做 Authenticode 签名。
+预览发布不更新 `win11-latest` 或第三方稳定更新源；应用中的检查更新仍检查稳定更新源。
+本次包含自定义监听 IPv4 / IPv6、冲突检测和明确可恢复的更新方式设置。
+旧的独立 Preview 安装不会自动迁移到正式版；需要先自行备份旧预览中的数据。

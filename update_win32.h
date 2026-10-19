@@ -25,6 +25,9 @@ struct update_info {
 
 /* Check the release feed in the background (never blocks the UI). */
 void update_check_async(HWND hwnd);
+/* Persistent and reversible. Returns 0 on write failure or while updating. */
+int update_portable_mode(void);
+int update_set_portable_mode(int enabled);
 /* Download url into file with the updater's HTTP client (WinHTTP, proxy
    detection, resume, retries). The dashboard's subscription updater uses this
    so the platform has one HTTP implementation, not two. Returns 1 on success. */

@@ -44,6 +44,8 @@ echo "==> Compiling webserver.exe ..."
 PREVIEW_CFLAGS=()
 if [ "${ADBLOCK_PREVIEW_BUILD:-0}" = 1 ]; then
   PREVIEW_CFLAGS=(-DADBLOCK_PREVIEW_BUILD=1)
+elif [ "${ADBLOCK_INPLACE_PREVIEW:-0}" = 1 ]; then
+  PREVIEW_CFLAGS=(-DADBLOCK_INPLACE_PREVIEW=1)
 fi
 gcc \
   "${PREVIEW_CFLAGS[@]}" \

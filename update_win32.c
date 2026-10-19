@@ -75,13 +75,13 @@ int update_state(void) {
  *                    update when the installer cannot be started;
  *   installer      - installer only (fail loudly, no fallback);
  *   portable       - never start the installer, always replace in place.
- * The dashboard's "用便携包更新" button writes "portable" here, which is the
- * escape hatch for machines where policy or antivirus blocks executables from
- * running out of %TEMP%.
+ * The dashboard exposes a reversible preference; changing it does not start
+ * an update or bypass the version/digest checks.
  */
 #define UPDATE_MODE_AUTO 0
 #define UPDATE_MODE_INSTALLER 1
 #define UPDATE_MODE_PORTABLE 2
+#include "update_package_policy.h"
 
 /* Defined further down (the proxy/ini helpers); declared here because the mode
    reader above needs it. */
@@ -95,6 +95,15 @@ static int update_mode_pref(void) {
     if (_wcsicmp(value, L"portable") == 0) return UPDATE_MODE_PORTABLE;
     if (_wcsicmp(value, L"installer") == 0) return UPDATE_MODE_INSTALLER;
     return UPDATE_MODE_AUTO;
+}
+
+int update_portable_mode(void) { return update_mode_pref() == UPDATE_MODE_PORTABLE; }
+
+int update_set_portable_mode(int enabled) {
+    wchar_t ini[MAX_PATH];
+    if (update_state() != UPDATE_STATE_IDLE || !ini_path(ini, MAX_PATH)) return 0;
+    return WritePrivateProfileStringW(L"settings", L"update_mode",
+                                     enabled ? L"portable" : L"auto", ini) != 0;
 }
 
 /* Copy text to the clipboard (used by the failure dialogs' "复制诊断信息"). */
@@ -609,22 +618,21 @@ static void release_pick_choose(const struct release_pick *p, wchar_t *url, size
                                 wchar_t *alt_url, size_t alt_url_cap,
                                 char *alt_sha, size_t alt_sha_cap,
                                 wchar_t *alt_api, size_t alt_api_cap) {
-    /*
-     * 用户明确要求：不再因为"当前是便携版"就下发 zip。只要 Release 里带了安装包，
-     * 就一律用安装包 —— 便携版运行安装器后会变成安装版，此后更新也走安装包，
-     * 彻底告别"下载 zip → 手动解压 → 覆盖"。
-     */
+    /* Automatic mode prefers the installer; an explicit ZIP choice is honored
+       before downloading anything. Both use the same release's digest. */
     int installed_copy = running_copy_is_installed();   /* 仅用于日志，不再决定选包 */
-    int portable = 0;
-    const char *u = p->exe_url[0] ? p->exe_url : p->zip_url;
-    const char *s = portable ? p->zip_sha : (p->exe_url[0] ? p->exe_sha : p->zip_sha);
-    const char *a = portable ? p->zip_api_url : (p->exe_url[0] ? p->exe_api_url : p->zip_api_url);
+    int portable = update_portable_mode();
+    win32_log_line("update: package preference=%s installed_copy=%d", portable ? "ZIP" : "automatic", installed_copy);
+    int primary=update_primary_package(p->exe_url[0]!=0,p->zip_url[0]!=0,portable);
+    const char *u = primary==1 ? p->exe_url : primary==2 ? p->zip_url : "";
+    const char *s = primary==1 ? p->exe_sha : primary==2 ? p->zip_sha : "";
+    const char *a = primary==1 ? p->exe_api_url : primary==2 ? p->zip_api_url : "";
     /* The other package of the same release, as a second chance when the first
        one cannot be fetched at all. */
-    int alt_is_exe = portable && p->exe_url[0];
-    const char *au = alt_is_exe ? p->exe_url : (!portable && p->zip_url[0] ? p->zip_url : NULL);
-    const char *as = alt_is_exe ? p->exe_sha : (!portable && p->zip_url[0] ? p->zip_sha : NULL);
-    const char *aa = alt_is_exe ? p->exe_api_url : (!portable && p->zip_url[0] ? p->zip_api_url : NULL);
+    int alternate=update_alternate_package(p->exe_url[0]!=0,p->zip_url[0]!=0,portable);
+    const char *au = alternate==2 ? p->zip_url : NULL;
+    const char *as = alternate==2 ? p->zip_sha : NULL;
+    const char *aa = alternate==2 ? p->zip_api_url : NULL;
     if (url && url_cap) url[0] = 0;
     if (api_url && api_cap) api_url[0] = 0;
     if (sha && sha_cap) sha[0] = 0;
