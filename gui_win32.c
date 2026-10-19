@@ -229,6 +229,12 @@ static char g_res[512];
 static int  g_http_port;
 static int  g_https_port;
 static char g_bind_ip[64];
+static void listener_display_host(char out[68]) {
+    const char *host=*g_bind_ip ? g_bind_ip : "localhost";
+    if (!strcmp(host,"0.0.0.0")) host="127.0.0.1";
+    else if (!strcmp(host,"::")) host="::1";
+    snprintf(out,68,strchr(host,':') ? "[%s]" : "%s",host);
+}
 static bool g_listener_ready;
 static bool g_bind_all;
 static bool g_start_minimized;
@@ -1914,9 +1920,10 @@ static void draw_statusbar(HDC hdc) {
     HFONT old = (HFONT)SelectObject(hdc, f);
     SetBkMode(hdc, TRANSPARENT);
     wchar_t main[256];
-    swprintf(main, 256, L"%ls · http://localhost:%d  |  https://localhost:%d",
+    char host[68]; listener_display_host(host);
+    swprintf(main, 256, L"%ls · http://%hs:%d  |  https://%hs:%d",
              up ? L"服务器运行中" : L"服务器未连接",
-             g_http_port, g_https_port);
+             host, g_http_port, host, g_https_port);
     SetTextColor(hdc, up ? C_GREEN_TXT : RGB(190, 70, 70));
     RECT service_label = {S(40), S(640), S(415), S(662)};
     DrawTextW(hdc, main, -1, &service_label,
@@ -2203,7 +2210,8 @@ static bool tray_add(HWND hwnd) {
                                      GetSystemMetrics(SM_CYSMICON), LR_SHARED);
         g_nid.hIcon = (ti != NULL) ? ti : LoadIconW(NULL, IDI_APPLICATION);
     }
-    swprintf(g_nid.szTip, 128, L"ADBlock 拦截服务器 - http://localhost:%d", g_http_port);
+    char host[68]; listener_display_host(host);
+    swprintf(g_nid.szTip, 128, L"ADBlock 拦截服务器 - http://%hs:%d", host, g_http_port);
     BOOL ok = Shell_NotifyIconW(NIM_ADD, &g_nid);
     g_tray_ok = (ok == TRUE);
     g_tray_initialized = g_tray_ok;
@@ -3442,6 +3450,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
+        if (HIWORD(wp) == EN_CHANGE &&
+            (LOWORD(wp) == IDC_BIND_IP || LOWORD(wp) == IDC_HTTP_EDIT || LOWORD(wp) == IDC_HTTPS_EDIT)) {
+            if (g_listener_ready) SetTimer(hwnd, 3, 600, NULL);
+            return 0;
+        }
         if (HIWORD(wp) == BN_CLICKED) {
             int id = LOWORD(wp);
             if (id == IDM_TRUST || id == IDM_UNTRUST) {
@@ -3494,8 +3507,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_CHECK_LISTEN) {
             listener_validate(hwnd, true);
-        } else if (id == IDC_BIND_CHK ||
-                   ((id == IDC_BIND_IP || id == IDC_HTTP_EDIT || id == IDC_HTTPS_EDIT) && HIWORD(wp) == EN_CHANGE)) {
+        } else if (id == IDC_BIND_CHK) {
             if (g_listener_ready) SetTimer(hwnd, 3, 600, NULL);
         } else if (id == IDC_PORTABLEUPD) {
             int portable = !update_portable_mode();
@@ -3608,9 +3620,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 theme_apply(g_dark);
                 apply_window_chrome(hwnd, g_dark);
                 apply_control_theme(hwnd);
-                ini_save(g_http_port, g_https_port, g_bind_all);
-                swprintf(g_status, 4096, L"已切换为%ls主题（下次启动仍然生效）",
-                         g_dark ? L"深色" : L"浅色");
+                if (ini_save(g_http_port, g_https_port, g_bind_all))
+                    swprintf(g_status, 4096, L"已切换为%ls主题（下次启动仍然生效）", g_dark ? L"深色" : L"浅色");
+                else swprintf(g_status, 4096, L"本次外观已切换，但偏好保存失败；重启后不会保留，请检查配置目录权限。");
                 InvalidateRect(hwnd, NULL, TRUE);
             } else if (id == IDC_DIAG) {
                 diag_write_file(hwnd);
@@ -3727,9 +3739,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SelectObject(hdc, lf);
             SetTextColor(hdc, g_pal.muted);
             wchar_t shint[320];
+            char host[68]; listener_display_host(host);
             swprintf(shint, 320,
-                     L"本机访问：http://localhost:%d · 勾选“监听所有网卡”并重启后局域网可访问",
-                     g_http_port);
+                     L"当前访问：http://%hs:%d · 自定义 IP 优先于网卡开关，保存并重启后生效",
+                     host, g_http_port);
             TextOutW(hdc, S(218), S(44), shint, (int)wcslen(shint));
             TextOutW(hdc, S(218), S(76), L"HTTP 端口:", 9);
             TextOutW(hdc, S(500), S(76), L"HTTPS 端口:", 10);

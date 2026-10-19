@@ -111,7 +111,12 @@ Set-Page 0; Save-Window 'overview-light'
 Set-Page 2; Save-Window 'settings-light'
 $ipControl=[UiReviewNative]::GetDlgItem($window,1190)
 Set-ControlText $ipControl 'localhost'
-Send-BoundedMessage $window 0x111 ([IntPtr]1191) ([IntPtr]::Zero)
+$autoDeadline=(Get-Date).AddSeconds(5)
+do {
+    Start-Sleep -Milliseconds 150
+    $autoResult=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
+} until ($autoResult -match 'IPv4' -or (Get-Date) -gt $autoDeadline)
+if ($autoResult -notmatch 'IPv4') { throw 'Listener validation did not run automatically after editing' }
 $result=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
 if ($result -notmatch 'IPv4') { throw 'Invalid IP did not receive visible listener feedback' }
 Set-ControlText $ipControl '::1'
