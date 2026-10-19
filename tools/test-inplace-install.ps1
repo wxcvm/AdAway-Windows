@@ -15,7 +15,8 @@ function Stop-TestInstallation {
 }
 try {
     foreach ($iteration in @(1,2)) {
-        $install=Start-Process -WindowStyle Hidden -FilePath $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=$base") -Wait -PassThru
+        $install=Start-Process -WindowStyle Hidden -FilePath $installer -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=$base") -PassThru
+        if (!$install.WaitForExit(90000)) { Stop-Process -Id $install.Id -Force; throw 'Installer did not exit within 90 seconds' }
         if ($install.ExitCode -ne 0) { throw "In-place install $iteration failed: $($install.ExitCode)" }
         $stats=$null;$deadline=(Get-Date).AddSeconds(20)
         while (!$stats -and (Get-Date) -lt $deadline) {
