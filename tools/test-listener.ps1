@@ -38,3 +38,19 @@ foreach ($ip in @('127.0.0.2','::1')) {
     } finally { if (!$p.HasExited) { Stop-Process -Id $p.Id -Force }; $p.WaitForExit() }
 }
 Write-Output 'Actual webserver main: no-resource conflict checks and custom IPv4/IPv6 service startup passed'
+$lan=Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' -and $_.AddressState -eq 'Preferred' } | Select-Object -First 1 -ExpandProperty IPAddress
+if (!$lan) { throw 'Disposable runner has no LAN interface for remote-peer isolation check' }
+$p=Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList @('--resources',"`"$res`"",'--bind-ip',$lan,'--http-port',19080,'--https-port',19443,'--stats-port',19686,'--proxy-filter','--no-gui') -PassThru
+try {
+    $ready=$false;$deadline=(Get-Date).AddSeconds(20)
+    while (!$ready -and (Get-Date) -lt $deadline) {
+        try { $null=Invoke-RestMethod 'http://127.0.0.1:19686/internal-stats' -TimeoutSec 1; $ready=$true }
+        catch { Start-Sleep -Milliseconds 200 }
+    }
+    if (!$ready) { throw 'LAN response instance did not become ready' }
+    foreach ($path in @('/internal-stats','/')) {
+        $response=Invoke-WebRequest "http://${lan}:19080$path" -SkipHttpErrorCheck -NoProxy -TimeoutSec 3
+        if ($response.StatusCode -ne 403) { throw "LAN peer could reach private/forwarding path: $path" }
+    }
+} finally { if (!$p.HasExited) { Stop-Process -Id $p.Id -Force }; $p.WaitForExit() }
+Write-Output 'LAN peer denied diagnostic access and transparent forwarding; loopback management remained available'

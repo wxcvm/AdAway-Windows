@@ -13,6 +13,12 @@ int main(int argc, char *argv[]) {
     hook('    bool              bind_all;   /* listen on all interfaces */',
          '    char bind_ip[64];\n    bool              bind_all;   /* listen on all interfaces */')
     hook('static struct settings parse_cli_parameters(', '#include "listen_address.h"\nstatic struct settings parse_cli_parameters(')
+    hook('''    /* The management port only answers the internal endpoints. */''', '''    /* A LAN response binding must never become a public forward proxy. */
+    if (s->proxy_filter && !internal_endpoint_reachable(c, s)) {
+        mg_http_reply(c, 403, "Content-Type: text/plain\\r\\n", "forbidden");
+        return;
+    }
+    /* The management port only answers the internal endpoints. */''')
     hook('''        } else if (strcmp(argv[i], "--bind") == 0 && i < argc-1) {''', '''        } else if (strcmp(argv[i], "--bind-ip") == 0 && i < argc-1) {
             if (!la_normalize(argv[++i], s.bind_ip)) {
                 s_cli_error = "--bind-ip requires an IPv4 or IPv6 literal";
