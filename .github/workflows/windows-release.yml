@@ -764,7 +764,8 @@ jobs:
           $run = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "ADBlockWebServer" -ErrorAction SilentlyContinue
           Write-Output ("autostart installed: " + $run.ADBlockWebServer)
           if ($run.ADBlockWebServer -notmatch '--minimized') { throw "autostart command lacks --minimized (window would never show)" }
-          if ($run.ADBlockWebServer -notmatch '--stats-port') { throw "autostart command lacks --stats-port" }
+          if ($run.ADBlockWebServer -notmatch '--resources') { throw "autostart command lacks saved resource directory" }
+          if ($run.ADBlockWebServer -match '--(stats-port|http-port|https-port|bind)') { throw "autostart command would override persisted listener settings" }
           $pU = Start-Process -FilePath "dist\webserver.exe" -ArgumentList @("--resources",$res2,"--http-port","18082","--https-port","18445","--no-gui","--uninstall-autostart") -Wait -PassThru
           if ($pU.ExitCode -ne 0) { throw "uninstall-autostart exited with code $($pU.ExitCode)" }
           $exists2 = $false
