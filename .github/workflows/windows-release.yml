@@ -125,6 +125,8 @@ jobs:
           python tools/test-listen-owner.py ./listen-owner-probe.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic update_package_policy_test.c -o update_package_policy_test.exe
           ./update_package_policy_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic control_http_result_test.c -o control_http_result_test.exe
+          ./control_http_result_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
           ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe

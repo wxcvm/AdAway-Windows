@@ -44,6 +44,7 @@
 #include "subscription_update_win32.h"
 #include "subscription_settings_win32.h"
 #include "listener_conflict_win32.h"
+#include "control_http_result.h"
 #include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
@@ -1074,7 +1075,7 @@ static void policy_read(const char *dir, bool *vals) {
 
 /* Declared before use: both are defined further down (the settings helpers
    come first in this file). */
-static void control_post(int port, const char *cmd, wchar_t *status, size_t statusn);
+static bool control_post(int port, const char *cmd, wchar_t *status, size_t statusn);
 static int mgmt_port(void);
 /* The status line lives in the GUI state block further down; declared here so
    the policy helpers can write to it. */
@@ -1145,29 +1146,44 @@ static void policy_sync_controls(HWND hwnd) {
 static void policy_apply_modes(HWND hwnd, const int *modes, const wchar_t *what) {
     policy_save_modes(g_res, modes);
     wchar_t st[128] = L"";
-    control_post(mgmt_port(), "reload_config", st, 128);
+    bool confirmed=control_post(mgmt_port(), "reload_config", st, 128);
     policy_sync_controls(hwnd);
-    swprintf(g_status, 4096, L"%ls（已生效；点击某个类型可在 占位/空响应/204/不拦截 之间切换）",
-             what ? what : L"拦截方式已更新");
+    swprintf(g_status, 4096, L"%ls；%ls（%ls）", what ? what : L"拦截方式设置请求",
+             confirmed ? L"服务端已重新读取配置" : L"未确认服务端加载",st);
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
 /* POST /control (cmd=reload_config | flush_stats | shutdown) */
-static void control_post(int port, const char *cmd, wchar_t *status, size_t statusn) {
+static bool control_post(int port, const char *cmd, wchar_t *status, size_t statusn) {
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) {
         wchar_t w[16];
         utf8_to_wide(cmd, w, 16);
         if (statusn) swprintf(status, statusn, L"控制命令 %ls: 连接失败", w);
-        return;
+        return false;
     }
     SOCKADDR_IN addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons((u_short)port);
     addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-    int ok = -1;
-    if (connect(s, (SOCKADDR *)&addr, sizeof(addr)) == 0) {
+    int code = 0;
+    char detail[256]="";
+    DWORD timeout=2000;
+    setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(const char *)&timeout,sizeof(timeout));
+    setsockopt(s,SOL_SOCKET,SO_SNDTIMEO,(const char *)&timeout,sizeof(timeout));
+    u_long nonblocking=1; ioctlsocket(s,FIONBIO,&nonblocking);
+    bool connected=connect(s,(SOCKADDR *)&addr,sizeof(addr))==0;
+    if (!connected && WSAGetLastError()==WSAEWOULDBLOCK) {
+        fd_set writable,errors; FD_ZERO(&writable); FD_ZERO(&errors); FD_SET(s,&writable); FD_SET(s,&errors);
+        struct timeval budget={2,0};
+        if (select(0,NULL,&writable,&errors,&budget)>0 && FD_ISSET(s,&writable)) {
+            int error=0,length=sizeof(error);
+            connected=getsockopt(s,SOL_SOCKET,SO_ERROR,(char *)&error,&length)==0 && error==0;
+        }
+    }
+    nonblocking=0; ioctlsocket(s,FIONBIO,&nonblocking);
+    if (connected) {
         char body[128];
         int bl = snprintf(body, sizeof(body), "cmd=%s", cmd);
         /*
@@ -1193,13 +1209,34 @@ static void control_post(int port, const char *cmd, wchar_t *status, size_t stat
             "X-ADBlock-Token: %s\r\n"
             "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
             token, bl, body);
-        if (rl > 0 && send(s, req, rl, 0) == rl) ok = 0;
+        int sent=0;
+        ULONGLONG deadline=GetTickCount64()+2000;
+        while (sent<rl && GetTickCount64()<deadline) { int n=send(s,req+sent,rl-sent,0); if (n<=0) break; sent+=n; }
+        if (rl>0 && sent==rl) {
+            char response[2048]={0}; size_t used=0;
+            while (used<sizeof(response)-1 && !strstr(response,"\r\n\r\n") && GetTickCount64()<deadline) {
+                int n=recv(s,response+used,(int)(sizeof(response)-1-used),0);
+                if (n<=0) break;
+                used+=(size_t)n; response[used]=0;
+            }
+            code=control_http_status(response);
+            const char *body=strstr(response,"\r\n\r\n");
+            if (body) {
+                snprintf(detail,sizeof(detail),"%s",body+4);
+                for (char *ch=detail;*ch;ch++) if (*ch=='\r'||*ch=='\n') *ch=' ';
+            }
+        }
     }
     closesocket(s);
     wchar_t w[16];
     utf8_to_wide(cmd, w, 16);
-    if (statusn) swprintf(status, statusn, L"控制命令 %ls: %ls",
-                          w, ok == 0 ? L"成功" : L"失败");
+    if (statusn) {
+        wchar_t message[256]; utf8_to_wide(detail,message,256);
+        if (code) swprintf(status,statusn,L"%ls：HTTP %d（%ls）%ls",w,code,code>=200 && code<300 ? L"服务端已确认" : L"服务端拒绝或执行失败",message);
+        else swprintf(status,statusn,L"%ls：未收到完整响应，请检查服务状态",w);
+    }
+    win32_log_line("control: %s acknowledged HTTP %d",cmd,code);
+    return code>=200 && code<300;
 }
 
 /* ── certificate helpers ────────────────────────────────────────── */
@@ -2303,10 +2340,10 @@ static const struct ctl_desc g_clayout[] = {
     { IDM_TEST,       562, 468, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
     { IDM_AUTOSTART,  760, 471, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
     { IDC_CAROTATE,   218, 510, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
-    { IDC_CADROP,     480, 510, 250, 30, L"BUTTON", L"撤销旧 CA（90 天后）", BS_PUSHBUTTON },
+    { IDC_CADROP,     480, 510, 250, 30, L"BUTTON", L"完成 CA 轮换（90 天后）", BS_PUSHBUTTON },
     { IDC_DIAG,       742, 510, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
     { IDC_SUBRELOAD,  218, 552, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
-    { IDC_FLUSH,      480, 552, 250, 30, L"BUTTON", L"清空统计", BS_PUSHBUTTON },
+    { IDC_FLUSH,      480, 552, 250, 30, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
     { IDC_POLDEF,     742, 552, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
     { IDC_PORTABLEUPD,218, 594, 250, 30, L"BUTTON", L"更新方式：自动（推荐）", BS_PUSHBUTTON },
     { IDM_UPDATE,    480, 594, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
@@ -3488,21 +3525,19 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 InvalidateRect(hwnd, NULL, FALSE);
             } else if (id == IDC_SUBRELOAD) {
             wchar_t st[128];
-            control_post(mgmt_port(), "reload_subscriptions", st, 128);
-            swprintf(g_status, 4096, L"规则订阅已重新加载（%ls）", st);
+            bool reloaded=control_post(mgmt_port(), "reload_subscriptions", st, 128);
+            swprintf(g_status, 4096, L"本地订阅重载%ls：%ls", reloaded ? L"已确认" : L"未确认", st);
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_CAROTATE) {
             wchar_t st[256];
-            control_post(mgmt_port(), "rotate_ca", st, 256);
-            swprintf(g_status, 4096,
-                     L"已生成新 CA：请在每台设备上重新信任它（旧的仍然有效，90 天并存）。%ls",
-                     st);
+            bool rotated=control_post(mgmt_port(), "rotate_ca", st, 256);
+            swprintf(g_status, 4096, rotated ? L"新 CA 已生成，旧 CA 保留 90 天；请在每台设备上信任新 CA。%ls" : L"未确认生成新 CA：%ls", st);
             cert_refresh(true);
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_CADROP) {
             wchar_t st[256];
             control_post(mgmt_port(), "drop_old_ca", st, 256);
-            swprintf(g_status, 4096, L"撤销旧 CA：%ls", st);
+            swprintf(g_status, 4096, L"CA 轮换：%ls；成功后请信任当前 CA 并重启服务。", st);
             cert_refresh(true);
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_CHECK_LISTEN) {
