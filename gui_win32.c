@@ -995,52 +995,6 @@ static bool ini_save(int http_port, int https_port, bool bind_all) {
 }
 
 
-static bool listener_read(HWND hwnd, char ip[64], int *http, int *https, bool *all) {
-    char text[64], normalized[64];
-    GetDlgItemTextA(hwnd, IDC_BIND_IP, text, sizeof(text));
-    if (*text && !la_normalize(text, normalized)) return false;
-    snprintf(ip, 64, "%s", *text ? normalized : "");
-    GetDlgItemTextA(hwnd, IDC_HTTP_EDIT, text, sizeof(text)); *http=la_port(text);
-    GetDlgItemTextA(hwnd, IDC_HTTPS_EDIT, text, sizeof(text)); *https=la_port(text);
-    *all=SendDlgItemMessageW(hwnd, IDC_BIND_CHK, BM_GETCHECK, 0, 0)==BST_CHECKED;
-    return *http && *https && *http!=*https && *http!=g_stats_port && *https!=g_stats_port;
-}
-
-static const wchar_t *listener_description(int status) {
-    switch (status) {
-        case 0: return L"可绑定";
-        case 6: return L"本程序监听";
-        case 1: return L"其他进程占用";
-        case 2: return L"非本机 IP";
-        case 3: return L"无权限或系统保留";
-        default: return L"无法绑定";
-    }
-}
-
-static bool listener_validate(HWND hwnd, bool explicit_check) {
-    char ip[64]; int http,https; bool all;
-    if (!listener_read(hwnd,ip,&http,&https,&all)) {
-        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请输入完整本机 IPv4 / IPv6；端口须为 1–65535，HTTP、HTTPS 与管理端口不能相同。支持 ::1，不支持 [::1] 或区域编号。");
-        return false;
-    }
-    EnableWindow(GetDlgItem(hwnd,IDC_BIND_CHK), !*ip);
-    const char *target=*ip ? ip : all ? "0.0.0.0" : "127.0.0.1";
-    DWORD hp=0,sp=0;
-    int h=listener_status(target,http,&hp),s=listener_status(target,https,&sp);
-    wchar_t report[700];
-    swprintf(report,700,L"HTTP %d：%ls / PID%lu；HTTPS %d：%ls / PID%lu。",
-             http,listener_description(h),(unsigned long)hp,https,listener_description(s),(unsigned long)sp);
-    if (!*ip) {
-        DWORD owner; const char *ip6=all ? "::" : "::1";
-        int h6=listener_status(ip6,http,&owner),s6=listener_status(ip6,https,&owner);
-        size_t used=wcslen(report);
-        swprintf(report+used,700-used,L"\nIPv6 辅助监听：HTTP %ls；HTTPS %ls。管理服务保持回环。",listener_description(h6),listener_description(s6));
-    }
-    SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,report);
-    if (explicit_check) InvalidateRect(hwnd,NULL,FALSE);
-    return (h==0 || h==6) && (s==0 || s==6);
-}
-
 /* Reads theme= from webserver.ini; returns THEME_SYSTEM when absent. */
 static int ini_read_theme(void) {
     char path[1024], line[256];
@@ -1507,9 +1461,14 @@ int win32_autostart_set(bool enable, const char *cmdline) {
 }
 
 bool win32_autostart_installed(void) {
-    LONG r = RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE,
-        RRF_RT_REG_SZ, NULL, NULL, NULL);
-    return r == ERROR_SUCCESS;
+    wchar_t command[2048], exe[MAX_PATH]; DWORD bytes=sizeof(command);
+    if (RegGetValueW(HKEY_CURRENT_USER,RUN_KEY,RUN_VALUE,RRF_RT_REG_SZ,NULL,command,&bytes)!=ERROR_SUCCESS)
+        return false;
+    if (!GetModuleFileNameW(NULL,exe,MAX_PATH)) return false;
+    int count=0; wchar_t **arguments=CommandLineToArgvW(command,&count);
+    bool owned=arguments && count>0 && _wcsicmp(arguments[0],exe)==0;
+    if (arguments) LocalFree(arguments);
+    return owned;
 }
 
 /* ── dashboard window ───────────────────────────────────────────── */
@@ -2473,6 +2432,52 @@ static const wchar_t *log_mode_label(int m) {
  * so a second click cannot start a competing thread and the user can see where
  * the pipeline actually is.
  */
+static bool listener_read(HWND hwnd, char ip[64], int *http, int *https, bool *all) {
+    char text[64], normalized[64];
+    GetDlgItemTextA(hwnd, IDC_BIND_IP, text, sizeof(text));
+    if (*text && !la_normalize(text, normalized)) return false;
+    snprintf(ip, 64, "%s", *text ? normalized : "");
+    GetDlgItemTextA(hwnd, IDC_HTTP_EDIT, text, sizeof(text)); *http=la_port(text);
+    GetDlgItemTextA(hwnd, IDC_HTTPS_EDIT, text, sizeof(text)); *https=la_port(text);
+    *all=SendDlgItemMessageW(hwnd, IDC_BIND_CHK, BM_GETCHECK, 0, 0)==BST_CHECKED;
+    return *http && *https && *http!=*https && *http!=g_stats_port && *https!=g_stats_port;
+}
+
+static const wchar_t *listener_description(int status) {
+    switch (status) {
+        case 0: return L"可绑定";
+        case 6: return L"本程序监听";
+        case 1: return L"其他进程占用";
+        case 2: return L"非本机 IP";
+        case 3: return L"无权限或系统保留";
+        default: return L"无法绑定";
+    }
+}
+
+static bool listener_validate(HWND hwnd, bool explicit_check) {
+    char ip[64]; int http,https; bool all;
+    if (!listener_read(hwnd,ip,&http,&https,&all)) {
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请输入完整本机 IPv4 / IPv6；端口须为 1–65535，HTTP、HTTPS 与管理端口不能相同。支持 ::1，不支持 [::1] 或区域编号。");
+        return false;
+    }
+    EnableWindow(GetDlgItem(hwnd,IDC_BIND_CHK), !*ip);
+    const char *target=*ip ? ip : all ? "0.0.0.0" : "127.0.0.1";
+    DWORD hp=0,sp=0;
+    int h=listener_status(target,http,&hp),s=listener_status(target,https,&sp);
+    wchar_t report[700];
+    swprintf(report,700,L"HTTP %d：%ls / PID%lu；HTTPS %d：%ls / PID%lu。",
+             http,listener_description(h),(unsigned long)hp,https,listener_description(s),(unsigned long)sp);
+    if (!*ip) {
+        DWORD owner; const char *ip6=all ? "::" : "::1";
+        int h6=listener_status(ip6,http,&owner),s6=listener_status(ip6,https,&owner);
+        size_t used=wcslen(report);
+        swprintf(report+used,700-used,L"\nIPv6 辅助监听：HTTP %ls；HTTPS %ls。管理服务保持回环。",listener_description(h6),listener_description(s6));
+    }
+    SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,report);
+    if (explicit_check) InvalidateRect(hwnd,NULL,FALSE);
+    return (h==0 || h==6) && (s==0 || s==6);
+}
+
 static void update_button_refresh(HWND hwnd) {
     HWND b = GetDlgItem(hwnd, IDM_UPDATE);
     if (b == NULL) return;
@@ -3583,8 +3588,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 char cmd[2048], exe[MAX_PATH];
                 get_module_path_utf8(exe, sizeof(exe));
                 snprintf(cmd, sizeof(cmd),
-                         "\"%s\" --resources \"%s\" --http-port %d --https-port %d --stats-port %d --minimized",
-                         exe, g_res, g_http_port, g_https_port, g_stats_port);
+                         "\"%s\" --resources \"%s\" --minimized", exe, g_res);
                 win32_autostart_set(on, cmd);
                 swprintf(g_status, 4096, L"开机自启动已%ls", on ? L"启用" : L"关闭");
                 InvalidateRect(hwnd, NULL, FALSE);

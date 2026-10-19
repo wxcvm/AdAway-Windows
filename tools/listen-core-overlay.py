@@ -35,6 +35,10 @@ int main(int argc, char *argv[]) {
     /* Autostart entry self-heal:''')
     hook('''        args.bind_all = s.bind_all;''', '''        args.bind_all = s.bind_all;
         args.bind_ip = s.bind_ip;''', 2)
+    hook('''        snprintf(cmd, sizeof(cmd), "\\"%s\\" --resources \\"%s\\" --http-port %d --https-port %d "
+                 "--stats-port %d --minimized",
+                 exe, s.resource_dir, s.http_port, s.https_port, s.stats_port);''',
+         '''        snprintf(cmd, sizeof(cmd), "\\"%s\\" --resources \\"%s\\" --minimized", exe, s.resource_dir);''')
     begin = source.index('    const char *v4 = s.bind_all ? "0.0.0.0" : "127.0.0.1";')
     end = source.index('\n\n    char startup_warning', begin)
     source = source[:begin] + '''    la_urls(s.bind_ip, s.bind_all, s.http_port, s.https_port,
