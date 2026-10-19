@@ -2,7 +2,7 @@
 from pathlib import Path
 import subprocess
 
-ANDROID_REVISION='7a0788803'
+ANDROID_REVISION='6b4920efff7207338827516ca659ec009e82b508'
 root=Path(__file__).resolve().parent.parent
 for name in ['listen_address.h','listen_address_test.c']:
     url=f'https://raw.githubusercontent.com/wxcvm/AdAway/{ANDROID_REVISION}/webserver/jni/{name}'

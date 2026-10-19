@@ -618,13 +618,11 @@ static void release_pick_choose(const struct release_pick *p, wchar_t *url, size
                                 wchar_t *alt_url, size_t alt_url_cap,
                                 char *alt_sha, size_t alt_sha_cap,
                                 wchar_t *alt_api, size_t alt_api_cap) {
-    /*
-     * 用户明确要求：不再因为"当前是便携版"就下发 zip。只要 Release 里带了安装包，
-     * 就一律用安装包 —— 便携版运行安装器后会变成安装版，此后更新也走安装包，
-     * 彻底告别"下载 zip → 手动解压 → 覆盖"。
-     */
+    /* Automatic mode prefers the installer; an explicit ZIP choice is honored
+       before downloading anything. Both use the same release's digest. */
     int installed_copy = running_copy_is_installed();   /* 仅用于日志，不再决定选包 */
     int portable = update_portable_mode();
+    win32_log_line("update: package preference=%s installed_copy=%d", portable ? "ZIP" : "automatic", installed_copy);
     int primary=update_primary_package(p->exe_url[0]!=0,p->zip_url[0]!=0,portable);
     const char *u = primary==1 ? p->exe_url : primary==2 ? p->zip_url : "";
     const char *s = primary==1 ? p->exe_sha : primary==2 ? p->zip_sha : "";
