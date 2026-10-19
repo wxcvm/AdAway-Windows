@@ -21,11 +21,12 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.75
+      TAG: win11-webserver-v1.76
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
-      ADBLOCK_PREVIEW_BUILD: ${{ (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && '1' || '0' }}
+      ADBLOCK_PREVIEW_BUILD: ${{ github.event_name == 'pull_request' && '1' || '0' }}
+      ADBLOCK_INPLACE_PREVIEW: ${{ (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
@@ -108,6 +109,7 @@ jobs:
         shell: msys2 {0}
         run: |
           bash fetch-core-contract.sh
+          python tools/verify-listener-contract.py
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/domain_rule_snapshot_test.c -o domain_rule_snapshot_test.exe -lws2_32
           directory=$(mktemp -d)
           ./domain_rule_snapshot_test.exe shared-contract/source_loader_vectors.txt "$directory"
@@ -117,6 +119,12 @@ jobs:
           ./typed_rule_snapshot_test.exe shared-contract/typed_rule_vectors.tsv
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -Ishared-contract subscription_update_win32.c subscription_update_win32_test.c -o subscription_update_win32_test.exe -lws2_32
           ./subscription_update_win32_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic listen_address_test.c -lws2_32 -o listen_address_test.exe
+          ./listen_address_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -I. tools/listen-owner-probe.c -lws2_32 -liphlpapi -o listen-owner-probe.exe
+          python tools/test-listen-owner.py ./listen-owner-probe.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic update_package_policy_test.c -o update_package_policy_test.exe
+          ./update_package_policy_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
           ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
@@ -554,6 +562,10 @@ jobs:
             Get-Process -Name webserver -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           }
 
+      - name: Test actual custom listener startup and conflict checks
+        shell: pwsh
+        run: ./tools/test-listener.ps1
+
       - name: Upload desktop UI screenshots and layout evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -955,7 +967,7 @@ jobs:
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
           }
 
-      - name: Verify production signer parity and sign BOTH preview installers
+      - name: Verify production signer parity and sign in-place preview installer
         if: env.WINDOWS_UNSIGNED_RELEASE != '1' && (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-'))
         shell: msys2 {0}
         env:
@@ -985,8 +997,8 @@ jobs:
             || { echo "::error::production Windows EXE is not signed by the configured preview signer"; exit 1; }
           osslsigncode verify -CAfile "$pem" dist/webserver.exe \
             || { echo "::error::current preview webserver executable signature invalid"; exit 1; }
-          for label in user machine; do
-            exe="dist-installer/adblock-preview-${label}-x64.exe"
+          for label in inplace; do
+            exe="dist-installer/adblock-webserver-setup.exe"
             test -s "$exe"
             osslsigncode sign -pkcs12 "$pfx" -pass "$SIGN_CERT_PASS" -h sha256 \
               -n "ADBlock Preview" -i "https://github.com/wxcvm/AdAway-Windows" \

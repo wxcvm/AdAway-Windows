@@ -2,6 +2,7 @@
 import hashlib
 import pathlib
 import sys
+import importlib.util
 
 SOURCE_SHA256 = "ff4461fdc16d734568216d4c9827bbf965450248a014ea90f9b5c5398bdfe9dc"
 
@@ -127,7 +128,10 @@ static void block_set_load(const char *resource_dir) {
     source = source[:left] + replacement + source[right:]
     if "android/log.h" not in source or "win32_dirent.h" not in source:
         raise ValueError("portable source guards unexpectedly changed")
-    return source
+    spec = importlib.util.spec_from_file_location("listen_overlay", pathlib.Path(__file__).with_name("listen-core-overlay.py"))
+    overlay = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(overlay)
+    return overlay.prepare_listener(source)
 
 
 if __name__ == "__main__":

@@ -109,6 +109,21 @@ function Save-Window([string]$Name) {
 Set-ClientSize 1032 678
 Set-Page 0; Save-Window 'overview-light'
 Set-Page 2; Save-Window 'settings-light'
+$ipControl=[UiReviewNative]::GetDlgItem($window,1190)
+Set-ControlText $ipControl 'localhost'
+Send-BoundedMessage $window 0x111 ([IntPtr]1191) ([IntPtr]::Zero)
+$result=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
+if ($result -notmatch 'IPv4') { throw 'Invalid IP did not receive visible listener feedback' }
+Set-ControlText $ipControl '::1'
+Send-BoundedMessage $window 0x111 ([IntPtr]1191) ([IntPtr]::Zero)
+$result=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
+if ($result -notmatch 'HTTP') { throw 'IPv6 listener check did not reach real port detection' }
+Set-ControlText $ipControl ''
+Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch 'ZIP') { throw 'ZIP update preference not visible' }
+Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch '自动') { throw 'ZIP update preference cannot be restored' }
+Save-Window 'settings-listener-feedback'
 Set-Page 4; Save-Window 'subscriptions-light'
 $delete=[UiReviewNative]::GetDlgItem($window,1143)
 if ([UiReviewNative]::IsWindowEnabled($delete)) { throw 'Delete must be disabled without a selection' }

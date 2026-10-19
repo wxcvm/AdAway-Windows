@@ -43,6 +43,8 @@
 #include "windows_network_inventory_win32.h"
 #include "subscription_update_win32.h"
 #include "subscription_settings_win32.h"
+#include "listener_conflict_win32.h"
+#include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
    system) while the rest of the code treats such strings as UTF-8, which made
@@ -226,6 +228,8 @@ struct snapshot {
 static char g_res[512];
 static int  g_http_port;
 static int  g_https_port;
+static char g_bind_ip[64];
+static bool g_listener_ready;
 static bool g_bind_all;
 static bool g_start_minimized;
 static int  g_tab;
@@ -882,6 +886,9 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_SUB_SELECTED 1146
 #define IDC_SUB_CONFIRM 1147
 #define IDC_SUB_CANCEL 1148
+#define IDC_BIND_IP 1190
+#define IDC_CHECK_LISTEN 1191
+#define IDC_LISTEN_STATUS 1192
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
 
 /*
@@ -933,7 +940,7 @@ static void ini_file_path(char *out, size_t n) {
     snprintf(out, n, "%s\\webserver.ini", exe);
 }
 
-static void ini_save(int http_port, int https_port, bool bind_all) {
+static bool ini_save(int http_port, int https_port, bool bind_all) {
     char path[1024];
     ini_file_path(path, sizeof(path));
     /*
@@ -953,32 +960,85 @@ static void ini_save(int http_port, int https_port, bool bind_all) {
             if (strncmp(line, "http_port=", 10) == 0 ||
                 strncmp(line, "https_port=", 11) == 0 ||
                 strncmp(line, "bind_all=", 9) == 0 ||
-                strncmp(line, "theme=", 6) == 0) continue;
+                strncmp(line, "theme=", 6) == 0 || strncmp(line, "bind_ip=", 8) == 0) continue;
             size_t n = strlen(line);
             char *grown = (char *) realloc(kept, kept_len + n + 1);
-            if (grown == NULL) break;
+            if (grown == NULL) { free(kept); fclose(r); return false; }
             kept = grown;
             memcpy(kept + kept_len, line, n);
             kept_len += n;
             kept[kept_len] = 0;
         }
+        if (ferror(r)) { free(kept); fclose(r); return false; }
         fclose(r);
     }
-    FILE *f = fopen(path, "w");
-    if (f == NULL) {
-        free(kept);
-        return;
-    }
+    char staged[1100];
+    snprintf(staged, sizeof(staged), "%s.%lu.tmp", path, (unsigned long)GetCurrentProcessId());
+    FILE *f = fopen(staged, "w");
+    if (f == NULL) { free(kept); return false; }
     fprintf(f, "http_port=%d\n", http_port);
     fprintf(f, "https_port=%d\n", https_port);
     fprintf(f, "bind_all=%d\n", bind_all ? 1 : 0);
     fprintf(f, "theme=%d\n", g_theme_pref);
+    fprintf(f, "bind_ip=%s\n", g_bind_ip);
     if (kept != NULL && kept_len > 0) {
         fwrite(kept, 1, kept_len, f);
         if (kept[kept_len - 1] != '\n') fputc('\n', f);
     }
-    fclose(f);
+    bool ok = !ferror(f) && fflush(f) == 0;
+    if (ok) ok = FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(f))) != 0;
+    if (fclose(f) != 0) ok = false;
     free(kept);
+    if (ok) ok = MoveFileExA(staged, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (!ok) DeleteFileA(staged);
+    return ok;
+}
+
+
+static bool listener_read(HWND hwnd, char ip[64], int *http, int *https, bool *all) {
+    char text[64], normalized[64];
+    GetDlgItemTextA(hwnd, IDC_BIND_IP, text, sizeof(text));
+    if (*text && !la_normalize(text, normalized)) return false;
+    snprintf(ip, 64, "%s", *text ? normalized : "");
+    GetDlgItemTextA(hwnd, IDC_HTTP_EDIT, text, sizeof(text)); *http=la_port(text);
+    GetDlgItemTextA(hwnd, IDC_HTTPS_EDIT, text, sizeof(text)); *https=la_port(text);
+    *all=SendDlgItemMessageW(hwnd, IDC_BIND_CHK, BM_GETCHECK, 0, 0)==BST_CHECKED;
+    return *http && *https && *http!=*https && *http!=g_stats_port && *https!=g_stats_port;
+}
+
+static const wchar_t *listener_description(int status) {
+    switch (status) {
+        case 0: return L"可绑定";
+        case 6: return L"本程序监听";
+        case 1: return L"其他进程占用";
+        case 2: return L"非本机 IP";
+        case 3: return L"无权限或系统保留";
+        default: return L"无法绑定";
+    }
+}
+
+static bool listener_validate(HWND hwnd, bool explicit_check) {
+    char ip[64]; int http,https; bool all;
+    if (!listener_read(hwnd,ip,&http,&https,&all)) {
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请输入完整本机 IPv4 / IPv6；端口须为 1–65535，HTTP、HTTPS 与管理端口不能相同。支持 ::1，不支持 [::1] 或区域编号。");
+        return false;
+    }
+    EnableWindow(GetDlgItem(hwnd,IDC_BIND_CHK), !*ip);
+    const char *target=*ip ? ip : all ? "0.0.0.0" : "127.0.0.1";
+    DWORD hp=0,sp=0;
+    int h=listener_status(target,http,&hp),s=listener_status(target,https,&sp);
+    wchar_t report[700];
+    swprintf(report,700,L"HTTP %d：%ls / PID%lu；HTTPS %d：%ls / PID%lu。",
+             http,listener_description(h),(unsigned long)hp,https,listener_description(s),(unsigned long)sp);
+    if (!*ip) {
+        DWORD owner; const char *ip6=all ? "::" : "::1";
+        int h6=listener_status(ip6,http,&owner),s6=listener_status(ip6,https,&owner);
+        size_t used=wcslen(report);
+        swprintf(report+used,700-used,L"\nIPv6 辅助监听：HTTP %ls；HTTPS %ls。管理服务保持回环。",listener_description(h6),listener_description(s6));
+    }
+    SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,report);
+    if (explicit_check) InvalidateRect(hwnd,NULL,FALSE);
+    return (h==0 || h==6) && (s==0 || s==6);
 }
 
 /* Reads theme= from webserver.ini; returns THEME_SYSTEM when absent. */
@@ -1509,7 +1569,7 @@ static void theme_apply(int dark) {
 #define C_GREEN      RGB(34, 197, 94)
 #define C_GREEN_TXT  (g_dark ? RGB(139, 213, 194) : RGB(24, 112, 87))
 
-#ifdef ADBLOCK_PREVIEW_BUILD
+#if defined(ADBLOCK_PREVIEW_BUILD) || defined(ADBLOCK_INPLACE_PREVIEW)
 static const wchar_t *g_title = L"ADBlock Preview v" ADBLOCK_APP_VERSION_W;
 #else
 static const wchar_t *g_title = L"ADBlock 拦截服务器 v" ADBLOCK_APP_VERSION_W;
@@ -2262,24 +2322,27 @@ struct ctl_desc { int id; int x, y, w, h; const wchar_t *cls, *text; int style; 
 static const struct ctl_desc g_clayout[] = {
     { IDC_HTTP_EDIT,  300, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
     { IDC_HTTPS_EDIT, 590, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
-    { IDC_BIND_CHK,   218, 106, 300, 24, L"BUTTON", L"监听所有网卡（局域网）", BS_AUTOCHECKBOX },
-    { IDC_ADGUARD_HOME, 710, 106, 280, 26, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
+    { IDC_BIND_CHK,   218, 106, 180, 24, L"BUTTON", L"所有网卡（IP 留空）", BS_AUTOCHECKBOX },
+    { IDC_BIND_IP,    410, 106, 280, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
+    { IDC_CHECK_LISTEN,710,106,280,26,L"BUTTON",L"检测地址和端口冲突",BS_PUSHBUTTON },
+    { IDC_LISTEN_STATUS,218,174,772,40,L"STATIC",L"",SS_LEFT },
+    { IDC_ADGUARD_HOME, 742, 594, 250, 30, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
     { IDC_SAVE,       218, 140, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
     { IDC_RESTART,    340, 140, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
     { IDC_FIXPORT,    472, 140, 220, 28, L"BUTTON", L"改用备用端口 18080/18443", BS_PUSHBUTTON },
     { IDM_DARK,       720, 142, 200, 24, L"BUTTON", L"深色外观", BS_AUTOCHECKBOX },
-    { IDM_TRUST,      218, 448, 160, 30, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
-    { IDM_UNTRUST,    390, 448, 160, 30, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
-    { IDM_TEST,       562, 448, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
-    { IDM_AUTOSTART,  760, 451, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
-    { IDC_CAROTATE,   218, 490, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
-    { IDC_CADROP,     480, 490, 250, 30, L"BUTTON", L"撤销旧 CA（90 天后）", BS_PUSHBUTTON },
-    { IDC_DIAG,       742, 490, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
-    { IDC_SUBRELOAD,  218, 532, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
-    { IDC_FLUSH,      480, 532, 250, 30, L"BUTTON", L"清空统计", BS_PUSHBUTTON },
-    { IDC_POLDEF,     742, 532, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
-    { IDC_PORTABLEUPD,218, 574, 250, 30, L"BUTTON", L"用便携包更新", BS_PUSHBUTTON },
-    { IDM_UPDATE,    480, 574, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDM_TRUST,      218, 468, 160, 30, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
+    { IDM_UNTRUST,    390, 468, 160, 30, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
+    { IDM_TEST,       562, 468, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
+    { IDM_AUTOSTART,  760, 471, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
+    { IDC_CAROTATE,   218, 510, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
+    { IDC_CADROP,     480, 510, 250, 30, L"BUTTON", L"撤销旧 CA（90 天后）", BS_PUSHBUTTON },
+    { IDC_DIAG,       742, 510, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
+    { IDC_SUBRELOAD,  218, 552, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
+    { IDC_FLUSH,      480, 552, 250, 30, L"BUTTON", L"清空统计", BS_PUSHBUTTON },
+    { IDC_POLDEF,     742, 552, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 594, 250, 30, L"BUTTON", L"更新方式：自动（推荐）", BS_PUSHBUTTON },
+    { IDM_UPDATE,    480, 594, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
    be a hand-kept constant, and when IDM_UPDATE (检查更新) was appended the
@@ -2338,7 +2401,7 @@ static void layout_controls(HWND hwnd) {
     /* policy checkboxes */
     for (int i = 0; i < POLICY_COUNT; i++) {
         int cx = (i % 2 == 0) ? 218 : 610;
-        int cy = 228 + (i / 2) * 28;
+        int cy = 248 + (i / 2) * 28;
         HWND w = GetDlgItem(hwnd, IDC_POL0 + i);
         if (w) SetWindowPos(w, NULL, S(cx), S(cy), S(370), S(26), SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -2424,6 +2487,7 @@ static void update_button_refresh(HWND hwnd) {
     else if (st == 4) label = L"安装中…";
     SetWindowTextW(b, label);
     EnableWindow(b, st == 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_PORTABLEUPD), st == 0);
 }
 
 /* ── "应用日志" page ──────────────────────────────────────────────
@@ -3166,6 +3230,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_http_port = args->http_port;
         g_https_port = args->https_port;
         g_bind_all = args->bind_all;
+        snprintf(g_bind_ip, sizeof(g_bind_ip), "%s", args->bind_ip ? args->bind_ip : "");
         g_start_minimized = args->start_minimized;
         g_stats_port = args->stats_port > 0 ? args->stats_port : 8686;
         g_owns_server = args->owns_server;
@@ -3201,7 +3266,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         for (int i = 0; i < POLICY_COUNT; i++) {
             int cx = (i % 2 == 0) ? 218 : 610;
-            int cy = 228 + (i / 2) * 28;
+            int cy = 248 + (i / 2) * 28;
             s_ctrls[s_ctrl_count++] = CreateWindowExW(0, L"BUTTON", g_policy[i].label,
                 /* A plain button whose caption IS the current method
                    ("图片：占位响应"); clicking cycles 占位 → 空响应 → 204 →
@@ -3211,6 +3276,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 (HMENU)(INT_PTR)g_policy[i].id, hinst, NULL);
         }
         layout_controls(hwnd);
+        SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, update_portable_mode() ? L"更新方式：ZIP 覆盖" : L"更新方式：自动（推荐）");
+        SetDlgItemTextA(hwnd, IDC_BIND_IP, g_bind_ip);
+        SendDlgItemMessageW(hwnd, IDC_BIND_IP, EM_SETLIMITTEXT, 45, 0);
+        SendDlgItemMessageW(hwnd, IDC_BIND_IP, EM_SETCUEBANNER, TRUE, (LPARAM)L"监听 IP，留空使用左侧开关");
         SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETCUEBANNER, TRUE,
                      (LPARAM)L"https://example.com/hosts.txt");
         SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETLIMITTEXT, SUBS_URL_MAX - 1, 0);
@@ -3228,6 +3297,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                      g_bind_all ? BST_CHECKED : BST_UNCHECKED, 0);
         SendMessageW(GetDlgItem(hwnd, IDM_AUTOSTART), BM_SETCHECK,
                      win32_autostart_installed() ? BST_CHECKED : BST_UNCHECKED, 0);
+        g_listener_ready = true;
+        SetTimer(hwnd, 3, 600, NULL);
         bool pol[POLICY_COUNT];
         policy_read(g_res, pol);
         for (int i = 0; i < POLICY_COUNT; i++)
@@ -3247,6 +3318,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER: {
+        if (wp == 3) { KillTimer(hwnd, 3); listener_validate(hwnd, false); return 0; }
         DWORD probe_now = GetTickCount();
         if (probe_now - g_adguard_probe_tick >= 30000) {
             g_adguard_signal = adguard_process_probe();
@@ -3406,14 +3478,20 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             swprintf(g_status, 4096, L"撤销旧 CA：%ls", st);
             cert_refresh(true);
             InvalidateRect(hwnd, NULL, FALSE);
+        } else if (id == IDC_CHECK_LISTEN) {
+            listener_validate(hwnd, true);
+        } else if (id == IDC_BIND_CHK ||
+                   ((id == IDC_BIND_IP || id == IDC_HTTP_EDIT || id == IDC_HTTPS_EDIT) && HIWORD(wp) == EN_CHANGE)) {
+            if (g_listener_ready) SetTimer(hwnd, 3, 600, NULL);
         } else if (id == IDC_PORTABLEUPD) {
-            /* webserver.ini: update_mode=portable (auto is the default). */
-            char ini[1024];
-            ini_file_path(ini, sizeof(ini));
-            WritePrivateProfileStringA("settings", "update_mode", "portable", ini);
-            swprintf(g_status, 4096,
-                     L"已切换为便携包更新模式（zip 就地替换，跳过安装器），正在检查更新…");
-            update_check_async(hwnd);
+            int portable = !update_portable_mode();
+            if (update_set_portable_mode(portable)) {
+                SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, portable ? L"更新方式：ZIP 覆盖" : L"更新方式：自动（推荐）");
+                swprintf(g_status, 4096, portable
+                    ? L"已保存：下次更新直接下载 ZIP 并覆盖当前程序；版本、摘要校验和回滚仍然启用。点“检查更新”开始。再次点击可恢复自动。"
+                    : L"已保存：优先使用安装器，无法启动时回退 ZIP。点“检查更新”开始。");
+            } else swprintf(g_status, 4096, L"更新方式未保存：请等待正在进行的更新结束，或检查配置文件写入权限。");
+            InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_SUB_ADD) {
                 if (s_subs_running || s_sub_remove_index >= 0) return 0;
                 if (s_sub_input_truncated || GetWindowTextLengthW(GetDlgItem(hwnd, IDC_SUB_URL)) >= SUBS_URL_MAX) {
@@ -3496,7 +3574,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 show_adguard_assistant(hwnd);
             } else if (id == IDM_TEST) {
                 wchar_t url[256];
-                swprintf(url, 256, L"https://localhost:%d/internal-test", g_https_port);
+                if (*g_bind_ip) swprintf(url, 256, L"http://127.0.0.1:%d/internal-test", mgmt_port());
+                else swprintf(url, 256, L"https://localhost:%d/internal-test", g_https_port);
                 ShellExecuteW(NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
             } else if (id == IDM_AUTOSTART) {
                 HWND chk = GetDlgItem(hwnd, IDM_AUTOSTART);
@@ -3533,36 +3612,25 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 SetWindowTextW(GetDlgItem(hwnd, IDC_HTTP_EDIT), wt);
                 swprintf(wt, 32, L"18443");
                 SetWindowTextW(GetDlgItem(hwnd, IDC_HTTPS_EDIT), wt);
-                g_http_port = 18080;
-                g_https_port = 18443;
-                ini_save(g_http_port, g_https_port, g_bind_all);
-                swprintf(g_status, 4096, L"已改用 18080/18443，正在重启...");
-                win32_notify_restart();
-                PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
+                listener_validate(hwnd, true);
+                SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"已填入备用端口；请检查检测结果，点击“保存并重启”应用。尚未保存。");
             } else if (id == IDM_EXIT) {
                 PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
             } else if (id == IDC_SAVE || id == IDC_RESTART) {
-                wchar_t wt[32];
-                int hp = 0, sp = 0;
-                GetWindowTextW(GetDlgItem(hwnd, IDC_HTTP_EDIT), wt, 32); hp = _wtoi(wt);
-                GetWindowTextW(GetDlgItem(hwnd, IDC_HTTPS_EDIT), wt, 32); sp = _wtoi(wt);
-                if (hp < 1 || hp > 65535 || sp < 1 || sp > 65535) {
-                    MessageBoxW(hwnd, L"端口范围必须为 1 - 65535。", L"设置", MB_OK | MB_ICONWARNING);
-                } else {
-                    bool bind = SendMessageW(GetDlgItem(hwnd, IDC_BIND_CHK),
-                                             BM_GETCHECK, 0, 0) == BST_CHECKED;
-                    ini_save(hp, sp, bind);
+                if (listener_validate(hwnd, true)) {
+                    int hp, sp; char ip[64]; bool bind;
+                    if (!listener_read(hwnd, ip, &hp, &sp, &bind)) return 0;
+                    char old_ip[64]; memcpy(old_ip, g_bind_ip, sizeof(old_ip));
+                    snprintf(g_bind_ip, sizeof(g_bind_ip), "%s", ip);
+                    if (!ini_save(hp, sp, bind)) {
+                        memcpy(g_bind_ip, old_ip, sizeof(g_bind_ip));
+                        SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"保存失败，原配置已保留；请检查配置目录权限。");
+                        return 0;
+                    }
                     g_http_port = hp; g_https_port = sp; g_bind_all = bind;
                     if (id == IDC_RESTART) {
-                        /* Save first; the old instance stops the server and
-                           the main process relaunches a fresh instance. */
-                        win32_notify_restart();
-                        PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
-                    } else {
-                        swprintf(g_status, 4096,
-                                 L"设置已保存 - 点击\"保存并重启\"应用新端口绑定");
-                        InvalidateRect(hwnd, NULL, FALSE);
-                    }
+                        win32_notify_restart(); PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
+                    } else SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"已保存；点击“保存并重启”应用监听配置。");
                 }
             } else if (id == IDC_FLUSH) {
                 wchar_t st[128];
@@ -3629,9 +3697,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 2) {
             /* settings page */
             /* grouped card backgrounds behind the native controls */
-            rounded_card(hdc, 202, 12, 812, 166, 16, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 190, 812, 184, 16, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 386, 812, 232, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 12, 812, 200, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 214, 812, 184, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 406, 812, 232, 16, g_pal.card, g_pal.border);
 
             HFONT shf = mfont(15, FW_SEMIBOLD);
             HFONT lf = mfont(12, FW_NORMAL);
@@ -3650,11 +3718,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             TextOutW(hdc, S(500), S(76), L"HTTPS 端口:", 10);
             SelectObject(hdc, shf);
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(218), S(202), L"拦截策略 · 点击切换响应方式", (int)wcslen(L"拦截策略 · 点击切换响应方式"));
-            TextOutW(hdc, S(218), S(398), L"证书与维护", 5);
+            TextOutW(hdc, S(218), S(222), L"拦截策略 · 点击切换响应方式", (int)wcslen(L"拦截策略 · 点击切换响应方式"));
+            TextOutW(hdc, S(218), S(418), L"证书与维护", 5);
             SelectObject(hdc, lf);
             SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(218), S(422), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
+            TextOutW(hdc, S(218), S(442), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
             SelectObject(hdc, old);
             DeleteObject(shf);
             DeleteObject(lf);
@@ -3773,7 +3841,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         TextOutW(hdc, S(210), S(464), txt, (int)wcslen(txt));
         {
             wchar_t hint[300];
-            if (g_bind_all) {
+            if (*g_bind_ip) {
+                swprintf(hint, 300, L"监听地址：%hs · HTTP %d / HTTPS %d", g_bind_ip, g_http_port, g_https_port);
+            } else if (g_bind_all) {
                 char lan[64] = "";
                 if (first_lan_ip(lan, sizeof(lan)) == 0)
                     swprintf(hint, 300, L"访问地址：本机 http://localhost:%d  ·  局域网 http://%hs:%d",
