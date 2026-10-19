@@ -922,6 +922,10 @@ jobs:
           }
           Get-ChildItem dist-installer
 
+      - name: Test production identity in-place upgrade and preserved data
+        shell: pwsh
+        run: ./tools/test-inplace-install.ps1
+
       - name: Smoke-test installed preview executable with real GUI
         if: env.ADBLOCK_PREVIEW_BUILD == '1'
         shell: pwsh

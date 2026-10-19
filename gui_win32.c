@@ -2495,6 +2495,14 @@ static void update_button_refresh(HWND hwnd) {
     EnableWindow(GetDlgItem(hwnd, IDC_PORTABLEUPD), st == 0);
 }
 
+static bool refresh_owned_autostart(void) {
+    if (!win32_autostart_installed()) return true;
+    char exe[MAX_PATH], command[2048];
+    if (!get_module_path_utf8(exe,sizeof(exe))) return false;
+    snprintf(command,sizeof(command),"\"%s\" --resources \"%s\" --minimized",exe,g_res);
+    return win32_autostart_set(true,command)==0;
+}
+
 /* ── "应用日志" page ──────────────────────────────────────────────
  * Everything the server knows about WHO talks to it: the per-app counters
  * (Windows attributes them through the TCP owner-PID table, see
@@ -3239,6 +3247,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_start_minimized = args->start_minimized;
         g_stats_port = args->stats_port > 0 ? args->stats_port : 8686;
         g_owns_server = args->owns_server;
+        if (!refresh_owned_autostart()) win32_log_line("Unable to migrate this installation's autostart listener settings");
         g_tab = 0;
         g_scale = GetDpiForWindow(hwnd) / 96.0;
         g_theme_pref = ini_read_theme();
@@ -3632,6 +3641,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         return 0;
                     }
                     g_http_port = hp; g_https_port = sp; g_bind_all = bind;
+                    if (!refresh_owned_autostart()) {
+                        SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"监听设置已保存，但开机启动项更新失败；请重新设置开机启动。");
+                        return 0;
+                    }
                     if (id == IDC_RESTART) {
                         win32_notify_restart(); PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
                     } else SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"已保存；点击“保存并重启”应用监听配置。");
