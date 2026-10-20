@@ -19,6 +19,11 @@ int main(int argc,char **argv) {
     assert(arrival_domain_valid("ad.doubleclick.net")); assert(arrival_domain_valid("ADS.example.com."));
     const char *invalid[]={"localhost","127.0.0.1","https://ads.example.com","ads.example.com/path","ads.example.com:80","ads.example.com\r\nHost: evil","-ads.example.com"};
     for (size_t i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++) assert(!arrival_domain_valid(invalid[i]));
+    if (argc==5 && !strcmp(argv[1],"--tls")) {
+        struct arrival_tls_result result=arrival_tls(argv[2],atoi(argv[3]),argv[4]);
+        printf("tls_state=%d protocol=%s verify=%ld\n",result.state,result.protocol,result.verify_error);
+        WSACleanup(); return result.state==ARRIVAL_TLS_RECEIPT ? 0 : 20+(int)result.state;
+    }
     if (argc==6 && !strcmp(argv[1],"--report")) {
         struct arrival_config config={0}; snprintf(config.ip,sizeof(config.ip),"%s",argv[2]); config.http=atoi(argv[3]); config.stats=atoi(argv[4]);
         wchar_t report[6144]; char utf8[24576]; arrival_report(&config,argv[5],"",report,6144);

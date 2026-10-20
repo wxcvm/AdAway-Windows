@@ -22,7 +22,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.77
+      TAG: win11-webserver-v1.78
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -131,8 +131,10 @@ jobs:
           ./control_http_result_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic managed_listener_address_test.c -lws2_32 -liphlpapi -ladvapi32 -o managed_listener_address_test.exe
           ./managed_listener_address_test.exe
-          gcc -std=c11 -Wall -Wextra -Werror -pedantic listener_arrival_win32.c listener_arrival_win32_test.c traffic_observer_win32.c -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -o listener-arrival-probe.exe
-          ./listener-arrival-probe.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic listener_pair_test.c -lws2_32 -o listener_pair_test.exe
+          ./listener_pair_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic listener_startup_test.c -lws2_32 -liphlpapi -ladvapi32 -lshell32 -o listener_startup_test.exe
+          ./listener_startup_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
           ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
@@ -398,6 +400,15 @@ jobs:
           cp README.txt dist/README.txt
           cp start.bat dist/start.bat
 
+      - name: Build strict HTTPS arrival client using the pinned OpenSSL
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -I.openssl-build/install/include \
+            listener_arrival_win32.c listener_tls_win32.c listener_arrival_win32_test.c traffic_observer_win32.c \
+            .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
+            -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -lcrypt32 -o listener-arrival-probe.exe
+          ./listener-arrival-probe.exe
+
       # The build script used to rely on MinGW's defaults for the PE
       # mitigations, so nothing noticed if they were absent. Assert them (and
       # the stack protector) here: this runs before any release is published,
@@ -577,6 +588,14 @@ jobs:
       - name: Test actual managed listener creation and rollback on disposable runner
         shell: pwsh
         run: ./tools/test-managed-listener.ps1
+
+      - name: Test dual listener settings and automatic startup creation
+        shell: pwsh
+        run: ./tools/test-listener-lifecycle.ps1
+
+      - name: Test actual HTTPS receipts with strict trust and hostname validation
+        shell: pwsh
+        run: ./tools/test-listener-tls.ps1
 
       - name: Test actual server and client fresh listener receipts
         shell: pwsh

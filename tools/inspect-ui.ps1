@@ -113,7 +113,10 @@ Set-ClientSize 1032 678
 Set-Page 0; Save-Window 'overview-light'
 Set-Page 2; Save-Window 'settings-light'
 $ipControl=[UiReviewNative]::GetDlgItem($window,1190)
-Set-ControlText $ipControl 'fd6b:2a91:84f0::75'
+$ipv6Control=[UiReviewNative]::GetDlgItem($window,1196)
+if ($ipv6Control -eq [IntPtr]::Zero -or ![UiReviewNative]::GetDlgItem($window,1197)) { throw 'Independent IPv6/startup creation options missing' }
+Set-ControlText $ipControl '10.254.253.75'
+Set-ControlText $ipv6Control 'fd6b:2a91:84f0::75'
 if (![UiReviewNative]::GetDlgItem($window,1193) -or ![UiReviewNative]::GetDlgItem($window,1194)) { throw 'Address creation/removal controls missing' }
 $beforeAddress=if ($ResourceDirectory -and (Test-Path (Join-Path $ResourceDirectory 'webserver.ini'))) { [IO.File]::ReadAllText((Join-Path $ResourceDirectory 'webserver.ini')) } else { $null }
 [void][UiReviewNative]::PostMessageW($window,0x111,[IntPtr]1193,[IntPtr]::Zero)
@@ -163,11 +166,13 @@ do {
 if ($autoResult -notmatch 'IPv4') { throw 'Listener validation did not run automatically after editing' }
 $result=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
 if ($result -notmatch 'IPv4') { throw 'Invalid IP did not receive visible listener feedback' }
-Set-ControlText $ipControl '::1'
+Set-ControlText $ipControl '127.0.0.1'
+Set-ControlText $ipv6Control '::1'
 Send-BoundedMessage $window 0x111 ([IntPtr]1191) ([IntPtr]::Zero)
 $result=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
 if ($result -notmatch 'HTTP') { throw 'IPv6 listener check did not reach real port detection' }
-Set-ControlText $ipControl ''
+Set-ControlText $ipControl '127.0.0.1'
+Set-ControlText $ipv6Control '::1'
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch 'ZIP') { throw 'ZIP update preference not visible' }
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)

@@ -46,7 +46,7 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
             {2001,L"EDIT",L"ad.doubleclick.net",WS_BORDER|ES_AUTOHSCROLL|WS_TABSTOP},
             {2012,L"STATIC",L"Hosts 规则测试域名（可选，命中类别以 AdGuard 日志为准）",SS_LEFT},
             {2002,L"EDIT",L"",WS_BORDER|ES_AUTOHSCROLL|WS_TABSTOP},
-            {2004,L"EDIT",L"点击检测后分别显示 DNS 指向与 HTTP 实际回执。只连接匹配监听的本机地址，不访问公网广告源站；HTTPS 与其他应用路径单独验收。",WS_BORDER|ES_MULTILINE|ES_READONLY|WS_VSCROLL|ES_AUTOVSCROLL|WS_TABSTOP},
+            {2004,L"EDIT",L"点击检测后分别显示 DNS、HTTP、HTTPS 与 UDP 占用。只连接匹配监听的本机地址，不访问公网广告源站；HTTPS 会严格校验证书并检测加密回执；QUIC / HTTP/3 当前未实现。",WS_BORDER|ES_MULTILINE|ES_READONLY|WS_VSCROLL|ES_AUTOVSCROLL|WS_TABSTOP},
             {AC_RUN,L"BUTTON",L"检测 DNS 与请求到达",BS_DEFPUSHBUTTON|WS_TABSTOP},
             {IDCANCEL,L"BUTTON",L"关闭",BS_PUSHBUTTON|WS_TABSTOP}
         };
@@ -58,6 +58,11 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
         ac_place(window); return 0;
     }
     if (!state) return DefWindowProcW(window,message,wp,lp);
+    if (message==WM_GETMINMAXINFO) {
+        MINMAXINFO *limits=(MINMAXINFO *)lp;
+        limits->ptMinTrackSize.x=MulDiv(620,(int)GetDpiForWindow(window),96);
+        limits->ptMinTrackSize.y=MulDiv(560,(int)GetDpiForWindow(window),96); return 0;
+    }
     if (message==WM_SIZE) { ac_place(window); return 0; }
     if (message==WM_COMMAND && LOWORD(wp)==AC_RUN && !state->running) {
         GetDlgItemTextA(window,2001,state->adblock,256); GetDlgItemTextA(window,2002,state->hosts,256);

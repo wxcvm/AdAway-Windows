@@ -50,7 +50,7 @@ static bool ac_parse(const char *ip,SOCKADDR_INET *address) {
     return inet_pton(address->si_family,normalized,version==4 ? (void *)&address->Ipv4.sin_addr : (void *)&address->Ipv6.sin6_addr)==1;
 }
 
-static bool ac_local(const char *ip) {
+bool arrival_local_address(const char *ip) {
     SOCKADDR_INET address; if (!ac_parse(ip,&address)) return false;
     if (address.si_family==AF_INET && ((const unsigned char *)&address.Ipv4.sin_addr)[0]==127) return true;
     static const unsigned char loop[16]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
@@ -59,7 +59,7 @@ static bool ac_local(const char *ip) {
 }
 
 static bool ac_receipt_host(const char *ip,int port,const char *host) {
-    SOCKADDR_INET address; if (!ac_parse(ip,&address) || !ac_local(ip) || port<1 || port>65535) return false;
+    SOCKADDR_INET address; if (!ac_parse(ip,&address) || !arrival_local_address(ip) || port<1 || port>65535) return false;
     if (strcmp(host,"localhost") && !arrival_domain_valid(host)) return false;
     unsigned char random[16]; if (BCryptGenRandom(NULL,random,sizeof(random),BCRYPT_USE_SYSTEM_PREFERRED_RNG)!=0) return false;
     char nonce[33]; for (int i=0;i<16;i++) snprintf(nonce+i*2,3,"%02x",random[i]);
@@ -102,11 +102,50 @@ static void ac_append(wchar_t *out,size_t cap,const wchar_t *format,...) {
 }
 
 static bool ac_match(const struct arrival_config *config,const char *ip) {
+    if (config->pair) {
+        const char *selected=strchr(ip,':') ? config->ipv6 : config->ip;
+        if (!*selected) return false;
+        if (!strcmp(selected,strchr(ip,':') ? "::" : "0.0.0.0")) return true;
+        SOCKADDR_INET left,right;
+        return ac_parse(selected,&left) && ac_parse(ip,&right) && ma_equal(&left,&right);
+    }
     if (!*config->ip) return config->all || !strcmp(ip,"::1") || !strcmp(ip,"127.0.0.1");
     if (!strcmp(config->ip,"0.0.0.0")) return !strchr(ip,':');
     if (!strcmp(config->ip,"::")) return strchr(ip,':')!=NULL;
     SOCKADDR_INET left,right;
     return ac_parse(config->ip,&left) && ac_parse(ip,&right) && ma_equal(&left,&right);
+}
+
+static void ac_tls(const char *ip,int port,const char *host,wchar_t *out,size_t cap) {
+    if (port<1 || port>65535) { ac_append(out,cap,L"HTTPS：未配置检测端口。\r\n"); return; }
+    struct arrival_tls_result result=arrival_tls(ip,port,host);
+    if (result.state==ARRIVAL_TLS_RECEIPT)
+        ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：%hs 握手、离线证书链/名称校验与加密回执通过。\r\n",ip,port,host,result.protocol);
+    else if (result.state==ARRIVAL_TLS_NO_RECEIPT)
+        ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：%hs 与证书校验通过，但无 AdAway 加密回执。\r\n",ip,port,host,result.protocol);
+    else if (result.state==ARRIVAL_TLS_CERTIFICATE_REJECTED)
+        ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：证书链或名称校验拒绝（OpenSSL %ld）；未跳过验证，TLS 未完成。\r\n",ip,port,host,result.verify_error);
+    else ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：连接或 TLS 未完成，不能确认 HTTPS 到达。\r\n",ip,port,host);
+}
+
+/* UDP endpoint ownership is an observation, never QUIC support evidence. */
+static void ac_udp(int port,wchar_t *out,size_t cap) {
+    for (int family=0;family<2;family++) {
+        ULONG af=family ? AF_INET6 : AF_INET; DWORD bytes=0;
+        DWORD status=GetExtendedUdpTable(NULL,&bytes,FALSE,af,UDP_TABLE_OWNER_PID,0);
+        bool found=false;
+        void *buffer=status==ERROR_INSUFFICIENT_BUFFER ? malloc(bytes) : NULL;
+        if (buffer && GetExtendedUdpTable(buffer,&bytes,FALSE,af,UDP_TABLE_OWNER_PID,0)==NO_ERROR) {
+            DWORD rows=family ? ((MIB_UDP6TABLE_OWNER_PID *)buffer)->dwNumEntries : ((MIB_UDPTABLE_OWNER_PID *)buffer)->dwNumEntries;
+            for (DWORD i=0;i<rows;i++) {
+                DWORD local_port=family ? ((MIB_UDP6TABLE_OWNER_PID *)buffer)->table[i].dwLocalPort : ((MIB_UDPTABLE_OWNER_PID *)buffer)->table[i].dwLocalPort;
+                DWORD pid=family ? ((MIB_UDP6TABLE_OWNER_PID *)buffer)->table[i].dwOwningPid : ((MIB_UDPTABLE_OWNER_PID *)buffer)->table[i].dwOwningPid;
+                if (ntohs((u_short)local_port)==port) { ac_append(out,cap,L"IPv%d UDP/%d 有绑定 PID %lu（未识别协议）。\r\n",family ? 6 : 4,port,(unsigned long)pid); found=true; }
+            }
+            if (!found) ac_append(out,cap,L"IPv%d UDP/%d：未发现绑定。\r\n",family ? 6 : 4,port);
+        } else ac_append(out,cap,L"IPv%d UDP/%d：无法读取占用。\r\n",family ? 6 : 4,port);
+        free(buffer);
+    }
 }
 
 struct ac_dns_work {
@@ -169,8 +208,11 @@ static void ac_domain(const struct arrival_config *config,const char *domain,wch
         char ip[64]; void *raw=row->ai_family==AF_INET ? (void *)&((struct sockaddr_in *)row->ai_addr)->sin_addr
                 : row->ai_family==AF_INET6 ? (void *)&((struct sockaddr_in6 *)row->ai_addr)->sin6_addr : NULL;
         if (!raw || !inet_ntop(row->ai_family,raw,ip,sizeof(ip))) continue;
-        if (!ac_match(config,ip) || !ac_local(ip)) ac_append(out,cap,L"%hs → %hs：未指向当前本机监听，未连接。\r\n",domain,ip);
-        else ac_append(out,cap,L"%hs → %hs：DNS 已指向；%ls。\r\n",domain,ip,ac_receipt_host(ip,config->http,domain) ? L"HTTP 请求已到达 AdAway" : L"未收到 AdAway 回执");
+        if (!ac_match(config,ip) || !arrival_local_address(ip)) ac_append(out,cap,L"%hs → %hs：未指向当前本机监听，未连接。\r\n",domain,ip);
+        else {
+            ac_append(out,cap,L"%hs → %hs：DNS 已指向；%ls。\r\n",domain,ip,ac_receipt_host(ip,config->http,domain) ? L"HTTP 请求已到达 AdAway" : L"未收到 AdAway 回执");
+            ac_tls(ip,config->https,domain,out,cap);
+        }
     }
     FreeAddrInfoW(answers);
 }
@@ -185,11 +227,18 @@ void arrival_report(const struct arrival_config *config,const char *adblock,cons
     ac_append(out,cap,L"AdGuard 进程：%ls。进程存在不等于正在接管流量。\r\n",process==ADGUARD_PROCESS_PRESENT ? L"检测到运行" : process==ADGUARD_PROCESS_ABSENT ? L"未发现" : L"未知");
     bool management=arrival_receipt("::1",config->stats) || arrival_receipt("127.0.0.1",config->stats);
     ac_append(out,cap,L"管理端口：%ls。\r\n",management ? L"AdAway 回执已确认" : L"无回执；旧版本、服务未就绪或路径受影响");
-    const char *targets[2]={*config->ip ? config->ip : "127.0.0.1",*config->ip ? NULL : "::1"};
-    if (!strcmp(targets[0],"0.0.0.0")) targets[0]="127.0.0.1";
-    if (!strcmp(targets[0],"::")) targets[0]="::1";
-    for (int i=0;i<2;i++) if (targets[i]) ac_append(out,cap,L"%hs:%d：%ls。\r\n",targets[i],config->http,
-            arrival_receipt(targets[i],config->http) ? L"HTTP 请求已到达 AdAway" : L"无 AdAway 回执，不能用端口连通代替实际到达");
+    const char *targets[2]={config->pair ? (*config->ip ? config->ip : NULL) : *config->ip ? config->ip : "127.0.0.1",
+        config->pair ? (*config->ipv6 ? config->ipv6 : NULL) : *config->ip ? NULL : "::1"};
+    for (int i=0;i<2;i++) if (targets[i]) {
+        if (!strcmp(targets[i],"0.0.0.0")) targets[i]="127.0.0.1";
+        if (!strcmp(targets[i],"::")) targets[i]="::1";
+        ac_append(out,cap,L"[%hs]:%d：%ls。\r\n",targets[i],config->http,
+                arrival_receipt(targets[i],config->http) ? L"HTTP 请求已到达 AdAway" : L"无 AdAway 回执，不能用端口连通代替实际到达");
+        ac_tls(targets[i],config->https,"localhost",out,cap);
+    }
     ac_domain(config,adblock,out,cap); ac_domain(config,hosts,out,cap);
-    ac_append(out,cap,L"\r\n系统 DNS 结果可能来自缓存或 Hosts；命中规则类型以 AdGuard 日志为准。未验证 HTTPS 证书信任或其他应用路径；未修改 WFP、DNS、代理、AdGuard 配置或证书。");
+    ac_append(out,cap,L"\r\nQUIC / HTTP/3：本版本未实现 UDP 服务；TCP/443 与 HTTPS 成功不代表 QUIC 成功。\r\n");
+    ac_udp(443,out,cap);
+    if (config->https!=443 && config->https>0) ac_udp(config->https,out,cap);
+    ac_append(out,cap,L"\r\n系统 DNS 可能来自缓存或 Hosts；规则类别以 AdGuard 日志为准。HTTPS 使用 Windows ROOT 信任锚做离线链/名称校验，不下载吊销信息，不代表其他应用的证书固定/信任策略。未修改网络、AdGuard 或证书。");
 }

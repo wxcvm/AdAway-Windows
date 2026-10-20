@@ -22,7 +22,7 @@ Windows x64 in-place preview. The installer uses the production AppId and upgrad
 Reviewed changes are merged after CI passes. Stable release pointers and update manifests are unchanged by this preview. The repository currently permits unsigned Windows distributions: SHA-256 checksums verify download integrity, not an Authenticode publisher identity. MSI, MSIX and package-manager registration are not provided.
 
 NOTES
-cat docs/preview-installation.md docs/listener-settings.md >> preview-notes.md
+cat docs/preview-installation.md docs/listener-settings.md docs/listener-lifecycle.md >> preview-notes.md
 if [[ "$GITHUB_REF" == refs/tags/* ]]; then
   gh release create "$PREVIEW_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --verify-tag \
     --prerelease --latest=false --title "ADBlock Windows in-place preview $PREVIEW_TAG" \
