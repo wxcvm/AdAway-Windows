@@ -20,3 +20,19 @@ ZIP 模式直接选 ZIP，避免先下载安装器再下载 ZIP。两者都要�
 
 验收范围：CI 真实套接字占用检测、native 输入验证、主程序自定义地址启动、GUI 控件操作、完整 Windows 构建。
 日常主机的网络接管和真实设备恢复仍需单独验收。
+
+## 创建缺失的本机地址
+
+“创建地址…”会先显示目标 IP、软件回环接口、/32 或 /128、管理员授权和有效期，再通过系统 UAC 请求授权。
+仅支持私有 IPv4（RFC 1918 或 127/8）及 IPv6 ULA（fc00::/7）；公网、链路本地、多播、映射 IPv4、通配地址不自动创建。
+已有地址直接复用，不取得所有权。新地址只加到 IF_TYPE_SOFTWARE_LOOPBACK，使用 SkipAsSource，保持物理网卡、DHCP、DNS 和默认网关设置。
+创建后必须通过 HTTP/HTTPS 实际 bind 检查；端口失败会移除本次添加的地址，清理失败单独报告。成功后点击“保存并重启”使用。
+“移除托管…”只移除注册表记录的接口 LUID、地址创建时间、前缀和 SkipAsSource 均仍匹配的地址；需要先切换正在使用的地址。
+没有匹配的创建记录时拒绝移除，取消 UAC 不修改配置。权限操作在后台线程运行，编辑和保存暂时锁定。
+
+使用系统 IP Helper API CreateUnicastIpAddressEntry / GetUnicastIpAddressEntry / DeleteUnicastIpAddressEntry，沿用既有 iphlpapi 依赖，不引入驱动或网络接管库。
+该 API 创建的地址仅在当前开机/接口生命周期有效，界面明确说明；系统重启后可以再次创建，未建立后台提权任务，也没有静默改变持久网络配置。
+参考：https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-createunicastipaddressentry
+
+CI 在一次性 Windows runner 中使用实际 webserver.exe 验证创建 IPv4/IPv6、已有地址复用、真实 HTTP 响应、按所有权移除、端口冲突回滚。
+日常主机的 UAC 接受/取消、系统重启和第三方网络软件兼容仍需人工验收；普通保存不会自动提权或创建地址。
