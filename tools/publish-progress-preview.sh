@@ -24,6 +24,7 @@ Reviewed changes are merged after CI passes. Stable release pointers and update 
 NOTES
 cat docs/preview-installation.md docs/listener-settings.md docs/listener-lifecycle.md >> preview-notes.md
 cat docs/preview-updates.md >> preview-notes.md
+cat docs/dual-stack-transport.md >> preview-notes.md
 if [[ "$GITHUB_REF" == refs/tags/* ]]; then
   gh release create "$PREVIEW_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --verify-tag \
     --prerelease --latest=false --title "ADBlock Windows in-place preview $PREVIEW_TAG" \

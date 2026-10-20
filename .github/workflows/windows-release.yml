@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.79
+      TAG: win11-webserver-v1.80
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -142,6 +142,16 @@ jobs:
           ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
           ./rule_norm_test.exe shared-contract/rule_vectors.txt
+
+      - name: Test isolated dual-stack forwarding and cancellation recovery
+        shell: msys2 {0}
+        run: |
+          bash fetch-transport-contract.sh
+          python3 tools/test-transport-contract.py
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic transport-contract/diagnostic_udp_packet_test.c -o transport-packet-test.exe
+          ./transport-packet-test.exe transport-contract/packet_vectors.tsv
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -Itransport-contract isolated_transport_win32.c isolated_transport_win32_test.c -o isolated_transport_win32_test.exe -lws2_32 -lbcrypt
+          ./isolated_transport_win32_test.exe
 
       - name: Test rule-driven DNS wire responses (core action parity)
         shell: msys2 {0}

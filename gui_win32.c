@@ -41,6 +41,8 @@
 #include "adguard_home_plan.h"
 #include "wintun_probe_win32.h"
 #include "windows_capture_plan.h"
+#include "isolated_transport_win32.h"
+#define IDC_TRANSPORT_PROBE 1301
 #include "windows_network_inventory_win32.h"
 #include "subscription_update_win32.h"
 #include "subscription_settings_win32.h"
@@ -913,7 +915,9 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_REMOVE_IPV6 1202
 #define WM_APP_ADDRESS_DONE (WM_APP + 32)
 static bool s_address_busy;
-#define IDC_PREVIEWUPD 1203
+#define IDC_IPV4_LABEL 1203
+#define IDC_IPV6_LABEL 1204
+#define IDC_PREVIEWUPD 1300
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
 
 /*
@@ -2355,11 +2359,11 @@ struct ctl_desc { int id; int x, y, w, h; const wchar_t *cls, *text; int style; 
 static const struct ctl_desc g_clayout[] = {
     { IDC_HTTP_EDIT,  300, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
     { IDC_HTTPS_EDIT, 590, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
-    { 1203,218,110,55,24,L"STATIC",L"IPv4",SS_LEFT },
+    { IDC_IPV4_LABEL,218,110,55,24,L"STATIC",L"IPv4",SS_LEFT },
     { IDC_BIND_IP,275,106,330,26,L"EDIT",L"",WS_BORDER|ES_AUTOHSCROLL },
     { IDC_CREATE_ADDRESS,618,106,110,26,L"BUTTON",L"创建 IPv4…",BS_PUSHBUTTON },
     { IDC_REMOVE_ADDRESS,738,106,110,26,L"BUTTON",L"移除托管…",BS_PUSHBUTTON },
-    { 1204,218,144,55,24,L"STATIC",L"IPv6",SS_LEFT },
+    { IDC_IPV6_LABEL,218,144,55,24,L"STATIC",L"IPv6",SS_LEFT },
     { IDC_BIND_IPV6,275,140,330,26,L"EDIT",L"",WS_BORDER|ES_AUTOHSCROLL },
     { IDC_CREATE_IPV6,618,140,110,26,L"BUTTON",L"创建 IPv6…",BS_PUSHBUTTON },
     { IDC_REMOVE_IPV6,738,140,110,26,L"BUTTON",L"移除托管…",BS_PUSHBUTTON },
@@ -2453,6 +2457,7 @@ static void layout_controls(HWND hwnd) {
         SetWindowPos(GetDlgItem(hwnd, g_sublayout[i].id), NULL,
                      S(g_sublayout[i].x), S(g_sublayout[i].y),
                      S(g_sublayout[i].w), S(g_sublayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),NULL,S(218),S(560),S(366),S(26),SWP_NOZORDER|SWP_NOACTIVATE);
     subs_list_extent(hwnd);
 }
 
@@ -2469,6 +2474,7 @@ static void show_controls(HWND hwnd, int tab) {
         ShowWindow(GetDlgItem(hwnd, IDC_POL0 + i), show ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < CL_SUB; i++)
         ShowWindow(GetDlgItem(hwnd, g_sublayout[i].id), subs ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),tab==5?SW_SHOW:SW_HIDE);
     subs_controls_refresh(hwnd);
 }
 
@@ -2754,8 +2760,8 @@ static void draw_network_center_page(HDC hdc) {
         L"HTTPS / QUIC", L"证书信任、TLS 失败、UDP/443 与不能解密的应用诊断。",
         false);
     draw_network_capability(hdc, 202, 478, 398,
-        L"安全回滚", L"记录本程序改变的系统设置，失败时仅恢复自己的网络修改。",
-        false);
+        L"隔离双栈转发", L"本机夹具；可取消、重试，不更改系统路由或 DNS。",
+        true);
     draw_network_capability(hdc, 616, 478, 398,
         L"本地监听与规则", L"当前可在设置、订阅和拦截排行页面管理；此处不重复开关。",
         true);
@@ -3452,6 +3458,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
+        s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"测试双栈转发与恢复",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
+                0,0,1,1,hwnd,(HMENU)(INT_PTR)IDC_TRANSPORT_PROBE,hinst,NULL);
         for (int i = 0; i < POLICY_COUNT; i++) {
             int cx = (i % 2 == 0) ? 218 : 610;
             int cy = 290 + (i / 2) * 28;
@@ -3591,6 +3599,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_COMMAND:
+        if (LOWORD(wp)==IDC_TRANSPORT_PROBE) { gui_show_transport_dialog(hwnd); return 0; }
         if (HIWORD(wp) == 1) { /* keyboard accelerator */
             int id = LOWORD(wp);
             if (id >= UI_ACCEL_NAV_FIRST && id < UI_ACCEL_NAV_FIRST + 6) {

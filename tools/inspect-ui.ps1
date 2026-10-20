@@ -35,6 +35,15 @@ $guiProcess = Get-Process -Id $GuiProcessId
 $guiProcess.Refresh()
 $window = $guiProcess.MainWindowHandle
 if (!$window) { throw 'Dashboard window missing' }
+$controlIds=[System.Collections.Generic.HashSet[int]]::new()
+$duplicateIds=[System.Collections.Generic.List[int]]::new()
+$uniqueCallback=[UiReviewNative+EnumChild]{ param($child,$data)
+    $id=[UiReviewNative]::GetDlgCtrlID($child)
+    if ($id -gt 0 -and !$controlIds.Add($id)) { $duplicateIds.Add($id) }
+    return $true
+}
+[void][UiReviewNative]::EnumChildWindows($window,$uniqueCallback,[IntPtr]::Zero)
+if ($duplicateIds.Count -gt 0) { throw "Duplicate native control IDs: $duplicateIds" }
 $records = [System.Collections.Generic.List[object]]::new()
 # Cross-process edit controls require WM_SETTEXT / WM_GETTEXT, not caption APIs.
 function Read-ControlText([IntPtr]$Control) {
@@ -90,8 +99,11 @@ function Check-Controls([string]$Name) {
     }
     $client = [UiReviewNative+Rect]::new(); [void][UiReviewNative]::GetClientRect($window,[ref]$client)
     # Record a known subscription field's font (shared with all settings controls).
-    $fontControl=[UiReviewNative]::GetDlgItem($window,1140)
-    if ($fontControl -eq [IntPtr]::Zero) { $fontControl=[UiReviewNative]::GetDlgItem($window,2001) }
+    $fontControl=[IntPtr]::Zero
+    foreach ($fontId in @(1140,2001,2103)) {
+        $fontControl=[UiReviewNative]::GetDlgItem($window,$fontId)
+        if ($fontControl -ne [IntPtr]::Zero) { break }
+    }
     $fontHandle = [UiReviewNative]::SendMessage($fontControl,0x31,[IntPtr]::Zero,[IntPtr]::Zero)
     $font = [UiReviewNative+Font]::new()
     if (![UiReviewNative]::GetObjectW($fontHandle,[Runtime.InteropServices.Marshal]::SizeOf($font),[ref]$font)) { throw 'Control font missing' }
@@ -194,12 +206,15 @@ Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch 'ZIP') { throw 'ZIP update preference not visible' }
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch '自动') { throw 'ZIP update preference cannot be restored' }
-Send-BoundedMessage $window 0x111 ([IntPtr]1203) ([IntPtr]::Zero)
-if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1203))) -notmatch '含预览') { throw 'Preview update channel not visible' }
+$channelButton=[UiReviewNative]::GetDlgItem($window,1300)
+if (!$channelButton -or ![UiReviewNative]::IsWindowVisible($channelButton)) { throw 'Preview channel button missing' }
+Send-BoundedMessage $channelButton 0xF5 ([IntPtr]::Zero) ([IntPtr]::Zero)
+if ((Read-ControlText $channelButton) -notmatch '含预览') { throw 'Actual preview channel button click did not change channel' }
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1203))) -ne 'IPv4' -or (Read-ControlText ([UiReviewNative]::GetDlgItem($window,1204))) -ne 'IPv6') { throw 'Channel action replaced address labels' }
 if ((Get-Content (Join-Path (Split-Path $guiProcess.Path) 'webserver.ini') -Raw) -notmatch 'include_preview=1') { throw 'Preview channel was not persisted' }
 Save-Window 'settings-preview-update-channel'
-Send-BoundedMessage $window 0x111 ([IntPtr]1203) ([IntPtr]::Zero)
-if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1203))) -notmatch '稳定版') { throw 'Stable update channel cannot be restored' }
+Send-BoundedMessage $channelButton 0xF5 ([IntPtr]::Zero) ([IntPtr]::Zero)
+if ((Read-ControlText $channelButton) -notmatch '稳定版') { throw 'Stable update channel cannot be restored' }
 Save-Window 'settings-listener-feedback'
 Set-Page 4; Save-Window 'subscriptions-light'
 $delete=[UiReviewNative]::GetDlgItem($window,1143)
@@ -341,6 +356,37 @@ if ($ResourceDirectory) {
     Save-Window 'subscriptions-removed'
     Write-Output 'Removal GUI passed: cancel/navigation preserve sources; failed save retains target; retry removes only configuration and preserves imported rules.'
 }
+
+Set-Page 5
+Save-Window 'network-dual-stack-entry'
+$probeButton=[UiReviewNative]::GetDlgItem($window,1301)
+if (!$probeButton -or ![UiReviewNative]::IsWindowVisible($probeButton)) { throw 'Network center transport entry missing' }
+if ((Read-ControlText $probeButton) -ne '测试双栈转发与恢复') { throw 'Transport entry is not the actual button' }
+$iniBeforeProbe=[IO.File]::ReadAllText($iniFile)
+[void][UiReviewNative]::PostMessageW($probeButton,0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
+$transport=[IntPtr]::Zero;$probeDeadline=(Get-Date).AddSeconds(5)
+do {
+    Start-Sleep -Milliseconds 100
+    $transport=[UiReviewNative]::GetWindow($window,6)
+} until (($transport -ne [IntPtr]::Zero -and $transport -ne $window) -or (Get-Date) -gt $probeDeadline)
+if ($transport -eq [IntPtr]::Zero -or $transport -eq $window) { throw 'Dual-stack diagnostic window missing' }
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($transport,2103))) -notmatch '尚未运行') { throw 'Opening transport dialog started unsolicited traffic' }
+for ($cycle=0;$cycle -lt 2;$cycle++) {
+    [void][UiReviewNative]::PostMessageW([UiReviewNative]::GetDlgItem($transport,2101),0xF5,[IntPtr]::Zero,[IntPtr]::Zero)
+    $probeDeadline=(Get-Date).AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 100
+        $probeText=Read-ControlText ([UiReviewNative]::GetDlgItem($transport,2103))
+    } until ($probeText -match '清理：' -or (Get-Date) -gt $probeDeadline)
+    if ($probeText -notmatch 'IPv4：转发回执通过' -or $probeText -notmatch 'IPv6：转发回执通过' -or $probeText -notmatch '本次资源均已释放') { throw "Actual GUI transport failed: $probeText" }
+}
+$dashboardWindow=$window
+try { $window=$transport; Save-Window 'dual-stack-transport-dialog' }
+finally { $window=$dashboardWindow }
+[void][UiReviewNative]::PostMessageW($transport,0x111,[IntPtr]2,[IntPtr]::Zero)
+Start-Sleep -Milliseconds 200
+if (![UiReviewNative]::IsWindowEnabled($window) -or [IO.File]::ReadAllText($iniFile) -ne $iniBeforeProbe) { throw 'Transport dialog failed to restore owner or changed configuration' }
+Write-Output 'Actual dual-stack GUI transport: no implicit traffic, IPv4/IPv6 replies, complete cleanup, repeated run and configuration unchanged passed'
 
 Set-Page 2
 # Switch only the disposable runner's preview appearance.
