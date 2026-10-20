@@ -30,10 +30,18 @@ bool arrival_domain_valid(const char *domain) {
 bool arrival_valid_receipt(const char *response,const char *nonce) {
     if (!response || !nonce || strlen(nonce)!=32 || strspn(nonce,"0123456789abcdef")!=32) return false;
     const char *body=strstr(response,"\r\n\r\n"); if (!body || strncmp(response,"HTTP/1.1 200 ",13)) return false;
-    char expected[64],header[100]; snprintf(expected,sizeof(expected),"adaway-listener:%s",nonce);
-    snprintf(header,sizeof(header),"\r\nX-AdAway-Listener-Probe: %s\r\n",nonce);
-    const char *found=strstr(response,header);
-    return found && found<body && !strcmp(body+4,expected);
+    char expected[64]; snprintf(expected,sizeof(expected),"adaway-listener:%s",nonce);
+    if (strcmp(body+4,expected)) return false;
+    static const char prefix[]="X-AdAway-Listener-Probe: ";
+    const char *line=strstr(response,"\r\n");
+    while (line && line<body) {
+        line+=2; const char *end=strstr(line,"\r\n");
+        if (!end || end>body) break;
+        if ((size_t)(end-line)==sizeof(prefix)-1+32 && !_strnicmp(line,prefix,sizeof(prefix)-1)
+                && !memcmp(line+sizeof(prefix)-1,nonce,32)) return true;
+        line=end;
+    }
+    return false;
 }
 
 static bool ac_parse(const char *ip,SOCKADDR_INET *address) {

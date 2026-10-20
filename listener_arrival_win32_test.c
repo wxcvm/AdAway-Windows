@@ -11,6 +11,8 @@ int main(int argc,char **argv) {
     const char *nonce="0123456789abcdef0123456789abcdef";
     char response[256]; snprintf(response,sizeof(response),"HTTP/1.1 200 OK\r\nX-AdAway-Listener-Probe: %s\r\n\r\nadaway-listener:%s",nonce,nonce);
     assert(arrival_valid_receipt(response,nonce));
+    const char *lower="HTTP/1.1 200 OK\r\nx-adaway-listener-probe: 0123456789abcdef0123456789abcdef\r\n\r\nadaway-listener:0123456789abcdef0123456789abcdef";
+    assert(arrival_valid_receipt(lower,nonce));
     assert(!arrival_valid_receipt(response,"ffffffffffffffffffffffffffffffff"));
     assert(!arrival_valid_receipt("HTTP/1.1 200 OK\r\n\r\ngeneric block",nonce));
     response[9]='3'; assert(!arrival_valid_receipt(response,nonce));
