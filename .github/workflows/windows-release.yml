@@ -591,10 +591,12 @@ jobs:
 
       - name: Test dual listener settings and automatic startup creation
         shell: pwsh
+        timeout-minutes: 3
         run: ./tools/test-listener-lifecycle.ps1
 
       - name: Test actual HTTPS receipts with strict trust and hostname validation
         shell: pwsh
+        timeout-minutes: 3
         run: ./tools/test-listener-tls.ps1
 
       - name: Test actual server and client fresh listener receipts

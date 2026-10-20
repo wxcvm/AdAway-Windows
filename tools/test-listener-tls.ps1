@@ -26,7 +26,13 @@ try {
     $certificate=[Security.Cryptography.X509Certificates.X509Certificate2]::new((Join-Path $resources 'localhost-2410.crt'))
     $target="Cert:\CurrentUser\Root\$($certificate.Thumbprint)"
     if (Test-Path -LiteralPath $target) { throw 'Fixture CA unexpectedly pre-existed; refusing to own it' }
-    $imported=Import-Certificate -FilePath (Join-Path $resources 'localhost-2410.crt') -CertStoreLocation Cert:\CurrentUser\Root
+    # Use the store API directly: Import-Certificate can open a root-trust
+    # confirmation dialog and hang an unattended disposable runner.
+    $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+    try {
+        $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $store.Add($certificate);$imported=$certificate
+    } finally { $store.Close() }
     Probe '127.0.0.1' 'localhost' 0
     Probe '::1' 'localhost' 0
     Probe '127.0.0.1' 'tls.arrival-fixture.invalid' 0
@@ -34,7 +40,12 @@ try {
     Probe '127.0.0.1' '10.254.253.78' 23
     Write-Output 'Actual main + strict OpenSSL client: untrusted CA rejected, trusted v4/v6 TLS receipts, original domain SNI, mismatched name rejected'
 } finally {
-    if ($imported) { Remove-Item -LiteralPath "Cert:\CurrentUser\Root\$($imported.Thumbprint)" }
+    if ($imported) {
+        $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+        try { $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite);$store.Remove($imported) }
+        finally { $store.Close() }
+        if (Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($imported.Thumbprint)") { throw 'Fixture CA cleanup failed' }
+    }
     if (!$server.HasExited) { Stop-Process -Id $server.Id -Force }
     $server.WaitForExit()
 }
