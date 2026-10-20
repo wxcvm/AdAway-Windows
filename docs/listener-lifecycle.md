@@ -8,7 +8,7 @@
 
 旧 bind_ip / bind_all 设置保留原有含义：旧的单 IPv6 不会迁移为全网卡或隐式打开 IPv4。保存新格式后写入 listen_ipv4 / listen_ipv6，CLI 使用 --listen-ipv4 / --listen-ipv6，值 - 表示关闭，显式配置要求所有已启用监听成功。沿用 Android 独立固定提交的 listener_pair 契约，生产 portable core 固定提交保持不变。
 
-AdGuard 检测窗口读取本次真实启动配置，保存草稿不改变其检测目标。HTTP、HTTPS、DNS、UDP 结果分别呈现。HTTPS 复用项目固定 OpenSSL 3.5.9：只连接匹配监听的本机地址，使用原域名 SNI/Host 和证书名称校验，信任锚从 Windows ROOT 只读加载。固定本机基线使用 localhost SNI。禁止跳过证书验证、修改信任库、代理或跟随跳转。报告分为连接/TLS 未完成、证书拒绝、TLS 与证书通过但无回执、加密回执通过；不把普通 HTTPS 页面计为 AdAway。
+AdGuard 检测窗口读取本次真实启动配置，保存草稿不改变其检测目标。HTTP、HTTPS、DNS、UDP 结果分别呈现。HTTPS 复用项目固定 OpenSSL 3.5.9：只连接匹配监听的本机地址，使用原域名 SNI/Host 和证书名称校验，信任锚从 Windows ROOT 只读加载，并执行 Windows 原生 SSL 离线链与名称策略校验。固定本机基线使用 localhost SNI。禁止跳过证书验证、修改信任库、代理或跟随跳转。报告分为连接/TLS 未完成、证书拒绝、TLS 与证书通过但无回执、加密回执通过；不把普通 HTTPS 页面计为 AdAway。
 
 这是基于所读信任锚的离线链/名称校验，不下载 AIA/吊销信息，不等于 Schannel 的完整在线策略或所有浏览器、其他账户、证书固定应用的结果。每个 TLS 连接 2.5 秒/4096 字节预算。
 
@@ -21,4 +21,4 @@ QUIC / HTTP/3 尚未实现。窗口明确说明 TCP/443 不证明 UDP/443，并�
 - https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-createunicastipaddressentry
 - https://microsoft.github.io/msquic/msquicdocs/docs/Deployment.html
 
-CI 使用一次性 Windows runner，通过实际 INI→main→双协议启动/创建/恢复/禁用/失败链路，并在临时 CurrentUser ROOT 安装测试进程生成的 CA 来验证严格 HTTPS 正反例，结束后移除该测试 CA。日常主机不执行地址/信任写入。
+CI 使用一次性 Windows runner，通过实际 INI→main→双协议启动/创建/恢复/禁用/失败链路，并在临时 LocalMachine ROOT 安装测试进程生成的 CA 来验证严格 HTTPS 正反例，结束后移除该测试 CA。日常主机不执行地址/信任写入。

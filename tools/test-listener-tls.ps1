@@ -24,11 +24,12 @@ try {
     if (!$ready) { throw 'TLS main readiness failed' }
     Probe '127.0.0.1' 'localhost' 23
     $certificate=[Security.Cryptography.X509Certificates.X509Certificate2]::new((Join-Path $resources 'localhost-2410.crt'))
-    $target="Cert:\CurrentUser\Root\$($certificate.Thumbprint)"
+    $target="Cert:\LocalMachine\Root\$($certificate.Thumbprint)"
     if (Test-Path -LiteralPath $target) { throw 'Fixture CA unexpectedly pre-existed; refusing to own it' }
-    # Use the store API directly: Import-Certificate can open a root-trust
-    # confirmation dialog and hang an unattended disposable runner.
-    $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+    # The protected CurrentUser ROOT may require an interactive trust dialog,
+    # even via the store API. Use the disposable admin runner's machine store;
+    # never disable protected-root policy or run this on a daily host.
+    $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine')
     try {
         $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
         $store.Add($certificate);$imported=$certificate
@@ -41,10 +42,10 @@ try {
     Write-Output 'Actual main + strict OpenSSL client: untrusted CA rejected, trusted v4/v6 TLS receipts, original domain SNI, mismatched name rejected'
 } finally {
     if ($imported) {
-        $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','CurrentUser')
+        $store=[Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine')
         try { $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite);$store.Remove($imported) }
         finally { $store.Close() }
-        if (Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($imported.Thumbprint)") { throw 'Fixture CA cleanup failed' }
+        if (Test-Path -LiteralPath "Cert:\LocalMachine\Root\$($imported.Thumbprint)") { throw 'Fixture CA cleanup failed' }
     }
     if (!$server.HasExited) { Stop-Process -Id $server.Id -Force }
     $server.WaitForExit()
