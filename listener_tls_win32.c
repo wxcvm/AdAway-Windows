@@ -34,6 +34,45 @@ static bool at_wait(SOCKET socket_value,int ssl_error,ULONGLONG deadline) {
             ssl_error==SSL_ERROR_WANT_WRITE ? &ready : NULL,NULL,&timeout)>0;
 }
 
+static PCCERT_CONTEXT at_certificate(X509 *certificate) {
+    unsigned char *encoded=NULL;
+    int length=certificate ? i2d_X509(certificate,&encoded) : 0;
+    PCCERT_CONTEXT value=length>0 ? CertCreateCertificateContext(X509_ASN_ENCODING,encoded,(DWORD)length) : NULL;
+    OPENSSL_free(encoded); return value;
+}
+
+/* Also apply the native Windows SSL policy (including local disallowed trust),
+ * with all URL retrieval disabled. Never manufacture a trusted chain by
+ * installing the server's CA into the user's store. */
+static DWORD at_windows_policy(SSL *tls,const char *host) {
+    X509 *peer=SSL_get1_peer_certificate(tls);
+    PCCERT_CONTEXT certificate=at_certificate(peer); X509_free(peer);
+    if (!certificate) return ERROR_INVALID_DATA;
+    HCERTSTORE extra=CertOpenStore(CERT_STORE_PROV_MEMORY,0,0,CERT_STORE_CREATE_NEW_FLAG,NULL);
+    if (!extra) { CertFreeCertificateContext(certificate); return GetLastError(); }
+    const STACK_OF(X509) *sent=SSL_get_peer_cert_chain(tls);
+    for (int i=0;sent && i<sk_X509_num(sent);i++) {
+        PCCERT_CONTEXT intermediate=at_certificate(sk_X509_value(sent,i));
+        if (intermediate) { CertAddCertificateContextToStore(extra,intermediate,CERT_STORE_ADD_USE_EXISTING,NULL); CertFreeCertificateContext(intermediate); }
+    }
+    CERT_CHAIN_PARA options; memset(&options,0,sizeof(options)); options.cbSize=sizeof(options);
+    PCCERT_CHAIN_CONTEXT chain=NULL;
+    DWORD flags=CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL|CERT_CHAIN_DISABLE_AUTH_ROOT_AUTO_UPDATE|CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY;
+    DWORD error=NO_ERROR;
+    if (!CertGetCertificateChain(NULL,certificate,NULL,extra,&options,flags,NULL,&chain)) error=GetLastError();
+    else {
+        wchar_t name[256]; MultiByteToWideChar(CP_UTF8,0,host,-1,name,256);
+        SSL_EXTRA_CERT_CHAIN_POLICY_PARA ssl; memset(&ssl,0,sizeof(ssl));
+        ssl.cbSize=sizeof(ssl); ssl.dwAuthType=AUTHTYPE_SERVER; ssl.pwszServerName=name;
+        CERT_CHAIN_POLICY_PARA policy; memset(&policy,0,sizeof(policy)); policy.cbSize=sizeof(policy); policy.pvExtraPolicyPara=&ssl;
+        CERT_CHAIN_POLICY_STATUS status; memset(&status,0,sizeof(status)); status.cbSize=sizeof(status);
+        if (!CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_SSL,chain,&policy,&status)) error=GetLastError();
+        else error=status.dwError;
+    }
+    if (chain) CertFreeCertificateChain(chain);
+    CertCloseStore(extra,0); CertFreeCertificateContext(certificate); return error;
+}
+
 struct arrival_tls_result arrival_tls(const char *ip,int port,const char *host) {
     struct arrival_tls_result result={0};
     char normalized[64]; int family=la_normalize(ip,normalized);
@@ -66,8 +105,10 @@ struct arrival_tls_result arrival_tls(const char *ip,int port,const char *host) 
         if (result.verify_error!=X509_V_OK) result.state=ARRIVAL_TLS_CERTIFICATE_REJECTED;
         goto done;
     }
-    result.state=ARRIVAL_TLS_NO_RECEIPT;
     snprintf(result.protocol,sizeof(result.protocol),"%s",SSL_get_version(tls));
+    result.verify_error=(long)at_windows_policy(tls,host);
+    if (result.verify_error) { result.state=ARRIVAL_TLS_CERTIFICATE_REJECTED; goto done; }
+    result.state=ARRIVAL_TLS_NO_RECEIPT;
     unsigned char random[16]; if (BCryptGenRandom(NULL,random,sizeof(random),BCRYPT_USE_SYSTEM_PREFERRED_RNG)!=0) goto done;
     char nonce[33]; for (int i=0;i<16;i++) snprintf(nonce+i*2,3,"%02x",random[i]);
     char request[512]; int length=snprintf(request,sizeof(request),"GET /adaway-listener-probe/%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",nonce,host);

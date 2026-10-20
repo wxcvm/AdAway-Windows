@@ -233,6 +233,8 @@ static char g_res[512];
 static int  g_http_port;
 static int  g_https_port;
 static char g_bind_ip[64],g_bind_ipv6[64];
+static char g_legacy_bind_ip[64];
+static bool g_explicit_pair;
 static bool g_auto_create;
 static struct arrival_config g_active_arrival;
 static void listener_display_host(char out[68]) {
@@ -1004,8 +1006,9 @@ static bool ini_save(int http_port, int https_port, bool bind_all) {
     fprintf(f, "https_port=%d\n", https_port);
     fprintf(f, "bind_all=%d\n", bind_all ? 1 : 0);
     fprintf(f, "theme=%d\n", g_theme_pref);
-    fprintf(f, "bind_ip=%s\n", g_bind_ip);
-    fprintf(f, "listen_ipv4=%s\nlisten_ipv6=%s\nlistener_auto_create=%d\n",g_bind_ip,g_bind_ipv6,g_auto_create ? 1 : 0);
+    fprintf(f, "bind_ip=%s\n", g_explicit_pair ? g_bind_ip : g_legacy_bind_ip);
+    if (g_explicit_pair) fprintf(f,"listen_ipv4=%s\nlisten_ipv6=%s\n",g_bind_ip,g_bind_ipv6);
+    fprintf(f,"listener_auto_create=%d\n",g_auto_create ? 1 : 0);
     if (kept != NULL && kept_len > 0) {
         fwrite(kept, 1, kept_len, f);
         if (kept[kept_len - 1] != '\n') fputc('\n', f);
@@ -3395,6 +3398,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_https_port = args->https_port;
         g_bind_all = args->bind_all;
         snprintf(g_bind_ip, sizeof(g_bind_ip), "%s", args->bind_ip ? args->bind_ip : "");
+        snprintf(g_legacy_bind_ip,sizeof(g_legacy_bind_ip),"%s",g_bind_ip);
+        g_explicit_pair=args->explicit_pair;
         if (args->explicit_pair) snprintf(g_bind_ipv6,sizeof(g_bind_ipv6),"%s",args->bind_ipv6 ? args->bind_ipv6 : "");
         else if (*g_bind_ip && strchr(g_bind_ip,':')) { snprintf(g_bind_ipv6,sizeof(g_bind_ipv6),"%s",g_bind_ip); *g_bind_ip=0; }
         else if (!*g_bind_ip) { snprintf(g_bind_ip,sizeof(g_bind_ip),"%s",g_bind_all ? "0.0.0.0" : "127.0.0.1"); snprintf(g_bind_ipv6,sizeof(g_bind_ipv6),"%s",g_bind_all ? "::" : "::1"); }
@@ -3814,14 +3819,15 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 if (listener_validate(hwnd, true)) {
                     int hp, sp; char ip[64],ip6[64]; bool bind;
                     if (!listener_read(hwnd, ip, ip6, &hp, &sp, &bind)) return 0;
-                    char old_ip[64],old_ip6[64]; bool old_auto=g_auto_create;
+                    char old_ip[64],old_ip6[64]; bool old_auto=g_auto_create,old_pair=g_explicit_pair;
                     memcpy(old_ip,g_bind_ip,sizeof(old_ip)); memcpy(old_ip6,g_bind_ipv6,sizeof(old_ip6));
                     snprintf(g_bind_ipv6,sizeof(g_bind_ipv6),"%s",ip6);
                     g_auto_create=SendDlgItemMessageW(hwnd,IDC_AUTO_CREATE,BM_GETCHECK,0,0)==BST_CHECKED;
+                    g_explicit_pair=true;
                     snprintf(g_bind_ip, sizeof(g_bind_ip), "%s", ip);
                     if (!ini_save(hp, sp, bind)) {
                         memcpy(g_bind_ip, old_ip, sizeof(g_bind_ip));
-                        memcpy(g_bind_ipv6,old_ip6,sizeof(g_bind_ipv6)); g_auto_create=old_auto;
+                        memcpy(g_bind_ipv6,old_ip6,sizeof(g_bind_ipv6)); g_auto_create=old_auto; g_explicit_pair=old_pair;
                         SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"保存失败，原配置已保留；请检查配置目录权限。");
                         return 0;
                     }

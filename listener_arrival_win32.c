@@ -124,7 +124,7 @@ static void ac_tls(const char *ip,int port,const char *host,wchar_t *out,size_t 
     else if (result.state==ARRIVAL_TLS_NO_RECEIPT)
         ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：%hs 与证书校验通过，但无 AdAway 加密回执。\r\n",ip,port,host,result.protocol);
     else if (result.state==ARRIVAL_TLS_CERTIFICATE_REJECTED)
-        ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：证书链或名称校验拒绝（OpenSSL %ld）；未跳过验证，TLS 未完成。\r\n",ip,port,host,result.verify_error);
+        ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：证书链或名称/策略拒绝（%ld）；未跳过验证，未发送加密 HTTP。\r\n",ip,port,host,result.verify_error);
     else ac_append(out,cap,L"HTTPS [%hs]:%d（%hs）：连接或 TLS 未完成，不能确认 HTTPS 到达。\r\n",ip,port,host);
 }
 

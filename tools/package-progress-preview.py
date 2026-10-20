@@ -20,7 +20,7 @@ script=script.replace('@@TAG@@',os.environ['PREVIEW_TAG']).replace(
 if '@@' in script: raise ValueError('Unexpanded installer identity')
 (output/'install-preview.ps1').write_text(script,encoding='utf-8-sig')
 shutil.copyfile(root/'docs/preview-installation.md',output/'INSTALLATION.md')
-shutil.copyfile(root/'docs/listener-settings.md',output/'IMPLEMENTATION-STATUS.md')
+(output/'IMPLEMENTATION-STATUS.md').write_text((root/'docs/listener-settings.md').read_text(encoding='utf-8')+'\n'+(root/'docs/listener-lifecycle.md').read_text(encoding='utf-8'),encoding='utf-8')
 (output/'SOURCE-COMMIT.txt').write_text(os.environ['GITHUB_SHA']+'\n',encoding='utf-8')
 (output/'SIGNING-POLICY.txt').write_text(
     'Unsigned Windows distribution; SHA-256 verifies download integrity, not publisher identity.\n'
