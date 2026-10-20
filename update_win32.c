@@ -12,6 +12,10 @@
  */
 #include "update_win32.h"
 #include "gui_win32.h"
+#include "update_feed.h"
+#ifndef ADBLOCK_UPDATE_BUILD
+#define ADBLOCK_UPDATE_BUILD "0"
+#endif
 
 #include <winhttp.h>
 #include <bcrypt.h>   /* SHA-256 of the downloaded update package */
@@ -104,6 +108,17 @@ int update_set_portable_mode(int enabled) {
     if (update_state() != UPDATE_STATE_IDLE || !ini_path(ini, MAX_PATH)) return 0;
     return WritePrivateProfileStringW(L"settings", L"update_mode",
                                      enabled ? L"portable" : L"auto", ini) != 0;
+}
+
+int update_include_preview(void) {
+    wchar_t ini[MAX_PATH];
+    return ini_path(ini, MAX_PATH) && GetPrivateProfileIntW(L"settings", L"include_preview", 0, ini) == 1;
+}
+
+int update_set_include_preview(int enabled) {
+    wchar_t ini[MAX_PATH];
+    if (update_state() != UPDATE_STATE_IDLE || !ini_path(ini, MAX_PATH)) return 0;
+    return WritePrivateProfileStringW(L"settings", L"include_preview", enabled ? L"1" : L"0", ini) != 0;
 }
 
 /* Copy text to the clipboard (used by the failure dialogs' "复制诊断信息"). */
@@ -417,6 +432,7 @@ static void utf8_to_wide(const char *in, wchar_t *out, size_t cap) {
 
 /* Value of "key": "..." at or after `from`. */
 static int json_string(const char *json, const char *key, const char *from, char *out, size_t cap) {
+    (void)json;
     const char *p = strstr(from, key);
     if (!p) return 0;
     p = strchr(p + strlen(key), ':');
@@ -432,21 +448,6 @@ static int json_string(const char *json, const char *key, const char *from, char
     }
     out[n] = 0;
     return n > 0;
-}
-
-/* Dotted version compare: > 0 when a is newer than b. */
-static int version_cmp(const char *a, const char *b) {
-    for (;;) {
-        int va = 0, vb = 0;
-        while (*a >= '0' && *a <= '9') va = va * 10 + (*a++ - '0');
-        while (*b >= '0' && *b <= '9') vb = vb * 10 + (*b++ - '0');
-        if (va != vb) return va - vb;
-        while (*a && (*a < '0' || *a > '9')) a++;
-        while (*b && (*b < '0' || *b > '9')) b++;
-        if (!*a && !*b) return 0;
-        if (!*a) return -1;
-        if (!*b) return 1;
-    }
 }
 
 static char *http_get(const wchar_t *host, const wchar_t *path, size_t *out_len,
@@ -483,7 +484,7 @@ static void update_cache_path(char *out, size_t cap) {
     if (slash) *slash = 0;
     char dir[MAX_PATH * 3] = "";
     WideCharToMultiByte(CP_UTF8, 0, exe, -1, dir, sizeof(dir), NULL, NULL);
-    snprintf(out, cap, "%s/resources/update_cache.json", dir);
+    snprintf(out, cap, "%s/resources/update_cache-%d-%d-%s-%s.json", dir, update_include_preview(), update_portable_mode(), ADBLOCK_APP_VERSION, ADBLOCK_UPDATE_BUILD);
 }
 
 static bool update_cache_load(struct update_cache *c) {
@@ -524,17 +525,6 @@ static void update_cache_save(const struct update_cache *c) {
 
 /* One release as published: the installer is the normal package, the portable
    zip is both the fallback and the in-place update of a hand-extracted copy. */
-struct release_pick {
-    char tag[128];
-    char ver[64];
-    char exe_url[1024];
-    char exe_sha[128];
-    char exe_api_url[512];   /* /releases/assets/<id> endpoint (API answer only) */
-    char zip_url[1024];
-    char zip_sha[128];
-    char zip_api_url[512];
-};
-
 /* Folder the running executable lives in. */
 static int exe_dir(wchar_t *out, size_t cap) {
     wchar_t exe[MAX_PATH];
@@ -648,7 +638,7 @@ static void release_pick_choose(const struct release_pick *p, wchar_t *url, size
 }
 
 /* Fixed-tag manifest: 1 newer, 0 up to date (no API needed), -1 unavailable. */
-static int manifest_check(struct release_pick *p, DWORD *status) {
+static int manifest_channel_check(struct release_pick *p, DWORD *status, int preview) {
     size_t len = 0;
     DWORD st = 0;
     /*
@@ -661,7 +651,8 @@ static int manifest_check(struct release_pick *p, DWORD *status) {
      * (no REST quota involved).
      */
     wchar_t path[600];
-    swprintf(path, 600, L"%ls?t=%llu", UPDATE_MANIFEST_PATH,
+    swprintf(path, 600, L"%ls?t=%llu", preview
+             ? L"/wxcvm/AdAway-Windows/releases/download/win11-preview/windows-manifest.json" : UPDATE_MANIFEST_PATH,
              (unsigned long long) GetTickCount64());
     memset(p, 0, sizeof(*p));
     /* Three attempts: one hiccup on the asset host must not push the check onto
@@ -675,24 +666,34 @@ static int manifest_check(struct release_pick *p, DWORD *status) {
         s_proxy_resolved = 0;
         return -1;
     }
-    json_string(json, "\"tag\"", json, p->tag, sizeof(p->tag));
-    json_string(json, "\"version\"", json, p->ver, sizeof(p->ver));
-    json_string(json, "\"exe_url\"", json, p->exe_url, sizeof(p->exe_url));
-    json_string(json, "\"exe_sha256\"", json, p->exe_sha, sizeof(p->exe_sha));
-    json_string(json, "\"zip_url\"", json, p->zip_url, sizeof(p->zip_url));
-    json_string(json, "\"zip_sha256\"", json, p->zip_sha, sizeof(p->zip_sha));
+    int valid = update_feed_manifest(json, preview, NULL, p);
     free(json);
-    if (!p->ver[0]) return -1;
-    /* Neither package published: treat the manifest as unusable so the REST
-       API (with its cache) still gets a chance to answer. */
-    if (!p->exe_url[0] && !p->zip_url[0]) return -1;
-    if (version_cmp(p->ver, ADBLOCK_APP_VERSION) > 0) return 1;
-    return 0;
+    if (!valid) return -1;
+    struct release_pick current = {0};
+    snprintf(current.ver, sizeof(current.ver), "%s", ADBLOCK_APP_VERSION);
+    snprintf(current.build, sizeof(current.build), "%s", ADBLOCK_UPDATE_BUILD);
+    return update_feed_cmp(p, &current) > 0;
+}
+
+static int manifest_check(struct release_pick *pick, DWORD *status) {
+    int stable = manifest_channel_check(pick, status, 0);
+    if (!update_include_preview()) return stable;
+    struct release_pick preview;
+    DWORD preview_status = 0;
+    int beta = manifest_channel_check(&preview, &preview_status, 1);
+    // A stable response must not suppress a preview query or hide its failure.
+    if (beta < 0 || stable < 0) { if (status) *status = preview_status; return -1; }
+    if (update_feed_cmp(&preview, pick) > 0) { *pick = preview; return beta; }
+    return stable;
 }
 
 /* HTTP(S) GET (system proxy aware, follows redirects). Caller frees. */
 static char *http_get(const wchar_t *host, const wchar_t *path, size_t *out_len,
                       DWORD *out_status) {
+#ifdef UPDATE_FEED_TEST_HTTP
+    extern char *update_fixture_get(const wchar_t *, const wchar_t *, size_t *, DWORD *);
+    return update_fixture_get(host, path, out_len, out_status);
+#endif
     HINTERNET session = NULL, connect = NULL, request = NULL;
     char *body = NULL;
     size_t total = 0, cap = 0;
@@ -1007,117 +1008,38 @@ static int http_download_to_file(const wchar_t *url, const wchar_t *file, const 
     return http_download_to_file_limit(url, file, extra_headers, UPDATE_DOWNLOAD_MAX_BYTES, UPDATE_DOWNLOAD_BUDGET_MS, true);
 }
 
-/* Decimal id after ".../releases/assets/" (the /releases/assets/<id> endpoint). */
-static void asset_id_from(const char *marker, char *out, size_t cap) {
-    size_t k = 0;
-    if (!out || cap == 0) return;
-    out[0] = 0;
-    while (marker && marker[k] >= '0' && marker[k] <= '9' && k + 1 < cap) {
-        out[k] = marker[k];
-        k++;
-    }
-    out[k] = 0;
-}
-
-/* Newest release publishing a Windows package, when it is newer than this
-   build. 1 = newer release found, 0 = the API answered and there is none,
-   -1 = the check itself failed (network/TLS/proxy/rate limit). The old code
-   returned 0 for both, which is why a failed check looked like "up to date". */
+/* API fallback uses complete objects and published package digests. */
 static int find_latest_update(struct release_pick *pick, DWORD *http_status) {
-    size_t len = 0;
-    DWORD st = 0;
-    int found = 0;
-    memset(pick, 0, sizeof(*pick));
+    size_t len = 0; DWORD st = 0; int answered = 0;
     char *json = http_get(UPDATE_API_HOST, UPDATE_API_PATH, &len, &st);
     if (http_status) *http_status = st;
-    if (!json) {
-        s_proxy_resolved = 0;   /* let the next check re-probe the route */
-        return -1;
-    }
-    const char *p = json;
-    while (!found && (p = strstr(p, "\"tag_name\"")) != NULL) {
-        char tag[128] = "";
-        const char *next = strstr(p + 10, "\"tag_name\"");
-        if (json_string(json, "\"tag_name\"", p, tag, sizeof(tag))) {
-            /* Walk every asset of this release: the Inno Setup installer is
-               preferred, the portable zip is the fallback. */
-            /*
-             * Walk the assets of THIS release. An asset object starts at its
-             * "url": ".../releases/assets/<id>" and the API puts the download URL
-             * LAST inside that object (name, ..., digest, ... and
-             * browser_download_url). The old code searched for "digest" AFTER
-             * the download URL, so it always picked up the digest of the NEXT
-             * asset: the downloaded installer then failed the SHA-256 check and
-             * the dashboard reported "network is fine but it will not update".
-             * name + digest + url are now read from the same asset object.
-             */
-            char exe_url[1024] = "", exe_sha[128] = "", exe_api[512] = "";
-            char zip_url[1024] = "", zip_sha[128] = "", zip_api[512] = "";
-            const char *chunk = p;
-            for (;;) {
-                const char *a = strstr(chunk, "releases/assets/");
-                if (a == NULL || (next != NULL && a >= next)) break;
-                const char *b = strstr(a + 16, "releases/assets/");
-                if (b == NULL || (next != NULL && b > next)) b = next ? next : (a + strlen(a));
-                size_t span = (size_t) (b - a);
-                char region[8192];
-                if (span >= sizeof(region)) span = sizeof(region) - 1;
-                memcpy(region, a, span);
-                region[span] = 0;
-                char one[1024] = "", dig[128] = "";
-                json_string(region, "\"browser_download_url\"", region, one, sizeof(one));
-                json_string(region, "\"digest\"", region, dig, sizeof(dig));
-                size_t l = strlen(one);
-                int is_exe = l > 4 && _stricmp(one + l - 4, ".exe") == 0;
-                int is_zip = l > 4 && _stricmp(one + l - 4, ".zip") == 0;
-                if (is_exe && exe_url[0] == 0) {
-                    char id[32] = "";
-                    snprintf(exe_url, sizeof(exe_url), "%s", one);
-                    snprintf(exe_sha, sizeof(exe_sha), "%s", dig);
-                    asset_id_from(a + 16, id, sizeof(id));
-                    if (id[0])
-                        snprintf(exe_api, sizeof(exe_api),
-                                 "https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/%s", id);
-                } else if (is_zip && zip_url[0] == 0) {
-                    char id[32] = "";
-                    snprintf(zip_url, sizeof(zip_url), "%s", one);
-                    snprintf(zip_sha, sizeof(zip_sha), "%s", dig);
-                    asset_id_from(a + 16, id, sizeof(id));
-                    if (id[0])
-                        snprintf(zip_api, sizeof(zip_api),
-                                 "https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/%s", id);
-                }
-                chunk = a + 16;
-            }
-            if (exe_url[0] || zip_url[0]) {
-                const char *v = strrchr(tag, 'v');
-                v = v ? v + 1 : tag;
-                /*
-                 * Only the Windows zip of this program is a valid update: the
-                 * same feed also carries the Android APK, so the tag has to be
-                 * the Windows one and the download must really be a .zip (this
-                 * is what made an earlier build offer the Android APK).
-                 */
-                int is_win_release = strncmp(tag, "win11-webserver-", 16) == 0 ||
-                                     strstr(exe_url, "adblock-webserver") != NULL ||
-                                     strstr(zip_url, "adblock-webserver") != NULL;
-                if (is_win_release && version_cmp(v, ADBLOCK_APP_VERSION) > 0) {
-                    snprintf(pick->tag, sizeof(pick->tag), "%s", tag);
-                    snprintf(pick->ver, sizeof(pick->ver), "%s", v);
-                    snprintf(pick->exe_url, sizeof(pick->exe_url), "%s", exe_url);
-                    snprintf(pick->exe_sha, sizeof(pick->exe_sha), "%s", exe_sha);
-                    snprintf(pick->exe_api_url, sizeof(pick->exe_api_url), "%s", exe_api);
-                    snprintf(pick->zip_url, sizeof(pick->zip_url), "%s", zip_url);
-                    snprintf(pick->zip_sha, sizeof(pick->zip_sha), "%s", zip_sha);
-                    snprintf(pick->zip_api_url, sizeof(pick->zip_api_url), "%s", zip_api);
-                    found = 1;
-                }
-            }
+    if (!json) return -1;
+    memset(pick, 0, sizeof(*pick));
+    for (unsigned i = 0; i < 100; i++) {
+        struct release_pick one;
+        int rc = update_feed_release(json, i, update_include_preview(), &one);
+        if (rc < 0) break;
+        if (rc == 0) continue;
+        if (rc == 2) {
+            wchar_t path[512], release_tag[128];
+            utf8_to_wide(one.tag, release_tag, 128);
+            swprintf(path, 512, L"/wxcvm/AdAway-Windows/releases/download/%ls/windows-manifest.json", release_tag);
+            char *manifest = http_get(UPDATE_MANIFEST_HOST, path, &len, &st);
+            struct release_pick preview = {0};
+            int valid = manifest && update_feed_manifest(manifest, 1, one.tag, &preview);
+            free(manifest);
+            if (!valid) continue;
+            one = preview;
         }
-        p += 10;
+        answered = 1;
+        if (!pick->ver[0] || update_feed_cmp(&one, pick) > 0) *pick = one;
     }
     free(json);
-    return found ? 1 : 0;
+    if (!answered) return -1;
+    struct release_pick current = {0};
+    snprintf(current.ver, sizeof(current.ver), "%s", ADBLOCK_APP_VERSION);
+    snprintf(current.build, sizeof(current.build), "%s", ADBLOCK_UPDATE_BUILD);
+    return update_feed_cmp(pick, &current) > 0;
 }
 
 /* Last failure reason, shown by the dashboard (see update_last_error()). */
@@ -1238,9 +1160,9 @@ static DWORD WINAPI check_thread(LPVOID param) {
     } else {
         s_check_error[0] = 0;
     }
-    PostMessageW(hwnd, WM_APP_UPDATE_FOUND, rc > 0 ? 1 : (rc == 0 ? 0 : 2), (LPARAM) info);
     /* The check is over; the GUI may now start a download (see apply_async). */
     InterlockedExchange(&s_update_state, UPDATE_STATE_IDLE);
+    PostMessageW(hwnd, WM_APP_UPDATE_FOUND, rc > 0 ? 1 : (rc == 0 ? 0 : 2), (LPARAM) info);
     return 0;
 }
 
@@ -2163,6 +2085,7 @@ void update_apply_async(HWND hwnd, const struct update_info *info) {
     MessageBoxW(hwnd, L"预览版请从 GitHub 预览 Release 手动更新。", L"ADBlock Preview", MB_OK | MB_ICONINFORMATION);
     return;
 #endif
+    if (info && wcsncmp(info->tag, L"progress-win-", 13) == 0 && !update_include_preview()) return;
     if (InterlockedCompareExchange(&s_update_state, UPDATE_STATE_DOWNLOADING,
                                    UPDATE_STATE_IDLE) != UPDATE_STATE_IDLE) {
         win32_log_line("update: refusing to start a second download (state=%d)",

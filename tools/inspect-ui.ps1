@@ -194,6 +194,12 @@ Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch 'ZIP') { throw 'ZIP update preference not visible' }
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch '自动') { throw 'ZIP update preference cannot be restored' }
+Send-BoundedMessage $window 0x111 ([IntPtr]1203) ([IntPtr]::Zero)
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1203))) -notmatch '含预览') { throw 'Preview update channel not visible' }
+if ((Get-Content (Join-Path (Split-Path $guiProcess.Path) 'webserver.ini') -Raw) -notmatch 'include_preview=1') { throw 'Preview channel was not persisted' }
+Save-Window 'settings-preview-update-channel'
+Send-BoundedMessage $window 0x111 ([IntPtr]1203) ([IntPtr]::Zero)
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1203))) -notmatch '稳定版') { throw 'Stable update channel cannot be restored' }
 Save-Window 'settings-listener-feedback'
 Set-Page 4; Save-Window 'subscriptions-light'
 $delete=[UiReviewNative]::GetDlgItem($window,1143)
