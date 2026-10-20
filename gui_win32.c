@@ -11,6 +11,7 @@
 #define UNICODE
 #define _UNICODE
 #include <winsock2.h>
+#include <ws2ipdef.h> /* netioapi declarations must exist before iphlpapi's include guard is set. */
 #include "update_win32.h"
 #include <windows.h>
 #include <shellapi.h>
@@ -44,6 +45,7 @@
 #include "subscription_update_win32.h"
 #include "subscription_settings_win32.h"
 #include "listener_conflict_win32.h"
+#include "managed_listener_address_win32.h"
 #include "control_http_result.h"
 #include <io.h>
 
@@ -896,6 +898,10 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_BIND_IP 1190
 #define IDC_CHECK_LISTEN 1191
 #define IDC_LISTEN_STATUS 1192
+#define IDC_CREATE_ADDRESS 1193
+#define IDC_REMOVE_ADDRESS 1194
+#define WM_APP_ADDRESS_DONE (WM_APP + 32)
+static bool s_address_busy;
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
 
 /*
@@ -2327,8 +2333,10 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_HTTP_EDIT,  300, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
     { IDC_HTTPS_EDIT, 590, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
     { IDC_BIND_CHK,   218, 106, 180, 24, L"BUTTON", L"所有网卡（IP 留空）", BS_AUTOCHECKBOX },
-    { IDC_BIND_IP,    410, 106, 280, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
-    { IDC_CHECK_LISTEN,710,106,280,26,L"BUTTON",L"检测地址和端口冲突",BS_PUSHBUTTON },
+    { IDC_BIND_IP,    400, 106, 220, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
+    { IDC_CHECK_LISTEN,630,106,115,26,L"BUTTON",L"检测冲突",BS_PUSHBUTTON },
+    { IDC_CREATE_ADDRESS,755,106,115,26,L"BUTTON",L"创建地址…",BS_PUSHBUTTON },
+    { IDC_REMOVE_ADDRESS,880,106,110,26,L"BUTTON",L"移除托管…",BS_PUSHBUTTON },
     { IDC_LISTEN_STATUS,218,174,772,40,L"STATIC",L"",SS_LEFT },
     { IDC_ADGUARD_HOME, 742, 594, 250, 30, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
     { IDC_SAVE,       218, 140, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
@@ -2500,6 +2508,7 @@ static const wchar_t *listener_description(int status) {
 }
 
 static bool listener_validate(HWND hwnd, bool explicit_check) {
+    if (s_address_busy) return false;
     char ip[64]; int http,https; bool all;
     if (!listener_read(hwnd,ip,&http,&https,&all)) {
         SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请输入完整本机 IPv4 / IPv6；端口须为 1–65535，HTTP、HTTPS 与管理端口不能相同。支持 ::1，不支持 [::1] 或区域编号。");
@@ -2521,6 +2530,78 @@ static bool listener_validate(HWND hwnd, bool explicit_check) {
     SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,report);
     if (explicit_check) InvalidateRect(hwnd,NULL,FALSE);
     return (h==0 || h==6) && (s==0 || s==6);
+}
+
+struct address_job { HWND hwnd; char ip[64]; int http,https; bool remove; DWORD result; };
+
+static void address_controls(HWND hwnd,bool busy) {
+    const int ids[]={IDC_BIND_IP,IDC_BIND_CHK,IDC_HTTP_EDIT,IDC_HTTPS_EDIT,IDC_CREATE_ADDRESS,
+        IDC_REMOVE_ADDRESS,IDC_SAVE,IDC_RESTART,IDC_CHECK_LISTEN,IDC_FIXPORT};
+    for (size_t i=0;i<sizeof(ids)/sizeof(ids[0]);i++) EnableWindow(GetDlgItem(hwnd,ids[i]),!busy);
+}
+
+static DWORD WINAPI address_worker(void *opaque) {
+    struct address_job *job=(struct address_job *)opaque;
+    wchar_t exe[32768],args[256];
+    DWORD length=GetModuleFileNameW(NULL,exe,32768);
+    if (!length || length>=32768) job->result=ERROR_FILENAME_EXCED_RANGE;
+    else {
+        if (job->remove) swprintf(args,256,L"--remove-listener-address %hs",job->ip);
+        else swprintf(args,256,L"--create-listener-address %hs %d %d",job->ip,job->http,job->https);
+        SHELLEXECUTEINFOW request; memset(&request,0,sizeof(request));
+        request.cbSize=sizeof(request); request.fMask=SEE_MASK_NOCLOSEPROCESS|SEE_MASK_NOASYNC|SEE_MASK_FLAG_NO_UI;
+        request.lpVerb=L"runas"; request.lpFile=exe; request.lpParameters=args; request.nShow=SW_HIDE;
+        if (!ShellExecuteExW(&request)) job->result=GetLastError();
+        else if (!request.hProcess) job->result=ERROR_INVALID_HANDLE;
+        else {
+            DWORD wait=WaitForSingleObject(request.hProcess,30000);
+            if (wait==WAIT_OBJECT_0) { if (!GetExitCodeProcess(request.hProcess,&job->result)) job->result=GetLastError(); }
+            else job->result=wait==WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError();
+            CloseHandle(request.hProcess);
+        }
+    }
+    if (!PostMessageW(job->hwnd,WM_APP_ADDRESS_DONE,0,(LPARAM)job)) free(job);
+    return 0;
+}
+
+static void address_action(HWND hwnd,bool remove) {
+    if (s_address_busy) return;
+    char ip[64]; int http,https; bool all; SOCKADDR_INET address;
+    if (!listener_read(hwnd,ip,&http,&https,&all) || !*ip) {
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请先填写具体的监听 IPv4 / IPv6 地址和有效端口。"); return;
+    }
+    memset(&address,0,sizeof(address)); address.si_family=strchr(ip,':') ? AF_INET6 : AF_INET;
+    if (address.si_family==AF_INET) inet_pton(AF_INET,ip,&address.Ipv4.sin_addr);
+    else inet_pton(AF_INET6,ip,&address.Ipv6.sin6_addr);
+    MIB_UNICASTIPADDRESS_ROW row;
+    if (!remove && ma_find(&address,&row)==NO_ERROR) {
+        listener_validate(hwnd,true);
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"地址已经存在，直接复用；没有修改地址或创建记录。检查端口后保存并重启。"); return;
+    }
+    if (!ma_address(ip,&address)) {
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请填写私有 IPv4 或 IPv6 ULA（如 fd6b:2a91:84f0::2）；只在软件回环接口创建 /32 或 /128，本机已有地址可直接保存。");
+        return;
+    }
+    if (remove && ma_owned(ip,&row)!=NO_ERROR) {
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"该地址没有匹配的 AdAway 创建记录；不会移除系统或其他软件创建的地址。"); return;
+    }
+    if (remove && !strcmp(ip,g_bind_ip)) {
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请先切换到其他监听地址并保存、重启，再移除当前正在使用的托管地址。"); return;
+    }
+    wchar_t prompt[600];
+    swprintf(prompt,600,remove
+        ? L"移除本程序在软件回环接口创建的 %hs？\n\n需要管理员授权，仅操作创建记录仍匹配的地址；不会移除其他地址。"
+        : L"在软件回环接口创建 %hs（%ls）？\n\n需要管理员授权，仅在本机使用，不修改物理网卡、DHCP、DNS 或默认网关。创建后检查 HTTP/HTTPS 端口，失败时回滚。\n\n地址仅在本次开机有效；重启系统后可再次创建。成功后请点击“保存并重启”应用监听设置。",
+        ip,strchr(ip,':') ? L"/128" : L"/32");
+    if (MessageBoxW(hwnd,prompt,remove ? L"移除托管地址" : L"创建本机地址",MB_OKCANCEL|MB_ICONQUESTION)!=IDOK) return;
+    struct address_job *job=(struct address_job *)calloc(1,sizeof(*job));
+    if (!job) { SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"内存不足，未修改地址。"); return; }
+    job->hwnd=hwnd; snprintf(job->ip,sizeof(job->ip),"%s",ip); job->http=http; job->https=https; job->remove=remove;
+    s_address_busy=true; address_controls(hwnd,true); KillTimer(hwnd,3);
+    SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"正在等待管理员授权并处理本机地址…");
+    HANDLE thread=CreateThread(NULL,0,address_worker,job,0,NULL);
+    if (thread) CloseHandle(thread);
+    else { free(job); s_address_busy=false; address_controls(hwnd,false); SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"无法启动地址任务，未修改地址。"); }
 }
 
 static void update_button_refresh(HWND hwnd) {
@@ -3542,6 +3623,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_CHECK_LISTEN) {
             listener_validate(hwnd, true);
+        } else if (id == IDC_CREATE_ADDRESS || id == IDC_REMOVE_ADDRESS) {
+            address_action(hwnd,id==IDC_REMOVE_ADDRESS);
         } else if (id == IDC_BIND_CHK) {
             if (g_listener_ready) SetTimer(hwnd, 3, 600, NULL);
         } else if (id == IDC_PORTABLEUPD) {
@@ -3975,6 +4058,22 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
     }
+    case WM_APP_ADDRESS_DONE: {
+        struct address_job *job=(struct address_job *)lp;
+        s_address_busy=false; address_controls(hwnd,false);
+        if (!job) return 0;
+        wchar_t message[600];
+        if (job->result==NO_ERROR) swprintf(message,600,job->remove
+            ? L"已移除托管地址 %hs；系统和其他软件的地址未改变。"
+            : L"已创建 %hs，HTTP/HTTPS 端口检查通过。地址在本次开机有效；点击“保存并重启”应用监听。",job->ip);
+        else if (job->result==ERROR_OBJECT_ALREADY_EXISTS) swprintf(message,600,L"地址 %hs 已被创建，直接复用；没有取得其所有权，请重新检测端口。",job->ip);
+        else if (job->result==ERROR_CANCELLED) swprintf(message,600,L"已取消管理员授权，地址和监听设置未改变。");
+        else if (job->result==MA_PORT_CONFLICT) swprintf(message,600,L"端口不可用，本次创建的地址已清理；原监听设置保留。");
+        else if (job->result==MA_CLEANUP_FAILED) swprintf(message,600,L"地址操作失败且清理未完成；请检查托管地址后重试移除。原监听设置未改变。");
+        else swprintf(message,600,L"地址操作未完成（系统错误 %lu）。原监听设置未改变；请检查管理员权限及软件回环接口。",(unsigned long)job->result);
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,message); free(job);
+        InvalidateRect(hwnd,NULL,FALSE); return 0;
+    }
     case WM_APP_SUBS_DONE: {
         struct subs_job *job = (struct subs_job *)lp;
         InterlockedExchange(&s_subs_running, 0);
@@ -4007,6 +4106,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_APP_EXIT:
+        if (s_address_busy) {
+            MessageBoxW(hwnd,L"本机地址任务尚未结束，请完成或取消管理员授权后再退出。",L"正在处理本机地址",MB_OK|MB_ICONINFORMATION);
+            return 0;
+        }
         tray_remove();
         DestroyWindow(hwnd);
         return 0;

@@ -22,7 +22,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.76
+      TAG: win11-webserver-v1.77
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -128,6 +128,8 @@ jobs:
           ./update_package_policy_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic control_http_result_test.c -o control_http_result_test.exe
           ./control_http_result_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic managed_listener_address_test.c -lws2_32 -liphlpapi -ladvapi32 -o managed_listener_address_test.exe
+          ./managed_listener_address_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
           ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
@@ -568,6 +570,10 @@ jobs:
       - name: Test actual custom listener startup and conflict checks
         shell: pwsh
         run: ./tools/test-listener.ps1
+
+      - name: Test actual managed listener creation and rollback on disposable runner
+        shell: pwsh
+        run: ./tools/test-managed-listener.ps1
 
       - name: Upload desktop UI screenshots and layout evidence
         if: always()

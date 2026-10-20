@@ -6,7 +6,10 @@ def prepare_listener(source):
             raise ValueError('listener hook changed: ' + old[:100])
         source = source.replace(old, new)
     hook('int main(int argc, char *argv[]) {', '''#include "listen_address.h"
+#include "managed_listener_address_win32.h"
 int main(int argc, char *argv[]) {
+    int address_action = ma_cli(argc, argv);
+    if (address_action >= 0) return address_action;
     int listener_check = la_check_cli(argc, argv, 80, 443, 8686);
     if (listener_check >= 0) return listener_check;''')
     # The parser uses the shared normalizer too, so include before settings.
