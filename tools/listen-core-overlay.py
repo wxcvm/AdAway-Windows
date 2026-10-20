@@ -87,7 +87,34 @@ int main(int argc, char *argv[]) {
             http_url, https_url, http_url6, https_url6);''' + source[end:]
     begin=source.index('    char startup_warning[512] = {0};')
     end=source.index('    /* Extra ad-block monitoring:',begin)
-    source=source[:begin]+'    char startup_warning[512] = {0};\n    struct mg_connection *response[4]={0};\n    const char *urls[4]={http_url,https_url,http_url6,https_url6};\n    const char *names[4]={"http","https","http6","https6"};\n    bool failed=address_start_error!=NO_ERROR;\n    if (!failed) for (int i=0;i<4;i++) if (*urls[i]) {\n        response[i]=bind_try(&mgr,urls[i],fn,&s,names[i]);\n        if (!response[i] && (s.listeners.explicit_pair || i==0)) failed=true;\n        if (!response[i]) LOG_WARN("Configured listener failed: %s",urls[i]);\n    }\n    if (failed) {\n        for (int i=0;i<4;i++) if (response[i]) response[i]->is_closing=1;\n        mg_mgr_poll(&mgr,0);\n        snprintf(startup_warning,sizeof(startup_warning),address_start_error\n            ? "Address auto-creation failed (%lu). Response listeners stopped. Retry in Settings."\n            : "Required listener failed (%lu). All response listeners stopped; check both families and ports in Settings.",\n            (unsigned long)address_start_error);\n        LOG_WARN("%s",startup_warning);\n        if (s.no_gui) { mg_mgr_free(&mgr); return EXIT_FAILURE; }\n    }\n    s_main_http_bound=!failed && response[0]!=NULL;\n    bool ipv6_ok=!failed && ((strchr(http_url,\'[\') && response[0] && response[1])\n            || (*http_url6 && response[2] && response[3]));\n\n' +source[end:]
-    hook('''        if (s.http_port != 80) {''', '''        if (!address_start_error && !s.listeners.explicit_pair && !*s.bind_ip && s.http_port != 80) {''')
-    hook('''        if (s.https_port != 443) {''', '''        if (!address_start_error && !s.listeners.explicit_pair && !*s.bind_ip && s.https_port != 443) {''')
+    source=source[:begin]+r'''    char startup_warning[512] = {0};
+    struct mg_connection *response[4]={0};
+    const char *urls[4]={http_url,https_url,http_url6,https_url6};
+    const char *names[4]={"http","https","http6","https6"};
+    bool failed=address_start_error!=NO_ERROR;
+    const char *failed_url=http_url;
+    if (address_start_error) for (int i=0;i<4;i++) if (*urls[i]) listener_record(names[i],urls[i],false);
+    if (!failed) for (int i=0;i<4;i++) if (*urls[i]) {
+        response[i]=bind_try(&mgr,urls[i],fn,&s,names[i]);
+        if (!response[i] && (s.listeners.explicit_pair || i==0)) { failed=true; failed_url=urls[i]; }
+        if (!response[i]) LOG_WARN("Configured listener failed: %s",urls[i]);
+    }
+    if (failed) {
+        for (int i=0;i<4;i++) if (response[i]) response[i]->is_closing=1;
+        mg_mgr_poll(&mgr,0);
+        for (int i=0;i<s_listener_count;i++) if (strncmp(s_listeners[i].name,"mgmt",4)) s_listeners[i].bound=false;
+        if (address_start_error) snprintf(startup_warning,sizeof(startup_warning),
+            "Address auto-creation failed (%lu). Response listeners stopped. Retry in Settings.",(unsigned long)address_start_error);
+        else snprintf(startup_warning,sizeof(startup_warning),
+            "Required listener %s failed: port already in use, address unavailable, or insufficient permissions. All response listeners stopped; check Settings.",failed_url);
+        LOG_WARN("%s",startup_warning);
+        if (s.no_gui) { mg_mgr_free(&mgr); return EXIT_FAILURE; }
+    }
+    s_main_http_bound=!failed && response[0]!=NULL;
+    bool ipv6_ok=!failed && ((strchr(http_url,'[') && response[0] && response[1])
+            || (*http_url6 && response[2] && response[3]));
+
+''' +source[end:]
+    hook('''        if (s.http_port != 80) {''', '''        if (!failed && !s.listeners.explicit_pair && !*s.bind_ip && s.http_port != 80) {''')
+    hook('''        if (s.https_port != 443) {''', '''        if (!failed && !s.listeners.explicit_pair && !*s.bind_ip && s.https_port != 443) {''')
     return source

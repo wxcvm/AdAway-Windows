@@ -2360,23 +2360,23 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_CHECK_LISTEN,738,70,110,26,L"BUTTON",L"检测冲突",BS_PUSHBUTTON },
     { IDC_LOOP_PAIR,860,70,130,26,L"BUTTON",L"仅本机（推荐）",BS_PUSHBUTTON },
     { IDC_LISTEN_STATUS,218,208,772,40,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL },
-    { IDC_ADGUARD_HOME, 742, 604, 250, 30, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
+    { IDC_ADGUARD_HOME, 742, 614, 250, 30, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
     { IDC_SAVE,       640, 174, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
     { IDC_RESTART,    760, 174, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
     { IDC_FIXPORT,    860, 106, 130, 28, L"BUTTON", L"备用端口", BS_PUSHBUTTON },
     { IDM_DARK,       890, 176, 100, 24, L"BUTTON", L"深色外观", BS_AUTOCHECKBOX },
-    { IDM_TRUST,      218, 478, 160, 30, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
-    { IDM_UNTRUST,    390, 478, 160, 30, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
-    { IDM_TEST,       562, 478, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
-    { IDM_AUTOSTART,  760, 481, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
-    { IDC_CAROTATE,   218, 520, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
-    { IDC_CADROP,     480, 520, 250, 30, L"BUTTON", L"完成 CA 轮换（90 天后）", BS_PUSHBUTTON },
-    { IDC_DIAG,       742, 520, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
-    { IDC_SUBRELOAD,  218, 562, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
-    { IDC_FLUSH,      480, 562, 250, 30, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
-    { IDC_POLDEF,     742, 562, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
-    { IDC_PORTABLEUPD,218, 604, 250, 30, L"BUTTON", L"更新方式：自动（推荐）", BS_PUSHBUTTON },
-    { IDM_UPDATE,    480, 604, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDM_TRUST,      218, 488, 160, 30, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
+    { IDM_UNTRUST,    390, 488, 160, 30, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
+    { IDM_TEST,       562, 488, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
+    { IDM_AUTOSTART,  760, 491, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
+    { IDC_CAROTATE,   218, 530, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
+    { IDC_CADROP,     480, 530, 250, 30, L"BUTTON", L"完成 CA 轮换（90 天后）", BS_PUSHBUTTON },
+    { IDC_DIAG,       742, 530, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
+    { IDC_SUBRELOAD,  218, 572, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
+    { IDC_FLUSH,      480, 572, 250, 30, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
+    { IDC_POLDEF,     742, 572, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 614, 250, 30, L"BUTTON", L"更新方式：自动（推荐）", BS_PUSHBUTTON },
+    { IDM_UPDATE,    480, 614, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
    be a hand-kept constant, and when IDM_UPDATE (检查更新) was appended the
@@ -2435,7 +2435,7 @@ static void layout_controls(HWND hwnd) {
     /* policy checkboxes */
     for (int i = 0; i < POLICY_COUNT; i++) {
         int cx = (i % 2 == 0) ? 218 : 610;
-        int cy = 280 + (i / 2) * 28;
+        int cy = 290 + (i / 2) * 28;
         HWND w = GetDlgItem(hwnd, IDC_POL0 + i);
         if (w) SetWindowPos(w, NULL, S(cx), S(cy), S(370), S(26), SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -2545,13 +2545,13 @@ static bool listener_validate(HWND hwnd, bool explicit_check) {
     const char *targets[2]={ip,ip6};
     for (int i=0;i<2;i++) {
         size_t used=wcslen(report);
-        if (!*targets[i]) { swprintf(report+used,800-used,L"IPv%d：关闭。%ls",i ? 6 : 4,i ? L"" : L"\n"); continue; }
+        if (!*targets[i]) { swprintf(report+used,800-used,L"IPv%d：关闭。%ls",i ? 6 : 4,i ? L"" : L"\r\n"); continue; }
         DWORD hp=0,sp=0; int h=listener_status(targets[i],http,&hp),s=listener_status(targets[i],https,&sp);
         SOCKADDR_INET address;
         bool missing=automatic && ma_address(targets[i],&address) && h==2 && s==2;
         swprintf(report+used,800-used,L"IPv%d %hs：HTTP %ls / PID%lu；HTTPS %ls / PID%lu。%ls%ls",
             i ? 6 : 4,targets[i],listener_description(h),(unsigned long)hp,listener_description(s),(unsigned long)sp,
-            missing ? L"启动时请求授权创建。" : L"",i ? L"" : L"\n");
+            missing ? L"启动时请求授权创建。" : L"",i ? L"" : L"\r\n");
         valid &= missing || ((h==0 || h==6) && (s==0 || s==6));
     }
     SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,report);
@@ -3444,7 +3444,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         for (int i = 0; i < POLICY_COUNT; i++) {
             int cx = (i % 2 == 0) ? 218 : 610;
-            int cy = 280 + (i / 2) * 28;
+            int cy = 290 + (i / 2) * 28;
             s_ctrls[s_ctrl_count++] = CreateWindowExW(0, L"BUTTON", g_policy[i].label,
                 /* A plain button whose caption IS the current method
                    ("图片：占位响应"); clicking cycles 占位 → 空响应 → 204 →
@@ -3905,9 +3905,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab == 2) {
             /* settings page */
             /* grouped card backgrounds behind the native controls */
-            rounded_card(hdc, 202, 12, 812, 200, 16, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 214, 812, 184, 16, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 406, 812, 232, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 12, 812, 240, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 258, 812, 176, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 442, 812, 208, 16, g_pal.card, g_pal.border);
 
             HFONT shf = mfont(15, FW_SEMIBOLD);
             HFONT lf = mfont(12, FW_NORMAL);
@@ -3927,11 +3927,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             TextOutW(hdc, S(500), S(76), L"HTTPS 端口:", 10);
             SelectObject(hdc, shf);
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(218), S(256), L"拦截策略 · 点击切换响应方式", (int)wcslen(L"拦截策略 · 点击切换响应方式"));
-            TextOutW(hdc, S(218), S(430), L"证书与维护", 5);
+            TextOutW(hdc, S(218), S(266), L"拦截策略 · 点击切换响应方式", (int)wcslen(L"拦截策略 · 点击切换响应方式"));
+            TextOutW(hdc, S(218), S(450), L"证书与维护", 5);
             SelectObject(hdc, lf);
             SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(218), S(452), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
+            TextOutW(hdc, S(218), S(472), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
             SelectObject(hdc, old);
             DeleteObject(shf);
             DeleteObject(lf);
