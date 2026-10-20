@@ -23,6 +23,7 @@ Reviewed changes are merged after CI passes. Stable release pointers and update 
 
 NOTES
 cat docs/preview-installation.md docs/listener-settings.md docs/listener-lifecycle.md >> preview-notes.md
+cat docs/preview-updates.md >> preview-notes.md
 if [[ "$GITHUB_REF" == refs/tags/* ]]; then
   gh release create "$PREVIEW_TAG" release-assets/* --repo "$GITHUB_REPOSITORY" --verify-tag \
     --prerelease --latest=false --title "ADBlock Windows in-place preview $PREVIEW_TAG" \
@@ -33,3 +34,4 @@ else
     --title "ADBlock Windows in-place preview $PREVIEW_TAG" \
     --notes-file preview-notes.md
 fi
+python3 tools/publish-preview-channel.py

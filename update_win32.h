@@ -26,6 +26,8 @@ struct update_info {
 /* Check the release feed in the background (never blocks the UI). */
 void update_check_async(HWND hwnd);
 /* Persistent and reversible. Returns 0 on write failure or while updating. */
+int update_include_preview(void);
+int update_set_include_preview(int enabled);
 int update_portable_mode(void);
 int update_set_portable_mode(int enabled);
 /* Download url into file with the updater's HTTP client (WinHTTP, proxy

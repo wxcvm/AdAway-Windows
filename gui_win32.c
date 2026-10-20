@@ -913,6 +913,7 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_REMOVE_IPV6 1202
 #define WM_APP_ADDRESS_DONE (WM_APP + 32)
 static bool s_address_busy;
+#define IDC_PREVIEWUPD 1203
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
 
 /*
@@ -2382,7 +2383,8 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_SUBRELOAD,  218, 556, 250, 26, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
     { IDC_FLUSH,      480, 556, 250, 26, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
     { IDC_POLDEF,     742, 556, 250, 26, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
-    { IDC_PORTABLEUPD,218, 590, 250, 26, L"BUTTON", L"更新方式：自动（推荐）", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 590, 112, 26, L"BUTTON", L"更新：自动", BS_PUSHBUTTON },
+    { IDC_PREVIEWUPD,338, 590, 130, 26, L"BUTTON", L"渠道：稳定版", BS_PUSHBUTTON },
     { IDM_UPDATE,    480, 590, 250, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
@@ -2654,6 +2656,7 @@ static void update_button_refresh(HWND hwnd) {
     SetWindowTextW(b, label);
     EnableWindow(b, st == 0);
     EnableWindow(GetDlgItem(hwnd, IDC_PORTABLEUPD), st == 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_PREVIEWUPD), st == 0);
 }
 
 static bool refresh_owned_autostart(void) {
@@ -3461,7 +3464,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 (HMENU)(INT_PTR)g_policy[i].id, hinst, NULL);
         }
         layout_controls(hwnd);
-        SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, update_portable_mode() ? L"更新方式：ZIP 覆盖" : L"更新方式：自动（推荐）");
+        SetDlgItemTextW(hwnd, IDC_PREVIEWUPD, update_include_preview() ? L"渠道：含预览版" : L"渠道：稳定版");
+        SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, update_portable_mode() ? L"更新：ZIP" : L"更新：自动");
         SetDlgItemTextA(hwnd, IDC_BIND_IP, g_bind_ip);
         SetDlgItemTextA(hwnd, IDC_BIND_IPV6, g_bind_ipv6);
         SendDlgItemMessageW(hwnd,IDC_AUTO_CREATE,BM_SETCHECK,g_auto_create ? BST_CHECKED : BST_UNCHECKED,0);
@@ -3680,10 +3684,19 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (g_listener_ready) SetTimer(hwnd,3,100,NULL);
         } else if (id == IDC_AUTO_CREATE) {
             if (g_listener_ready) SetTimer(hwnd, 3, 600, NULL);
+        } else if (id == IDC_PREVIEWUPD) {
+            int enabled = !update_include_preview();
+            if (update_set_include_preview(enabled)) {
+                SetDlgItemTextW(hwnd, IDC_PREVIEWUPD, enabled ? L"渠道：含预览版" : L"渠道：稳定版");
+                swprintf(g_status, 4096, enabled
+                    ? L"已允许预览版更新。点击“检查更新”获取较新的覆盖安装预览包；安装仍需确认。"
+                    : L"已切回稳定版渠道；不会降级当前预览版。点击“检查更新”刷新。");
+            } else swprintf(g_status, 4096, L"渠道未保存：请等待更新结束，或检查配置写入权限。");
+            InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_PORTABLEUPD) {
             int portable = !update_portable_mode();
             if (update_set_portable_mode(portable)) {
-                SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, portable ? L"更新方式：ZIP 覆盖" : L"更新方式：自动（推荐）");
+                SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, portable ? L"更新：ZIP" : L"更新：自动");
                 swprintf(g_status, 4096, portable
                     ? L"已保存：下次更新直接下载 ZIP 并覆盖当前程序；版本、摘要校验和回滚仍然启用。点“检查更新”开始。再次点击可恢复自动。"
                     : L"已保存：优先使用安装器，无法启动时回退 ZIP。点“检查更新”开始。");

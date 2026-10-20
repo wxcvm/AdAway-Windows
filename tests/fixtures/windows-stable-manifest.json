@@ -1,0 +1,10 @@
+{
+  "tag": "win11-webserver-v1.75",
+  "version": "1.75",
+  "exe": "adblock-webserver-setup.exe",
+  "exe_url": "https://github.com/wxcvm/AdAway-Windows/releases/download/win11-webserver-v1.75/adblock-webserver-setup.exe",
+  "exe_sha256": "sha256:1177114d9bf58f070579b9da2ad373931010f701bb1f1432941cb15ad2526da9",
+  "zip_url": "https://github.com/wxcvm/AdAway-Windows/releases/download/win11-webserver-v1.75/adblock-webserver-win64.zip",
+  "zip_sha256": "sha256:610d5bf14041fff0347fc9c3c08cccc4295a654d0b1bbb87c82f555d37b97796",
+  "published_at": "2026-10-17T09:27:05Z"
+}
