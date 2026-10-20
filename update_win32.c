@@ -13,6 +13,9 @@
 #include "update_win32.h"
 #include "gui_win32.h"
 #include "update_feed.h"
+#ifdef UPDATE_FEED_TEST_HTTP
+char *update_fixture_get(const wchar_t *, const wchar_t *, size_t *, DWORD *);
+#endif
 #ifndef ADBLOCK_UPDATE_BUILD
 #define ADBLOCK_UPDATE_BUILD "0"
 #endif
@@ -691,9 +694,8 @@ static int manifest_check(struct release_pick *pick, DWORD *status) {
 static char *http_get(const wchar_t *host, const wchar_t *path, size_t *out_len,
                       DWORD *out_status) {
 #ifdef UPDATE_FEED_TEST_HTTP
-    extern char *update_fixture_get(const wchar_t *, const wchar_t *, size_t *, DWORD *);
     return update_fixture_get(host, path, out_len, out_status);
-#endif
+#else
     HINTERNET session = NULL, connect = NULL, request = NULL;
     char *body = NULL;
     size_t total = 0, cap = 0;
@@ -765,6 +767,7 @@ done:
     if (session) WinHttpCloseHandle(session);
     if (body == NULL) log_http_failure(host, path, status);
     return body;
+#endif
 }
 
 /* One log line per request outcome. Both this and the failure line below are

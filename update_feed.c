@@ -118,6 +118,15 @@ int update_feed_release(const char *body, unsigned index, int include_preview, s
         if (!package_valid(out->tag, url, sha, name)) continue;
         snprintf(exe ? out->exe_url : out->zip_url, 1024, "%s", url);
         snprintf(exe ? out->exe_sha : out->zip_sha, 128, "%s", sha);
+        char api[512];
+        const char *prefix = "https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/";
+        snprintf(path, sizeof(path), "$.assets[%u].url", i);
+        if (field(json, path, api, sizeof(api)) && !strncmp(api, prefix, strlen(prefix))) {
+            const char *id = api + strlen(prefix);
+            if (*id && strlen(id) <= 20 && strspn(id, "0123456789") == strlen(id))
+                snprintf(exe ? out->exe_api_url : out->zip_api_url, 512,
+                         "https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/%s", id);
+        }
     }
     return out->exe_url[0] || out->zip_url[0];
 }

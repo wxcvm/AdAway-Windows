@@ -32,6 +32,14 @@ int main(int argc, char **argv) {
     assert(update_feed_release(releases,1,1,&bad)==0);
     assert(update_feed_release(releases,2,1,&bad)==0);
     assert(update_feed_release(releases,3,1,&bad)==-1);
+    const char *stable_release="[{\"draft\":false,\"prerelease\":false,\"tag_name\":\"win11-webserver-v1.75\",\"assets\":[{"
+        "\"browser_download_url\":\"https://github.com/wxcvm/AdAway-Windows/releases/download/win11-webserver-v1.75/adblock-webserver-setup.exe\","
+        "\"digest\":\"sha256:1177114d9bf58f070579b9da2ad373931010f701bb1f1432941cb15ad2526da9\","
+        "\"name\":\"adblock-webserver-setup.exe\",\"url\":\"https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/12345\"},"
+        "{\"name\":\"unrelated.txt\",\"digest\":\"sha256:neighbor-must-not-be-used\"}]}]";
+    assert(update_feed_release(stable_release,0,0,&bad)==1);
+    assert(!strcmp(bad.exe_sha,stable.exe_sha));
+    assert(!strcmp(bad.exe_api_url,"https://api.github.com/repos/wxcvm/AdAway-Windows/releases/assets/12345"));
     assert(!update_feed_manifest("{}",1,NULL,&bad));
     assert(!update_feed_manifest("{",1,NULL,&bad));
     puts("Update channel: stable isolation, opt-in preview, build order, immutable URLs and malformed input passed");

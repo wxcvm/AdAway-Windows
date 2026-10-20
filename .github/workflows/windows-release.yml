@@ -76,7 +76,7 @@ jobs:
         run: |
           python3 - <<'PYEOF'
           from pathlib import Path
-          src = Path("update_win32.c").read_text(encoding="utf-8")
+          src = '\n'.join(Path(path).read_text(encoding="utf-8") for path in ['update_win32.c','update_feed.c'])
           required = [
               '/repos/wxcvm/AdAway-Windows/releases?per_page=100',
               '/wxcvm/AdAway-Windows/releases/download/win11-latest/windows-manifest.json',
