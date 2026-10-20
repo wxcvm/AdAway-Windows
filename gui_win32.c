@@ -42,7 +42,7 @@
 #include "wintun_probe_win32.h"
 #include "windows_capture_plan.h"
 #include "isolated_transport_win32.h"
-#define IDC_TRANSPORT_PROBE 1204
+#define IDC_TRANSPORT_PROBE 1301
 #include "windows_network_inventory_win32.h"
 #include "subscription_update_win32.h"
 #include "subscription_settings_win32.h"
@@ -915,7 +915,9 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_REMOVE_IPV6 1202
 #define WM_APP_ADDRESS_DONE (WM_APP + 32)
 static bool s_address_busy;
-#define IDC_PREVIEWUPD 1203
+#define IDC_IPV4_LABEL 1203
+#define IDC_IPV6_LABEL 1204
+#define IDC_PREVIEWUPD 1300
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
 
 /*
@@ -2357,11 +2359,11 @@ struct ctl_desc { int id; int x, y, w, h; const wchar_t *cls, *text; int style; 
 static const struct ctl_desc g_clayout[] = {
     { IDC_HTTP_EDIT,  300, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
     { IDC_HTTPS_EDIT, 590, 70, 100, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_NUMBER },
-    { 1203,218,110,55,24,L"STATIC",L"IPv4",SS_LEFT },
+    { IDC_IPV4_LABEL,218,110,55,24,L"STATIC",L"IPv4",SS_LEFT },
     { IDC_BIND_IP,275,106,330,26,L"EDIT",L"",WS_BORDER|ES_AUTOHSCROLL },
     { IDC_CREATE_ADDRESS,618,106,110,26,L"BUTTON",L"创建 IPv4…",BS_PUSHBUTTON },
     { IDC_REMOVE_ADDRESS,738,106,110,26,L"BUTTON",L"移除托管…",BS_PUSHBUTTON },
-    { 1204,218,144,55,24,L"STATIC",L"IPv6",SS_LEFT },
+    { IDC_IPV6_LABEL,218,144,55,24,L"STATIC",L"IPv6",SS_LEFT },
     { IDC_BIND_IPV6,275,140,330,26,L"EDIT",L"",WS_BORDER|ES_AUTOHSCROLL },
     { IDC_CREATE_IPV6,618,140,110,26,L"BUTTON",L"创建 IPv6…",BS_PUSHBUTTON },
     { IDC_REMOVE_IPV6,738,140,110,26,L"BUTTON",L"移除托管…",BS_PUSHBUTTON },
