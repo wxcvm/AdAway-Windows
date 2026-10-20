@@ -342,6 +342,36 @@ if ($ResourceDirectory) {
     Write-Output 'Removal GUI passed: cancel/navigation preserve sources; failed save retains target; retry removes only configuration and preserves imported rules.'
 }
 
+Set-Page 5
+Save-Window 'network-dual-stack-entry'
+$probeButton=[UiReviewNative]::GetDlgItem($window,1204)
+if (!$probeButton -or ![UiReviewNative]::IsWindowVisible($probeButton)) { throw 'Network center transport entry missing' }
+$iniBeforeProbe=[IO.File]::ReadAllText($iniFile)
+[void][UiReviewNative]::PostMessageW($window,0x111,[IntPtr]1204,[IntPtr]::Zero)
+$transport=[IntPtr]::Zero;$probeDeadline=(Get-Date).AddSeconds(5)
+do {
+    Start-Sleep -Milliseconds 100
+    $transport=[UiReviewNative]::GetWindow($window,6)
+} until (($transport -ne [IntPtr]::Zero -and $transport -ne $window) -or (Get-Date) -gt $probeDeadline)
+if ($transport -eq [IntPtr]::Zero -or $transport -eq $window) { throw 'Dual-stack diagnostic window missing' }
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($transport,2103))) -notmatch '尚未运行') { throw 'Opening transport dialog started unsolicited traffic' }
+for ($cycle=0;$cycle -lt 2;$cycle++) {
+    [void][UiReviewNative]::PostMessageW($transport,0x111,[IntPtr]2101,[IntPtr]::Zero)
+    $probeDeadline=(Get-Date).AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 100
+        $probeText=Read-ControlText ([UiReviewNative]::GetDlgItem($transport,2103))
+    } until ($probeText -match '清理：' -or (Get-Date) -gt $probeDeadline)
+    if ($probeText -notmatch 'IPv4：转发回执通过' -or $probeText -notmatch 'IPv6：转发回执通过' -or $probeText -notmatch '本次资源均已释放') { throw "Actual GUI transport failed: $probeText" }
+}
+$dashboardWindow=$window
+try { $window=$transport; Save-Window 'dual-stack-transport-dialog' }
+finally { $window=$dashboardWindow }
+[void][UiReviewNative]::PostMessageW($transport,0x111,[IntPtr]2,[IntPtr]::Zero)
+Start-Sleep -Milliseconds 200
+if (![UiReviewNative]::IsWindowEnabled($window) -or [IO.File]::ReadAllText($iniFile) -ne $iniBeforeProbe) { throw 'Transport dialog failed to restore owner or changed configuration' }
+Write-Output 'Actual dual-stack GUI transport: no implicit traffic, IPv4/IPv6 replies, complete cleanup, repeated run and configuration unchanged passed'
+
 Set-Page 2
 # Switch only the disposable runner's preview appearance.
 [void][UiReviewNative]::SendMessage([UiReviewNative]::GetDlgItem($window,1006),0xF1,[IntPtr]1,[IntPtr]::Zero)

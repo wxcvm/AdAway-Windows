@@ -41,6 +41,8 @@
 #include "adguard_home_plan.h"
 #include "wintun_probe_win32.h"
 #include "windows_capture_plan.h"
+#include "isolated_transport_win32.h"
+#define IDC_TRANSPORT_PROBE 1204
 #include "windows_network_inventory_win32.h"
 #include "subscription_update_win32.h"
 #include "subscription_settings_win32.h"
@@ -2453,6 +2455,7 @@ static void layout_controls(HWND hwnd) {
         SetWindowPos(GetDlgItem(hwnd, g_sublayout[i].id), NULL,
                      S(g_sublayout[i].x), S(g_sublayout[i].y),
                      S(g_sublayout[i].w), S(g_sublayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),NULL,S(218),S(560),S(366),S(26),SWP_NOZORDER|SWP_NOACTIVATE);
     subs_list_extent(hwnd);
 }
 
@@ -2469,6 +2472,7 @@ static void show_controls(HWND hwnd, int tab) {
         ShowWindow(GetDlgItem(hwnd, IDC_POL0 + i), show ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < CL_SUB; i++)
         ShowWindow(GetDlgItem(hwnd, g_sublayout[i].id), subs ? SW_SHOW : SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),tab==5?SW_SHOW:SW_HIDE);
     subs_controls_refresh(hwnd);
 }
 
@@ -2754,8 +2758,8 @@ static void draw_network_center_page(HDC hdc) {
         L"HTTPS / QUIC", L"证书信任、TLS 失败、UDP/443 与不能解密的应用诊断。",
         false);
     draw_network_capability(hdc, 202, 478, 398,
-        L"安全回滚", L"记录本程序改变的系统设置，失败时仅恢复自己的网络修改。",
-        false);
+        L"隔离双栈转发", L"本机夹具；可取消、重试，不更改系统路由或 DNS。",
+        true);
     draw_network_capability(hdc, 616, 478, 398,
         L"本地监听与规则", L"当前可在设置、订阅和拦截排行页面管理；此处不重复开关。",
         true);
@@ -3452,6 +3456,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
+        s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"测试双栈转发与恢复",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
+                0,0,1,1,hwnd,(HMENU)(INT_PTR)IDC_TRANSPORT_PROBE,hinst,NULL);
         for (int i = 0; i < POLICY_COUNT; i++) {
             int cx = (i % 2 == 0) ? 218 : 610;
             int cy = 290 + (i / 2) * 28;
@@ -3591,6 +3597,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_COMMAND:
+        if (LOWORD(wp)==IDC_TRANSPORT_PROBE) { gui_show_transport_dialog(hwnd); return 0; }
         if (HIWORD(wp) == 1) { /* keyboard accelerator */
             int id = LOWORD(wp);
             if (id >= UI_ACCEL_NAV_FIRST && id < UI_ACCEL_NAV_FIRST + 6) {
