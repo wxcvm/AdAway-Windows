@@ -4099,6 +4099,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_APP_EXIT:
+        if (s_address_busy) {
+            MessageBoxW(hwnd,L"本机地址任务尚未结束，请完成或取消管理员授权后再退出。",L"正在处理本机地址",MB_OK|MB_ICONINFORMATION);
+            return 0;
+        }
         tray_remove();
         DestroyWindow(hwnd);
         return 0;

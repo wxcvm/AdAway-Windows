@@ -21,6 +21,7 @@ public static class UiReviewNative {
   [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr w);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessageW(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr w, int id);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr w, uint command);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr w, uint msg, IntPtr wp, IntPtr lp);
   [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr SetTextTimeout(IntPtr w, uint msg, IntPtr wp, string text, uint flags, uint timeout, out IntPtr result);
   [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr GetTextTimeout(IntPtr w, uint msg, IntPtr wp, [Out] System.Text.StringBuilder text, uint flags, uint timeout, out IntPtr result);
@@ -110,6 +111,21 @@ Set-ClientSize 1032 678
 Set-Page 0; Save-Window 'overview-light'
 Set-Page 2; Save-Window 'settings-light'
 $ipControl=[UiReviewNative]::GetDlgItem($window,1190)
+Set-ControlText $ipControl 'fd6b:2a91:84f0::75'
+if (![UiReviewNative]::GetDlgItem($window,1193) -or ![UiReviewNative]::GetDlgItem($window,1194)) { throw 'Address creation/removal controls missing' }
+$beforeAddress=if ($ResourceDirectory -and (Test-Path (Join-Path $ResourceDirectory 'webserver.ini'))) { [IO.File]::ReadAllText((Join-Path $ResourceDirectory 'webserver.ini')) } else { $null }
+[void][UiReviewNative]::PostMessageW($window,0x111,[IntPtr]1193,[IntPtr]::Zero)
+$dialog=[IntPtr]::Zero;$dialogDeadline=(Get-Date).AddSeconds(5)
+do {
+    Start-Sleep -Milliseconds 100
+    $dialog=[UiReviewNative]::GetWindow($window,6) # GW_ENABLEDPOPUP, owned confirmation only
+} until (($dialog -ne [IntPtr]::Zero -and $dialog -ne $window) -or (Get-Date) -gt $dialogDeadline)
+if ($dialog -eq [IntPtr]::Zero -or $dialog -eq $window) { throw 'Address creation confirmation missing' }
+[void][UiReviewNative]::PostMessageW($dialog,0x111,[IntPtr]2,[IntPtr]::Zero) # IDCANCEL; never accept UAC in GUI tests
+Start-Sleep -Milliseconds 150
+if (![UiReviewNative]::IsWindowEnabled($window)) { throw 'Address confirmation cancel did not restore the window' }
+if ($null -ne $beforeAddress -and [IO.File]::ReadAllText((Join-Path $ResourceDirectory 'webserver.ini')) -ne $beforeAddress) { throw 'Address confirmation cancel changed configuration' }
+Write-Output 'Address creation/removal controls visible; confirmation cancelled before UAC; configuration preserved'
 Set-ControlText $ipControl 'localhost'
 $autoDeadline=(Get-Date).AddSeconds(5)
 do {
