@@ -1,6 +1,7 @@
 #ifndef ADBLOCK_MANAGED_LISTENER_ADDRESS_WIN32_H
 #define ADBLOCK_MANAGED_LISTENER_ADDRESS_WIN32_H
 #include "listen_address.h"
+#include <ws2ipdef.h>
 #include <windows.h>
 #include <iphlpapi.h>
 #include <netioapi.h>

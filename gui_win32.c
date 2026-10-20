@@ -11,6 +11,7 @@
 #define UNICODE
 #define _UNICODE
 #include <winsock2.h>
+#include <ws2ipdef.h> /* netioapi declarations must exist before iphlpapi's include guard is set. */
 #include "update_win32.h"
 #include <windows.h>
 #include <shellapi.h>
