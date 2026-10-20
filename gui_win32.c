@@ -1965,7 +1965,8 @@ static void draw_statusbar(HDC hdc) {
     SelectObject(hdc, tpold);
     DeleteObject(tp);
 
-    bool up = (g_sn != NULL && g_sn->valid);
+    bool connected = g_sn != NULL && g_sn->valid;
+    bool up = connected && g_sn->bind_ok;
     HBRUSH dotb = CreateSolidBrush(up ? C_GREEN : C_RED);
     HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
     HGDIOBJ ob = SelectObject(hdc, dotb);
@@ -1978,10 +1979,14 @@ static void draw_statusbar(HDC hdc) {
     HFONT old = (HFONT)SelectObject(hdc, f);
     SetBkMode(hdc, TRANSPARENT);
     wchar_t main[256];
-    char host[68]; listener_display_host(host);
+    char host[68];
+    const char *active=*g_active_arrival.ip ? g_active_arrival.ip : *g_active_arrival.ipv6 ? g_active_arrival.ipv6 : "localhost";
+    if (!strcmp(active,"0.0.0.0")) active="127.0.0.1";
+    if (!strcmp(active,"::")) active="::1";
+    snprintf(host,sizeof(host),strchr(active,':') ? "[%s]" : "%s",active);
     swprintf(main, 256, L"%ls · http://%hs:%d  |  https://%hs:%d",
-             up ? L"服务器运行中" : L"服务器未连接",
-             host, g_http_port, host, g_https_port);
+             up ? L"服务器运行中" : connected ? L"管理可用，响应未就绪" : L"服务器未连接",
+             host, g_active_arrival.http, host, g_active_arrival.https);
     SetTextColor(hdc, up ? C_GREEN_TXT : RGB(190, 70, 70));
     RECT service_label = {S(40), S(640), S(415), S(662)};
     DrawTextW(hdc, main, -1, &service_label,
@@ -2056,16 +2061,18 @@ static void draw_sidebar(HDC hdc) {
     swprintf(ver, 64, L"拦截服务器 v" ADBLOCK_APP_VERSION_W);
     TextOutW(hdc, S(22), S(48), ver, (int)wcslen(ver));
     {
-        bool live = (g_sn != NULL && g_sn->valid);
-        HBRUSH nb = CreateSolidBrush(live ? C_GREEN : RGB(120, 135, 160));
+        bool connected=g_sn != NULL && g_sn->valid;
+        bool live=connected && g_sn->bind_ok;
+        HBRUSH nb = CreateSolidBrush(live ? C_GREEN : connected ? RGB(251,191,36) : RGB(120,135,160));
         HGDIOBJ nop = SelectObject(hdc, GetStockObject(NULL_PEN));
         HGDIOBJ nob = SelectObject(hdc, nb);
         Ellipse(hdc, S(22), S(70), S(31), S(79));
         SelectObject(hdc, nop);
         SelectObject(hdc, nob);
         DeleteObject(nb);
-        SetTextColor(hdc, live ? RGB(110, 231, 183) : RGB(143, 163, 192));
-        TextOutW(hdc, S(37), S(67), live ? L"服务器运行中" : L"等待服务器 ...", live ? 6 : 9);
+        SetTextColor(hdc, live ? RGB(110,231,183) : connected ? RGB(251,191,36) : RGB(143,163,192));
+        const wchar_t *state=live ? L"服务器运行中" : connected ? L"响应监听失败" : L"等待服务器 ...";
+        TextOutW(hdc,S(37),S(67),state,(int)wcslen(state));
     }
     SelectObject(hdc, old);
     DeleteObject(lf);
@@ -2360,23 +2367,23 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_CHECK_LISTEN,738,70,110,26,L"BUTTON",L"检测冲突",BS_PUSHBUTTON },
     { IDC_LOOP_PAIR,860,70,130,26,L"BUTTON",L"仅本机（推荐）",BS_PUSHBUTTON },
     { IDC_LISTEN_STATUS,218,208,772,40,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL },
-    { IDC_ADGUARD_HOME, 742, 614, 250, 30, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
+    { IDC_ADGUARD_HOME, 742, 590, 250, 26, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
     { IDC_SAVE,       640, 174, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
     { IDC_RESTART,    760, 174, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
     { IDC_FIXPORT,    860, 106, 130, 28, L"BUTTON", L"备用端口", BS_PUSHBUTTON },
     { IDM_DARK,       890, 176, 100, 24, L"BUTTON", L"深色外观", BS_AUTOCHECKBOX },
-    { IDM_TRUST,      218, 488, 160, 30, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
-    { IDM_UNTRUST,    390, 488, 160, 30, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
-    { IDM_TEST,       562, 488, 180, 30, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
-    { IDM_AUTOSTART,  760, 491, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
-    { IDC_CAROTATE,   218, 530, 250, 30, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
-    { IDC_CADROP,     480, 530, 250, 30, L"BUTTON", L"完成 CA 轮换（90 天后）", BS_PUSHBUTTON },
-    { IDC_DIAG,       742, 530, 250, 30, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
-    { IDC_SUBRELOAD,  218, 572, 250, 30, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
-    { IDC_FLUSH,      480, 572, 250, 30, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
-    { IDC_POLDEF,     742, 572, 250, 30, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
-    { IDC_PORTABLEUPD,218, 614, 250, 30, L"BUTTON", L"更新方式：自动（推荐）", BS_PUSHBUTTON },
-    { IDM_UPDATE,    480, 614, 250, 30, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDM_TRUST,      218, 488, 160, 26, L"BUTTON", L"信任 CA", BS_PUSHBUTTON },
+    { IDM_UNTRUST,    390, 488, 160, 26, L"BUTTON", L"撤销 CA", BS_PUSHBUTTON },
+    { IDM_TEST,       562, 488, 180, 26, L"BUTTON", L"打开测试页", BS_PUSHBUTTON },
+    { IDM_AUTOSTART,  760, 489, 230, 24, L"BUTTON", L"开机自启动", BS_AUTOCHECKBOX },
+    { IDC_CAROTATE,   218, 522, 250, 26, L"BUTTON", L"生成新 CA（并存 90 天）", BS_PUSHBUTTON },
+    { IDC_CADROP,     480, 522, 250, 26, L"BUTTON", L"完成 CA 轮换（90 天后）", BS_PUSHBUTTON },
+    { IDC_DIAG,       742, 522, 250, 26, L"BUTTON", L"导出诊断信息", BS_PUSHBUTTON },
+    { IDC_SUBRELOAD,  218, 556, 250, 26, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
+    { IDC_FLUSH,      480, 556, 250, 26, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
+    { IDC_POLDEF,     742, 556, 250, 26, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 590, 250, 26, L"BUTTON", L"更新方式：自动（推荐）", BS_PUSHBUTTON },
+    { IDM_UPDATE,    480, 590, 250, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
    be a hand-kept constant, and when IDM_UPDATE (检查更新) was appended the
@@ -3907,7 +3914,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             /* grouped card backgrounds behind the native controls */
             rounded_card(hdc, 202, 12, 812, 240, 16, g_pal.card, g_pal.border);
             rounded_card(hdc, 202, 258, 812, 176, 16, g_pal.card, g_pal.border);
-            rounded_card(hdc, 202, 442, 812, 208, 16, g_pal.card, g_pal.border);
+            rounded_card(hdc, 202, 442, 812, 182, 16, g_pal.card, g_pal.border);
 
             HFONT shf = mfont(15, FW_SEMIBOLD);
             HFONT lf = mfont(12, FW_NORMAL);
