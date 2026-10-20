@@ -2567,17 +2567,23 @@ static DWORD WINAPI address_worker(void *opaque) {
 static void address_action(HWND hwnd,bool remove) {
     if (s_address_busy) return;
     char ip[64]; int http,https; bool all; SOCKADDR_INET address;
-    if (!listener_read(hwnd,ip,&http,&https,&all) || !ma_address(ip,&address)) {
+    if (!listener_read(hwnd,ip,&http,&https,&all) || !*ip) {
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请先填写具体的监听 IPv4 / IPv6 地址和有效端口。"); return;
+    }
+    memset(&address,0,sizeof(address)); address.si_family=strchr(ip,':') ? AF_INET6 : AF_INET;
+    if (address.si_family==AF_INET) inet_pton(AF_INET,ip,&address.Ipv4.sin_addr);
+    else inet_pton(AF_INET6,ip,&address.Ipv6.sin6_addr);
+    MIB_UNICASTIPADDRESS_ROW row;
+    if (!remove && ma_find(&address,&row)==NO_ERROR) {
+        listener_validate(hwnd,true);
+        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"地址已经存在，直接复用；没有修改地址或创建记录。检查端口后保存并重启。"); return;
+    }
+    if (!ma_address(ip,&address)) {
         SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请填写私有 IPv4 或 IPv6 ULA（如 fd6b:2a91:84f0::2）；只在软件回环接口创建 /32 或 /128，本机已有地址可直接保存。");
         return;
     }
-    MIB_UNICASTIPADDRESS_ROW row;
     if (remove && ma_owned(ip,&row)!=NO_ERROR) {
         SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"该地址没有匹配的 AdAway 创建记录；不会移除系统或其他软件创建的地址。"); return;
-    }
-    if (!remove && ma_find(&address,&row)==NO_ERROR) {
-        listener_validate(hwnd,true);
-        SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"地址已经存在，直接复用；本程序没有取得该地址的所有权。检查端口后保存并重启。"); return;
     }
     if (remove && !strcmp(ip,g_bind_ip)) {
         SetDlgItemTextW(hwnd,IDC_LISTEN_STATUS,L"请先切换到其他监听地址并保存、重启，再移除当前正在使用的托管地址。"); return;

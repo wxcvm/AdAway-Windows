@@ -18,6 +18,21 @@ foreach ($ip in @('10.254.253.73','fd6b:2a91:84f0::73')) {
         $row=Get-NetIPAddress -IPAddress $ip -ErrorAction Stop
         if (!$row.SkipAsSource -or $row.PrefixLength -ne $(if ($ip.Contains(':')) {128} else {32})) { throw 'Alias prefix/source selection changed' }
         if ((Invoke-Address @('--create-listener-address',$ip,'29080','29443')) -ne 5010) { throw 'Existing address was not reused' }
+        $registry='HKLM:\SOFTWARE\AdAway\ListenerAddresses'
+        $name=([Net.IPAddress]::Parse($ip)).ToString()
+        [byte[]]$receipt=Get-ItemPropertyValue -LiteralPath $registry -Name $name
+        try {
+            Remove-ItemProperty -LiteralPath $registry -Name $name
+            if ((Invoke-Address @('--create-listener-address',$ip,'29080','29443')) -ne 5010) { throw 'Existing unowned alias was not reused' }
+            if ((Invoke-Address @('--remove-listener-address',$ip)) -eq 0) { throw 'Unowned alias was removed' }
+            $null=Get-NetIPAddress -IPAddress $ip -ErrorAction Stop
+        } finally { Set-ItemProperty -LiteralPath $registry -Name $name -Value $receipt -Type Binary }
+        [byte[]]$changed=$receipt.Clone();$changed[8]=$changed[8] -bxor 1
+        try {
+            Set-ItemProperty -LiteralPath $registry -Name $name -Value $changed -Type Binary
+            if ((Invoke-Address @('--remove-listener-address',$ip)) -ne 5) { throw 'Replaced-address timestamp mismatch was not rejected' }
+            $null=Get-NetIPAddress -IPAddress $ip -ErrorAction Stop
+        } finally { Set-ItemProperty -LiteralPath $registry -Name $name -Value $receipt -Type Binary }
         $hostPart=if ($ip.Contains(':')) {"[$ip]"} else {$ip}
         $resources=Join-Path $env:RUNNER_TEMP ('managed-listener-'+[Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $resources | Out-Null
