@@ -90,8 +90,11 @@ function Check-Controls([string]$Name) {
     }
     $client = [UiReviewNative+Rect]::new(); [void][UiReviewNative]::GetClientRect($window,[ref]$client)
     # Record a known subscription field's font (shared with all settings controls).
-    $fontControl=[UiReviewNative]::GetDlgItem($window,1140)
-    if ($fontControl -eq [IntPtr]::Zero) { $fontControl=[UiReviewNative]::GetDlgItem($window,2001) }
+    $fontControl=[IntPtr]::Zero
+    foreach ($fontId in @(1140,2001,2103)) {
+        $fontControl=[UiReviewNative]::GetDlgItem($window,$fontId)
+        if ($fontControl -ne [IntPtr]::Zero) { break }
+    }
     $fontHandle = [UiReviewNative]::SendMessage($fontControl,0x31,[IntPtr]::Zero,[IntPtr]::Zero)
     $font = [UiReviewNative+Font]::new()
     if (![UiReviewNative]::GetObjectW($fontHandle,[Runtime.InteropServices.Marshal]::SizeOf($font),[ref]$font)) { throw 'Control font missing' }
