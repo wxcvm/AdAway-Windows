@@ -90,7 +90,9 @@ function Check-Controls([string]$Name) {
     }
     $client = [UiReviewNative+Rect]::new(); [void][UiReviewNative]::GetClientRect($window,[ref]$client)
     # Record a known subscription field's font (shared with all settings controls).
-    $fontHandle = [UiReviewNative]::SendMessage([UiReviewNative]::GetDlgItem($window,1140),0x31,[IntPtr]::Zero,[IntPtr]::Zero)
+    $fontControl=[UiReviewNative]::GetDlgItem($window,1140)
+    if ($fontControl -eq [IntPtr]::Zero) { $fontControl=[UiReviewNative]::GetDlgItem($window,2001) }
+    $fontHandle = [UiReviewNative]::SendMessage($fontControl,0x31,[IntPtr]::Zero,[IntPtr]::Zero)
     $font = [UiReviewNative+Font]::new()
     if (![UiReviewNative]::GetObjectW($fontHandle,[Runtime.InteropServices.Marshal]::SizeOf($font),[ref]$font)) { throw 'Control font missing' }
     $records.Add([pscustomobject]@{Name=$Name;Width=$client.Right;Height=$client.Bottom;FontHeight=$font.Height;Controls=$bounds.ToArray()})
@@ -126,6 +128,32 @@ Start-Sleep -Milliseconds 150
 if (![UiReviewNative]::IsWindowEnabled($window)) { throw 'Address confirmation cancel did not restore the window' }
 if ($null -ne $beforeAddress -and [IO.File]::ReadAllText((Join-Path $ResourceDirectory 'webserver.ini')) -ne $beforeAddress) { throw 'Address confirmation cancel changed configuration' }
 Write-Output 'Address creation/removal controls visible; confirmation cancelled before UAC; configuration preserved'
+[void][UiReviewNative]::PostMessageW($window,0x111,[IntPtr]1195,[IntPtr]::Zero)
+$arrival=[IntPtr]::Zero;$arrivalDeadline=(Get-Date).AddSeconds(5)
+do {
+    Start-Sleep -Milliseconds 100
+    $arrival=[UiReviewNative]::GetWindow($window,6)
+} until (($arrival -ne [IntPtr]::Zero -and $arrival -ne $window) -or (Get-Date) -gt $arrivalDeadline)
+if ($arrival -eq [IntPtr]::Zero -or $arrival -eq $window) { throw 'AdGuard arrival diagnostic window missing' }
+Set-ControlText ([UiReviewNative]::GetDlgItem($arrival,2001)) 'ads.custom.example'
+Set-ControlText ([UiReviewNative]::GetDlgItem($arrival,2002)) 'hosts.custom.example'
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($arrival,2004))) -notmatch '点击检测') { throw 'Editing domains unexpectedly started diagnostics' }
+Set-ControlText ([UiReviewNative]::GetDlgItem($arrival,2001)) ''
+Set-ControlText ([UiReviewNative]::GetDlgItem($arrival,2002)) ''
+[void][UiReviewNative]::PostMessageW($arrival,0x111,[IntPtr]2003,[IntPtr]::Zero)
+$arrivalDeadline=(Get-Date).AddSeconds(15)
+do {
+    Start-Sleep -Milliseconds 100
+    $arrivalText=Read-ControlText ([UiReviewNative]::GetDlgItem($arrival,2004))
+} until ($arrivalText -match '管理端口：' -or (Get-Date) -gt $arrivalDeadline)
+if ($arrivalText -notmatch '管理端口：AdAway 回执已确认' -or $arrivalText -notmatch 'HTTP 请求已到达 AdAway') { throw "GUI arrival client did not reach actual server: $arrivalText" }
+$dashboardWindow=$window
+try { $window=$arrival; Save-Window 'adguard-arrival-dialog' }
+finally { $window=$dashboardWindow }
+[void][UiReviewNative]::PostMessageW($arrival,0x111,[IntPtr]2,[IntPtr]::Zero)
+Start-Sleep -Milliseconds 150
+if (![UiReviewNative]::IsWindowEnabled($window)) { throw 'Arrival window did not release the dashboard' }
+Write-Output 'AdGuard diagnostic GUI: domains editable, no implicit DNS, actual loopback receipts, no configuration changes'
 Set-ControlText $ipControl 'localhost'
 $autoDeadline=(Get-Date).AddSeconds(5)
 do {

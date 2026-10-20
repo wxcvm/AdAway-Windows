@@ -5,6 +5,7 @@ def prepare_listener(source):
         if source.count(old) != count:
             raise ValueError('listener hook changed: ' + old[:100])
         source = source.replace(old, new)
+    hook('#include "mongoose/mongoose.h"', '#include "mongoose/mongoose.h"\n#include "listener_arrival_probe.h"')
     hook('int main(int argc, char *argv[]) {', '''#include "listen_address.h"
 #include "managed_listener_address_win32.h"
 int main(int argc, char *argv[]) {
@@ -16,7 +17,8 @@ int main(int argc, char *argv[]) {
     hook('    bool              bind_all;   /* listen on all interfaces */',
          '    char bind_ip[64];\n    bool              bind_all;   /* listen on all interfaces */')
     hook('static struct settings parse_cli_parameters(', '#include "listen_address.h"\nstatic struct settings parse_cli_parameters(')
-    hook('''    /* The management port only answers the internal endpoints. */''', '''    /* A LAN response binding must never become a public forward proxy. */
+    hook('''    /* The management port only answers the internal endpoints. */''', '''    if (ap_reply(c, hm)) return;
+    /* A LAN response binding must never become a public forward proxy. */
     if (s->proxy_filter && !internal_endpoint_reachable(c, s)) {
         mg_http_reply(c, 403, "Content-Type: text/plain\\r\\n", "forbidden");
         return;

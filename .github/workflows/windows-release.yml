@@ -111,6 +111,7 @@ jobs:
         run: |
           bash fetch-core-contract.sh
           python tools/verify-listener-contract.py
+          python tools/verify-arrival-contract.py
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic shared-contract/domain_rule_snapshot_test.c -o domain_rule_snapshot_test.exe -lws2_32
           directory=$(mktemp -d)
           ./domain_rule_snapshot_test.exe shared-contract/source_loader_vectors.txt "$directory"
@@ -130,6 +131,8 @@ jobs:
           ./control_http_result_test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic managed_listener_address_test.c -lws2_32 -liphlpapi -ladvapi32 -o managed_listener_address_test.exe
           ./managed_listener_address_test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic listener_arrival_win32.c listener_arrival_win32_test.c traffic_observer_win32.c -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -o listener-arrival-probe.exe
+          ./listener-arrival-probe.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/traffic_core_contract_test.c -o core_contract_test.exe
           ./core_contract_test.exe shared-contract/traffic_core_vectors.txt
           gcc -std=c11 -Wall -Wextra -Werror -pedantic shared-contract/rule_norm_test.c -o rule_norm_test.exe
@@ -574,6 +577,10 @@ jobs:
       - name: Test actual managed listener creation and rollback on disposable runner
         shell: pwsh
         run: ./tools/test-managed-listener.ps1
+
+      - name: Test actual server and client fresh listener receipts
+        shell: pwsh
+        run: ./tools/test-listener-arrival.ps1
 
       - name: Upload desktop UI screenshots and layout evidence
         if: always()

@@ -46,6 +46,7 @@
 #include "subscription_settings_win32.h"
 #include "listener_conflict_win32.h"
 #include "managed_listener_address_win32.h"
+#include "listener_arrival_dialog_win32.h"
 #include "control_http_result.h"
 #include <io.h>
 
@@ -900,6 +901,7 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_LISTEN_STATUS 1192
 #define IDC_CREATE_ADDRESS 1193
 #define IDC_REMOVE_ADDRESS 1194
+#define IDC_ARRIVAL_CHECK 1195
 #define WM_APP_ADDRESS_DONE (WM_APP + 32)
 static bool s_address_busy;
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
@@ -2338,7 +2340,7 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_CREATE_ADDRESS,755,106,115,26,L"BUTTON",L"创建地址…",BS_PUSHBUTTON },
     { IDC_REMOVE_ADDRESS,880,106,110,26,L"BUTTON",L"移除托管…",BS_PUSHBUTTON },
     { IDC_LISTEN_STATUS,218,174,772,40,L"STATIC",L"",SS_LEFT },
-    { IDC_ADGUARD_HOME, 742, 594, 250, 30, L"BUTTON", L"AdGuard Home 协同向导", BS_PUSHBUTTON },
+    { IDC_ADGUARD_HOME, 742, 594, 250, 30, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
     { IDC_SAVE,       218, 140, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
     { IDC_RESTART,    340, 140, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
     { IDC_FIXPORT,    472, 140, 220, 28, L"BUTTON", L"改用备用端口 18080/18443", BS_PUSHBUTTON },
@@ -3715,7 +3717,19 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 update_check_async(hwnd);
                 InvalidateRect(hwnd, NULL, FALSE);
             } else if (id == IDC_ADGUARD_HOME) {
-                show_adguard_assistant(hwnd);
+                HMENU menu=CreatePopupMenu();
+                AppendMenuW(menu,MF_STRING,1,L"检测 DNS 与请求是否到达 AdAway");
+                AppendMenuW(menu,MF_STRING,2,L"AdGuard Home 自定义 IP 协同向导");
+                RECT button; GetWindowRect(GetDlgItem(hwnd,IDC_ADGUARD_HOME),&button);
+                int selected=(int)TrackPopupMenuEx(menu,TPM_RETURNCMD|TPM_LEFTALIGN,button.left,button.bottom,hwnd,NULL);
+                DestroyMenu(menu);
+                if (selected==1) PostMessageW(hwnd,WM_COMMAND,IDC_ARRIVAL_CHECK,0);
+                else if (selected==2) show_adguard_assistant(hwnd);
+            } else if (id == IDC_ARRIVAL_CHECK) {
+                struct arrival_config config; memset(&config,0,sizeof(config));
+                snprintf(config.ip,sizeof(config.ip),"%s",g_bind_ip); config.all=g_bind_all;
+                config.http=g_http_port; config.stats=mgmt_port();
+                gui_show_arrival_dialog(hwnd,&config);
             } else if (id == IDM_TEST) {
                 wchar_t url[256];
                 if (*g_bind_ip) swprintf(url, 256, L"http://127.0.0.1:%d/internal-test", mgmt_port());
