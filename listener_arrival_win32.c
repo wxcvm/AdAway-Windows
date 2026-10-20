@@ -109,24 +109,70 @@ static bool ac_match(const struct arrival_config *config,const char *ip) {
     return ac_parse(config->ip,&left) && ac_parse(ip,&right) && ma_equal(&left,&right);
 }
 
+struct ac_dns_work {
+    LONG references;
+    HANDLE done;
+    wchar_t name[256];
+    ADDRINFOW hints,*answers;
+    int status;
+};
+static volatile LONG ac_dns_active;
+
+static void ac_dns_release(struct ac_dns_work *work) {
+    if (InterlockedDecrement(&work->references)!=0) return;
+    if (work->answers) FreeAddrInfoW(work->answers);
+    CloseHandle(work->done); free(work);
+}
+
+static DWORD WINAPI ac_dns_worker(void *opaque) {
+    struct ac_dns_work *work=(struct ac_dns_work *)opaque;
+    work->status=GetAddrInfoW(work->name,NULL,&work->hints,&work->answers);
+    InterlockedExchange(&ac_dns_active,0);
+    SetEvent(work->done);
+    ac_dns_release(work);
+    return 0;
+}
+
+/* Winsock synchronous GetAddrInfoEx rejects a timeout on real Windows.
+ * A single outstanding resolver mirrors Android's bounded DNS worker. A timed
+ * out query retains its heap context until completion, without dangling callbacks
+ * or unbounded thread creation. The UI wait remains at most two seconds. */
+static int ac_resolve(const char *domain,ADDRINFOW **answers) {
+    *answers=NULL;
+    if (InterlockedCompareExchange(&ac_dns_active,1,0)!=0) return WSAEINPROGRESS;
+    struct ac_dns_work *work=(struct ac_dns_work *)calloc(1,sizeof(*work));
+    if (!work) { InterlockedExchange(&ac_dns_active,0); return WSA_NOT_ENOUGH_MEMORY; }
+    work->done=CreateEventW(NULL,TRUE,FALSE,NULL);
+    if (!work->done) { free(work); InterlockedExchange(&ac_dns_active,0); return WSA_NOT_ENOUGH_MEMORY; }
+    work->references=2; work->hints.ai_family=AF_UNSPEC; work->hints.ai_socktype=SOCK_STREAM;
+    MultiByteToWideChar(CP_UTF8,0,domain,-1,work->name,255);
+    size_t length=wcslen(work->name);
+    if (work->name[length-1]!=L'.') { work->name[length]=L'.'; work->name[length+1]=0; }
+    HANDLE thread=CreateThread(NULL,0,ac_dns_worker,work,0,NULL);
+    if (!thread) { InterlockedExchange(&ac_dns_active,0); work->references=1; ac_dns_release(work); return WSA_NOT_ENOUGH_MEMORY; }
+    CloseHandle(thread);
+    DWORD wait=WaitForSingleObject(work->done,2000);
+    int status=wait==WAIT_OBJECT_0 ? work->status : WSAETIMEDOUT;
+    if (status==0) { *answers=work->answers; work->answers=NULL; }
+    ac_dns_release(work); return status;
+}
+
 static void ac_domain(const struct arrival_config *config,const char *domain,wchar_t *out,size_t cap) {
     if (!domain || !*domain) return;
     if (!arrival_domain_valid(domain)) { ac_append(out,cap,L"请输入完整 ASCII / xn-- 测试域名，不含 URL、IP 或路径。\r\n"); return; }
-    wchar_t name[256]; MultiByteToWideChar(CP_UTF8,0,domain,-1,name,255);
-    size_t n=wcslen(name); if (name[n-1]!=L'.') { name[n]=L'.'; name[n+1]=0; }
-    ADDRINFOEXW hints,*answers=NULL; memset(&hints,0,sizeof(hints)); hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
-    struct timeval timeout={2,0};
-    int status=GetAddrInfoExW(name,NULL,NS_DNS,NULL,&hints,&answers,&timeout,NULL,NULL,NULL);
-    if (status) { ac_append(out,cap,L"%hs：系统 DNS 未完成或无 A/AAAA 应答（%d），没有连接。\r\n",domain,status); if (answers) FreeAddrInfoExW(answers); return; }
+    ADDRINFOW *answers=NULL;
+    int status=ac_resolve(domain,&answers);
+    if (status==WSAEINPROGRESS) { ac_append(out,cap,L"%hs：上次系统 DNS 查询尚未结束，请稍后重试；没有连接。\r\n",domain); return; }
+    if (status) { ac_append(out,cap,L"%hs：系统 DNS 未完成或无 A/AAAA 应答（%d），没有连接。\r\n",domain,status); if (answers) FreeAddrInfoW(answers); return; }
     ULONGLONG deadline=GetTickCount64()+5000; unsigned count=0;
-    for (ADDRINFOEXW *row=answers;row && count++<16 && GetTickCount64()<deadline;row=row->ai_next) {
+    for (ADDRINFOW *row=answers;row && count++<16 && GetTickCount64()<deadline;row=row->ai_next) {
         char ip[64]; void *raw=row->ai_family==AF_INET ? (void *)&((struct sockaddr_in *)row->ai_addr)->sin_addr
                 : row->ai_family==AF_INET6 ? (void *)&((struct sockaddr_in6 *)row->ai_addr)->sin6_addr : NULL;
         if (!raw || !inet_ntop(row->ai_family,raw,ip,sizeof(ip))) continue;
         if (!ac_match(config,ip) || !ac_local(ip)) ac_append(out,cap,L"%hs → %hs：未指向当前本机监听，未连接。\r\n",domain,ip);
         else ac_append(out,cap,L"%hs → %hs：DNS 已指向；%ls。\r\n",domain,ip,ac_receipt_host(ip,config->http,domain) ? L"HTTP 请求已到达 AdAway" : L"未收到 AdAway 回执");
     }
-    FreeAddrInfoExW(answers);
+    FreeAddrInfoW(answers);
 }
 
 void arrival_report(const struct arrival_config *config,const char *adblock,const char *hosts,wchar_t *out,size_t cap) {
