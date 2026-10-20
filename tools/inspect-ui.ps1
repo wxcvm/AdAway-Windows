@@ -113,10 +113,14 @@ Set-ClientSize 1032 678
 Set-Page 0; Save-Window 'overview-light'
 Set-Page 2; Save-Window 'settings-light'
 $ipControl=[UiReviewNative]::GetDlgItem($window,1190)
-Set-ControlText $ipControl 'fd6b:2a91:84f0::75'
+$ipv6Control=[UiReviewNative]::GetDlgItem($window,1196)
+if ($ipv6Control -eq [IntPtr]::Zero -or ![UiReviewNative]::GetDlgItem($window,1197)) { throw 'Independent IPv6/startup creation options missing' }
+Set-ControlText $ipControl '10.254.253.75'
+Set-ControlText $ipv6Control 'fd6b:2a91:84f0::75'
 if (![UiReviewNative]::GetDlgItem($window,1193) -or ![UiReviewNative]::GetDlgItem($window,1194)) { throw 'Address creation/removal controls missing' }
 $beforeAddress=if ($ResourceDirectory -and (Test-Path (Join-Path $ResourceDirectory 'webserver.ini'))) { [IO.File]::ReadAllText((Join-Path $ResourceDirectory 'webserver.ini')) } else { $null }
-[void][UiReviewNative]::PostMessageW($window,0x111,[IntPtr]1193,[IntPtr]::Zero)
+foreach ($createId in @(1193,1201)) {
+[void][UiReviewNative]::PostMessageW($window,0x111,[IntPtr]$createId,[IntPtr]::Zero)
 $dialog=[IntPtr]::Zero;$dialogDeadline=(Get-Date).AddSeconds(5)
 do {
     Start-Sleep -Milliseconds 100
@@ -127,7 +131,19 @@ if ($dialog -eq [IntPtr]::Zero -or $dialog -eq $window) { throw 'Address creatio
 Start-Sleep -Milliseconds 150
 if (![UiReviewNative]::IsWindowEnabled($window)) { throw 'Address confirmation cancel did not restore the window' }
 if ($null -ne $beforeAddress -and [IO.File]::ReadAllText((Join-Path $ResourceDirectory 'webserver.ini')) -ne $beforeAddress) { throw 'Address confirmation cancel changed configuration' }
+}
 Write-Output 'Address creation/removal controls visible; confirmation cancelled before UAC; configuration preserved'
+$originalHttp=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1101))
+if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Save/active-config fixture requires disposable GitHub runner' }
+$reservation=[Net.Sockets.TcpListener]::new([Net.IPAddress]::IPv6Any,0)
+$reservation.Server.DualMode=$true;$reservation.Start()
+try { $savedPort=$reservation.LocalEndpoint.Port } finally { $reservation.Stop() }
+Set-ControlText $ipControl '127.0.0.1';Set-ControlText $ipv6Control '::1'
+Set-ControlText ([UiReviewNative]::GetDlgItem($window,1101)) "$savedPort"
+Send-BoundedMessage $window 0x111 ([IntPtr]1104) ([IntPtr]::Zero)
+$iniFile=Join-Path (Split-Path -Parent $guiProcess.Path) 'webserver.ini'
+$savedText=[IO.File]::ReadAllText($iniFile)
+if ($savedText -notmatch "http_port=$savedPort" -or $savedText -notmatch 'listen_ipv6=::1') { throw 'GUI did not commit independent listener settings' }
 [void][UiReviewNative]::PostMessageW($window,0x111,[IntPtr]1195,[IntPtr]::Zero)
 $arrival=[IntPtr]::Zero;$arrivalDeadline=(Get-Date).AddSeconds(5)
 do {
@@ -147,12 +163,16 @@ do {
     $arrivalText=Read-ControlText ([UiReviewNative]::GetDlgItem($arrival,2004))
 } until ($arrivalText -match '管理端口：' -or (Get-Date) -gt $arrivalDeadline)
 if ($arrivalText -notmatch '管理端口：AdAway 回执已确认' -or $arrivalText -notmatch 'HTTP 请求已到达 AdAway') { throw "GUI arrival client did not reach actual server: $arrivalText" }
+if ($arrivalText -notmatch "\]:${originalHttp}：" -or $arrivalText -notmatch 'HTTPS' -or $arrivalText -notmatch 'QUIC / HTTP/3') { throw 'Saved but unapplied settings changed diagnostic targets or protocol report missing' }
+if (![UiReviewNative]::GetDlgItem($arrival,2005)) { throw 'Copy result action missing' }
 $dashboardWindow=$window
 try { $window=$arrival; Save-Window 'adguard-arrival-dialog' }
 finally { $window=$dashboardWindow }
 [void][UiReviewNative]::PostMessageW($arrival,0x111,[IntPtr]2,[IntPtr]::Zero)
 Start-Sleep -Milliseconds 150
 if (![UiReviewNative]::IsWindowEnabled($window)) { throw 'Arrival window did not release the dashboard' }
+Set-ControlText ([UiReviewNative]::GetDlgItem($window,1101)) $originalHttp
+Send-BoundedMessage $window 0x111 ([IntPtr]1104) ([IntPtr]::Zero)
 Write-Output 'AdGuard diagnostic GUI: domains editable, no implicit DNS, actual loopback receipts, no configuration changes'
 Set-ControlText $ipControl 'localhost'
 $autoDeadline=(Get-Date).AddSeconds(5)
@@ -163,11 +183,13 @@ do {
 if ($autoResult -notmatch 'IPv4') { throw 'Listener validation did not run automatically after editing' }
 $result=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
 if ($result -notmatch 'IPv4') { throw 'Invalid IP did not receive visible listener feedback' }
-Set-ControlText $ipControl '::1'
+Set-ControlText $ipControl '127.0.0.1'
+Set-ControlText $ipv6Control '::1'
 Send-BoundedMessage $window 0x111 ([IntPtr]1191) ([IntPtr]::Zero)
 $result=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1192))
 if ($result -notmatch 'HTTP') { throw 'IPv6 listener check did not reach real port detection' }
-Set-ControlText $ipControl ''
+Set-ControlText $ipControl '127.0.0.1'
+Set-ControlText $ipv6Control '::1'
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch 'ZIP') { throw 'ZIP update preference not visible' }
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)

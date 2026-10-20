@@ -6,6 +6,7 @@
 #include <string.h>
 #include "listener_arrival_dialog_win32.h"
 #define AC_RUN 2003
+#define AC_COPY 2005
 #define AC_DONE (WM_APP+94)
 struct ac_dialog {
     struct arrival_config config;
@@ -20,6 +21,21 @@ static DWORD WINAPI ac_work(void *opaque) {
 static void ac_controls(struct ac_dialog *state,bool enabled) {
     for (int id=2001;id<=2003;id++) EnableWindow(GetDlgItem(state->window,id),enabled);
     EnableWindow(GetDlgItem(state->window,IDCANCEL),enabled);
+    EnableWindow(GetDlgItem(state->window,AC_COPY),enabled);
+}
+static void ac_copy(HWND window) {
+    HWND report=GetDlgItem(window,2004); int count=GetWindowTextLengthW(report)+1;
+    HGLOBAL memory=GlobalAlloc(GMEM_MOVEABLE,(size_t)count*sizeof(wchar_t));
+    if (!memory) return;
+    wchar_t *text=(wchar_t *)GlobalLock(memory);
+    if (!text) { GlobalFree(memory); return; }
+    GetWindowTextW(report,text,count); GlobalUnlock(memory);
+    bool copied=false;
+    if (OpenClipboard(window)) {
+        if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT,memory)) copied=true;
+        CloseClipboard();
+    }
+    if (!copied) { GlobalFree(memory); MessageBoxW(window,L"剪贴板暂不可用，请稍后重试。",L"复制结果",MB_OK|MB_ICONINFORMATION); }
 }
 static void ac_place(HWND window) {
     RECT client; GetClientRect(window,&client); int width=client.right,height=client.bottom;
@@ -32,6 +48,7 @@ static void ac_place(HWND window) {
     int top=pad+7*line+3*gap;
     SetWindowPos(GetDlgItem(window,2004),NULL,pad,top,width-2*pad,height-top-2*pad-line,SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window,AC_RUN),NULL,pad,height-pad-line,MulDiv(240,dpi,96),line,SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window,AC_COPY),NULL,pad+MulDiv(250,dpi,96),height-pad-line,MulDiv(120,dpi,96),line,SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window,IDCANCEL),NULL,width-pad-MulDiv(100,dpi,96),height-pad-line,MulDiv(100,dpi,96),line,SWP_NOZORDER);
 }
 static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) {
@@ -41,13 +58,14 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
         SetWindowLongPtrW(window,GWLP_USERDATA,(LONG_PTR)state);
         state->font=CreateFontW(-MulDiv(15,(int)GetDpiForWindow(window),96),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Microsoft YaHei UI");
         const struct { int id; const wchar_t *type,*text; DWORD style; } controls[]={
-            {2010,L"STATIC",L"按已应用监听配置检测。请将 AdGuard 广告规则与 Hosts 规则的自定义 IP 分别指向本机监听。下方域名可修改或留空；预设示例不保证命中当前规则。检测不会修改 AdGuard、网络或证书。",SS_LEFT},
+            {2010,L"STATIC",L"按本次实际启动配置检测 HTTP、HTTPS 与 UDP 占用；保存待重启的配置尚不生效。AdGuard 两类 DNS 模式的自定义 IP 可分别指向本机监听。测试域名可修改或留空，不保证命中当前规则。检测不修改网络或证书。",SS_LEFT},
             {2011,L"STATIC",L"广告规则测试域名（ASCII / xn--，可修改或留空）",SS_LEFT},
             {2001,L"EDIT",L"ad.doubleclick.net",WS_BORDER|ES_AUTOHSCROLL|WS_TABSTOP},
             {2012,L"STATIC",L"Hosts 规则测试域名（可选，命中类别以 AdGuard 日志为准）",SS_LEFT},
             {2002,L"EDIT",L"",WS_BORDER|ES_AUTOHSCROLL|WS_TABSTOP},
-            {2004,L"EDIT",L"点击检测后分别显示 DNS 指向与 HTTP 实际回执。只连接匹配监听的本机地址，不访问公网广告源站；HTTPS 与其他应用路径单独验收。",WS_BORDER|ES_MULTILINE|ES_READONLY|WS_VSCROLL|ES_AUTOVSCROLL|WS_TABSTOP},
+            {2004,L"EDIT",L"点击检测后分别显示 DNS、HTTP、HTTPS 与 UDP 占用。只连接匹配监听的本机地址，不访问公网广告源站；HTTPS 会严格校验证书并检测加密回执；QUIC / HTTP/3 当前未实现。",WS_BORDER|ES_MULTILINE|ES_READONLY|WS_VSCROLL|ES_AUTOVSCROLL|WS_TABSTOP},
             {AC_RUN,L"BUTTON",L"检测 DNS 与请求到达",BS_DEFPUSHBUTTON|WS_TABSTOP},
+            {AC_COPY,L"BUTTON",L"复制结果",BS_PUSHBUTTON|WS_TABSTOP},
             {IDCANCEL,L"BUTTON",L"关闭",BS_PUSHBUTTON|WS_TABSTOP}
         };
         for (size_t i=0;i<sizeof(controls)/sizeof(controls[0]);i++) {
@@ -58,6 +76,11 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
         ac_place(window); return 0;
     }
     if (!state) return DefWindowProcW(window,message,wp,lp);
+    if (message==WM_GETMINMAXINFO) {
+        MINMAXINFO *limits=(MINMAXINFO *)lp;
+        limits->ptMinTrackSize.x=MulDiv(620,(int)GetDpiForWindow(window),96);
+        limits->ptMinTrackSize.y=MulDiv(560,(int)GetDpiForWindow(window),96); return 0;
+    }
     if (message==WM_SIZE) { ac_place(window); return 0; }
     if (message==WM_COMMAND && LOWORD(wp)==AC_RUN && !state->running) {
         GetDlgItemTextA(window,2001,state->adblock,256); GetDlgItemTextA(window,2002,state->hosts,256);
@@ -71,6 +94,7 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
         return 0;
     }
     if (message==AC_DONE) { state->running=false; ac_controls(state,true); SetDlgItemTextW(window,2004,state->result); return 0; }
+    if (message==WM_COMMAND && LOWORD(wp)==AC_COPY && !state->running) { ac_copy(window); return 0; }
     if (message==WM_CLOSE || (message==WM_COMMAND && LOWORD(wp)==IDCANCEL)) {
         if (!state->running) DestroyWindow(window);
         return 0;
@@ -84,7 +108,7 @@ void gui_show_arrival_dialog(HWND owner,const struct arrival_config *config) {
     RegisterClassW(&type);
     struct ac_dialog state; memset(&state,0,sizeof(state)); state.config=*config;
     UINT dpi=GetDpiForWindow(owner);
-    HWND window=CreateWindowExW(WS_EX_DLGMODALFRAME,type.lpszClassName,L"AdGuard DNS 与请求到达检测",WS_OVERLAPPEDWINDOW,
+    HWND window=CreateWindowExW(WS_EX_DLGMODALFRAME,type.lpszClassName,L"HTTP / HTTPS / AdGuard 诊断",WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,CW_USEDEFAULT,MulDiv(720,(int)dpi,96),MulDiv(650,(int)dpi,96),owner,NULL,type.hInstance,&state);
     if (!window) { MessageBoxW(owner,L"无法打开请求检测窗口。",L"AdGuard 检测",MB_OK|MB_ICONERROR); return; }
     EnableWindow(owner,FALSE); ShowWindow(window,SW_SHOW); UpdateWindow(window);

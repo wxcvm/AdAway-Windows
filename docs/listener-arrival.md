@@ -10,7 +10,7 @@
 沿用 Winsock GetAddrInfoW 的系统 DNS 与 2 秒等待预算，最多一个未完成的解析线程；超时任务保留堆上下文到系统完成，不产生无界线程或悬空回调。沿用 BCrypt 生成随机 128 位 nonce，没有新建通用转发器、DNS 上游或网络接管。
 
 生产 native 入口的固定 GET /adaway-listener-probe/<32 hex> 在任何转发前处理，只返回固定格式 nonce、no-store；拒绝非法 nonce 与其他方法。
-它是公开无状态回执，不是认证，不返回内部配置/统计/浏览记录，不改变规则或用户排行。HTTPS 证书信任与其他应用流量路径明确未验证。
+它是公开无状态回执，不是认证，不返回内部配置/统计/浏览记录，不改变规则或用户排行。当前 HTTPS、双协议与启动选项见 [监听生命周期](listener-lifecycle.md)；其他应用路径仍需独立验收。
 回执头文件从 Android 独立固定提交校验；production portable core 仍固定 4470606366e614abdb308fdfe94734d28167439c，只增加受检查的覆盖层入口。
 
 测试覆盖实际 webserver.exe 与 native 客户端的 IPv4/IPv6 回执、域名 Host、错误 nonce/方法/普通 HTTP 200 拒绝，GUI 编辑/手动检测与实际回执。
