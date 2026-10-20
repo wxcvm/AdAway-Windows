@@ -13,12 +13,17 @@ foreach ($ip in @('10.254.253.73','fd6b:2a91:84f0::73')) {
     Assert-Absent $ip
     try {
         $result=Invoke-Address @('--create-listener-address',$ip,'29080','29443')
+        Write-Output "Address helper: $ip / $result" | Out-Host
         if ($result -ne 0) { throw "Actual helper create failed for $ip with $result" }
         $row=Get-NetIPAddress -IPAddress $ip -ErrorAction Stop
         if (!$row.SkipAsSource -or $row.PrefixLength -ne $(if ($ip.Contains(':')) {128} else {32})) { throw 'Alias prefix/source selection changed' }
         if ((Invoke-Address @('--create-listener-address',$ip,'29080','29443')) -ne 5010) { throw 'Existing address was not reused' }
         $hostPart=if ($ip.Contains(':')) {"[$ip]"} else {$ip}
         $resources=Join-Path $env:RUNNER_TEMP ('managed-listener-'+[Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $resources | Out-Null
+        Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $exe) 'resources') -File |
+            Where-Object Extension -In @('.webp','.html','.png','.jpg','.gif','.css','.js') |
+            Copy-Item -Destination $resources
         $server=Start-Process -FilePath $exe -ArgumentList @('--resources',"`"$resources`"",'--bind-ip',$ip,'--http-port','29080','--https-port','29443','--stats-port','29686','--no-gui') -WindowStyle Hidden -PassThru
         try {
             $reply=$null;$deadline=(Get-Date).AddSeconds(20)
@@ -27,7 +32,7 @@ foreach ($ip in @('10.254.253.73','fd6b:2a91:84f0::73')) {
                 try { $reply=Invoke-WebRequest "http://${hostPart}:29080/" -Headers @{Host='localhost'} -NoProxy -TimeoutSec 2 -SkipHttpErrorCheck }
                 catch { Start-Sleep -Milliseconds 100 }
             }
-            if (!$reply -or $reply.StatusCode -ne 200) { throw 'Created alias did not serve the ordinary response page' }
+            if (!$reply -or $reply.StatusCode -ne 200) { throw "Created alias $ip did not serve the ordinary response page: HTTP $($reply.StatusCode)" }
         } finally { if (!$server.HasExited) { Stop-Process -Id $server.Id -Force }; $server.WaitForExit() }
     } finally {
         $removed=Invoke-Address @('--remove-listener-address',$ip)
