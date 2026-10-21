@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Independent fixed transport contract; production core pin stays unchanged.
 set -euo pipefail
-PIN="6a43cfdc88f5946e112bfd89c649406b345aa0a3"
+PIN="a56ce726a1eba201fdbf384280009943459e1410"
 verify() {
   python3 - "$PIN" <<'PY'
 import hashlib,json,pathlib,sys
@@ -9,7 +9,7 @@ root=pathlib.Path('log-contract')
 assert root.is_dir() and not root.is_symlink()
 manifest=json.loads((root/'manifest.json').read_text())
 assert manifest['commit']==sys.argv[1]
-expected={'query_log_store.inc': '48290bd502594b5d82f1a92807dae6ba67cb3c5837a715ae34f1599c69342461', 'query_log_store_test.c': 'a98a80acee4ca721016d29b41f6b8448c09538f65d8c1acf2e394ac6e6b1e1a8'}
+expected={'query_log_store.inc': 'fcc607c02f991ac6c94c065fdcaf319b9429db3af00a0aa2ac1b6ded83ef3cc8', 'query_log_store_test.c': '77da6db42dad6aaca042ab6d19055e533dc32c48d875e97ad5dbd46ee2a52fa4', 'stats-json-bounds-fixture.py': '5e691c51417efe1b1413f0d7cab30646662484031d8da95a6d00e76f3db11a2a'}
 actual={}
 for p in root.rglob('*'):
     assert not p.is_symlink()
@@ -35,6 +35,7 @@ if [ ! -e log-contract ]; then
     git -C "$stage" show "FETCH_HEAD:$path" > "$stage/contract/$name"
     test -s "$stage/contract/$name"
   done
+  git -C "$stage" show "FETCH_HEAD:tools/stats-json-bounds-fixture.py" > "$stage/contract/stats-json-bounds-fixture.py"
   python3 - "$stage/contract" "$PIN" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1])

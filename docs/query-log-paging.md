@@ -6,7 +6,7 @@ array therefore still showed only the bounded 400-row statistics summary.
 
 The portable core remains frozen and SHA-verified. A count-checked overlay adds
 the gated management endpoint and includes only the separately pinned query-log
-contract from Android commit `6a43cfdc88f5946e112bfd89c649406b345aa0a3`. Acquisition
+contract from Android commit `a56ce726a1eba201fdbf384280009943459e1410`. Acquisition
 verifies commit, exact file list and SHA-256 hashes, preserving a changed cache.
 Windows keeps its existing 4,096-entry memory/disk retention, 400-row summary and
 49,152-byte page output cap. A page asks for up to 300 rows and uses actual
@@ -39,6 +39,14 @@ file. Legacy ring files remain readable; new compact files retain newest order.
 Statistics distinguish a live response from retained display data. A failed
 refresh keeps the previous counters and records their observation time, while
 service status remains disconnected. Initial unavailable values use a dash.
+
+Long blocked hostnames also exposed an old statistics-JSON failure: a fixed
+top-host buffer retained part of the last row. The overlay now rolls back
+partial top/TLS/listener rows and incomplete app objects at existing limits,
+and sanitizes app-host display metadata through the existing helper. The
+shared fixture compiles the actual Android/Windows rendering blocks and checks
+130 population/metadata scenarios with real Mongoose. Zero/failed clock reads
+are skipped before altering the shared log ring, preserving valid history.
 
 DeepSeek Flash Max drafted the page parser and its tests with complete relevant
 public files and the provider/catalog default output cap. The draft passed its

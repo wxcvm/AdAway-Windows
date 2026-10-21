@@ -142,6 +142,16 @@ class Fixture:
         assert len(rows) == page["total"]
         return rows, cursor
 
+    def validate_stats(self, minimum_requests):
+        status, body, raw = self.exchange(self.stats, "/internal-stats")
+        assert status == 200
+        document = json.loads(body)
+        assert document["total_requests"] >= minimum_requests
+        assert all(isinstance(document[name], list) for name in ("apps", "top_blocked", "query_log", "listeners"))
+        client = subprocess.run([str(self.probe), "--stats"], input=raw, capture_output=True, timeout=10)
+        assert client.returncode == 0 and client.stdout.strip() == b"valid-stats"
+        return document
+
     def control(self, command):
         token = (self.resources / "control_token.txt").read_text(encoding="ascii").strip()
         result = self.exchange(self.stats, "/control", body=("cmd=" + command).encode("ascii"), token=token)
@@ -167,6 +177,7 @@ def run(exe, probe):
             fixture.verify_control_authentication()
             assert fixture.page()["total"] == 0
             fixture.batch(1, 600)
+            fixture.validate_stats(600)
             first = fixture.page()
             assert first["total"] == 600 and 0 < first["returned"] < 300
             old_cursor = (first["generation"], first["anchor"])
@@ -177,9 +188,10 @@ def run(exe, probe):
             fixture.page(0, old_cursor, status=409)
             full, before_restart = fixture.all_pages()
             assert len(full) == 4096 and len({entry["host"] for entry in full}) == 4096
-            fixture.exchange(fixture.stats, "/internal-stats") # Commit the actual ring.
+            fixture.validate_stats(4850) # Validate the actual document and commit the ring.
             fixture.stop()
             fixture.start()
+            fixture.validate_stats(4850)
             fixture.page(0, before_restart, status=409)
             restored, restored_cursor = fixture.all_pages()
             assert restored == full, "Restart lost committed log order/metadata"
@@ -191,6 +203,7 @@ def run(exe, probe):
                         actualShortPage=first["returned"], overwriteExpired=True,
                         restartOrderAndMetadata=True, clearExpired=True,
                         productionClientParser=True, controlAuthentication=True,
+                        longHostStatsComplete=True,
                         hostNetworkChanges=False)
         finally:
             fixture.stop()

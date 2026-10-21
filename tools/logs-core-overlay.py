@@ -56,4 +56,7 @@ def prepare_logs(source):
     replace('"{\\"uptime_seconds\\":%llu,"', '"{\\"snapshot_ts\\":%llu,\\"uptime_seconds\\":%llu,"')
     replace('        (unsigned long long)uptime,\n        (double)uptime / 86400.0,',
             '        (unsigned long long)time(NULL),\n        (unsigned long long)uptime,\n        (double)uptime / 86400.0,')
-    return source
+    spec = importlib.util.spec_from_file_location("stats_bounds_overlay", Path(__file__).with_name("stats-json-core-overlay.py"))
+    stats = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stats)
+    return stats.prepare_stats_bounds(source)

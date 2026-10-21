@@ -382,6 +382,10 @@ jobs:
           ./query_log_atomic_win32_test.exe "$(cygpath -m "$RUNNER_TEMP")"
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni -Ilog-contract log-contract/query_log_store_test.c dashboard_mongoose.o -o query_log_store_test.exe -lws2_32 -lbcrypt
           ./query_log_store_test.exe "$(cygpath -m "$RUNNER_TEMP")"
+          python3 tools/build-rule-core.py jni/webserver.c .build-core/stats-bounds-core.c
+          python3 log-contract/stats-json-bounds-fixture.py .build-core/stats-bounds-core.c .build-core/stats-bounds-test.c
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni .build-core/stats-bounds-test.c dashboard_mongoose.o -o stats-bounds-test.exe -lws2_32 -lbcrypt
+          ./stats-bounds-test.exe
 
       - name: Prepare resources (convert block placeholder images to webp)
         shell: bash
@@ -1372,3 +1376,8 @@ jobs:
             cc -std=c11 -O1 -g -D_GNU_SOURCE -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer -Ijni "${test}_test.c" log-mongoose.o -pthread -o "$test"
             "./$test"
           done
+          bash fetch-log-contract.sh
+          python3 tools/build-rule-core.py jni/webserver.c stats-bounds-core.c
+          python3 log-contract/stats-json-bounds-fixture.py stats-bounds-core.c stats-bounds-test.c
+          cc -std=c11 -O1 -g -D_GNU_SOURCE -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer -Ijni stats-bounds-test.c log-mongoose.o -pthread -o stats-bounds-test
+          ./stats-bounds-test

@@ -11,8 +11,9 @@ int main(int argc, char **argv) {
     struct mg_str body;
     uint64_t offset = 0;
     if (argc != 2 && argc != 4) return 1;
+    bool stats_mode = argc == 2 && strcmp(argv[1], "--stats") == 0;
     memset(&request, 0, sizeof(request));
-    if (!qlp_decimal_digits(argv[1], strlen(argv[1]), &offset) || offset > QLP_MAX_TOTAL) return 1;
+    if (!stats_mode && (!qlp_decimal_digits(argv[1], strlen(argv[1]), &offset) || offset > QLP_MAX_TOTAL)) return 1;
     request.offset = (uint32_t)offset;
     if (argc == 4) {
         if (strlen(argv[2]) >= sizeof(request.generation) || strlen(argv[3]) >= sizeof(request.anchor)) return 1;
@@ -25,6 +26,11 @@ int main(int argc, char **argv) {
     size_t length = fread(response, 1, sizeof(response), stdin);
     if (ferror(stdin) || length == sizeof(response) || !dashboard_response_body(response, length, &body)) return 2;
     mg_log_set(MG_LL_NONE);
+    if (stats_mode) {
+        if (!dashboard_stats_valid(body)) return 2;
+        puts("valid-stats");
+        return 0;
+    }
     struct qlp_page *page = (struct qlp_page *)calloc(1, sizeof(*page));
     if (!page) return 1;
     if (!qlp_parse(body, &request, page)) { free(page); return 2; }
