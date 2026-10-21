@@ -50,6 +50,7 @@
 #include "managed_listener_address_win32.h"
 #include "listener_arrival_dialog_win32.h"
 #include "control_http_result.h"
+#include "dashboard_response.h"
 #include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
@@ -267,7 +268,6 @@ static int  cert_trust_state(const char *cert_path);
 /* Polling + self-measurement state (definitions with initialisers live in the
  * GUI state block further down; these tentative declarations let the helpers
  * that appear above it compile). */
-static long long g_poll_sig;
 static DWORD g_poll_last_post;
 static int  g_hb_ticks;
 static bool g_owns_server;
@@ -630,7 +630,12 @@ static int http_get(int port, const char *path, char *out, size_t outsz) {
              */
             if (got >= outsz) got = outsz - 1;
             out[got] = '\0';
-            rc = (got > 0) ? 0 : -1;
+            struct mg_str body;
+            if (dashboard_response_body(out, got, &body)) {
+                memmove(out, body.buf, body.len);
+                out[body.len] = '\0';
+                rc = 0;
+            }
         }
     }
     closesocket(s);
@@ -681,6 +686,7 @@ static void snapshot_fetch(int port, struct snapshot *sn) {
     static char buf[STEAL_JSON_BUF];
     memset(sn, 0, sizeof(*sn));
     if (http_get(port, "/internal-stats", buf, sizeof(buf)) != 0) return;
+    if (!dashboard_stats_valid(mg_str(buf))) return;
     sn->uptime_seconds = json_num(buf, "uptime_seconds");
     sn->total_requests = json_num(buf, "total_requests");
     sn->total_connections = json_num(buf, "total_connections");
@@ -708,7 +714,8 @@ static void snapshot_fetch(int port, struct snapshot *sn) {
         static char qbuf[QLOG_PULL_BUF];
         char qpath[96];
         snprintf(qpath, sizeof(qpath), "/internal-qlog?offset=0&limit=%d", GUI_QLOG_MAX);
-        if (http_get(port, qpath, qbuf, sizeof(qbuf)) == 0) {
+        if (http_get(port, qpath, qbuf, sizeof(qbuf)) == 0 &&
+            dashboard_qlog_valid(mg_str(qbuf))) {
             json_qlog_entries(qbuf, sn);
         }
     }
@@ -865,19 +872,19 @@ static void *stats_poll_thread(void *arg) {
         struct snapshot tmp;
         snapshot_fetch_any(&tmp);
         pthread_mutex_lock(&g_snap_mutex);
+        /* Compare every rendered field, excluding the uptime clock. A hand
+         * picked arithmetic signature missed TLS failures and log changes and
+         * could overflow signed counters. Both snapshots have zeroed padding. */
+        bool changed = memcmp((const char *)&g_snap_next + sizeof(tmp.uptime_seconds),
+                              (const char *)&tmp + sizeof(tmp.uptime_seconds),
+                              sizeof(tmp) - sizeof(tmp.uptime_seconds)) != 0;
         g_snap_next = tmp;
         pthread_mutex_unlock(&g_snap_mutex);
         /* Wake the UI only when something it draws actually changed
          * (seconds-level uptime is ignored) - idle CPU drops to ~0; a
          * 60 s keep-alive still refreshes the clock line. */
-        long long sig = tmp.valid
-            ? (tmp.total_requests * 131 + tmp.total_connections * 17 +
-               tmp.sni_certs_issued * 7 + (tmp.uptime_seconds / 60) +
-               tmp.listener_count * 3 + tmp.bind_ok + tmp.stats_port)
-            : -1;
         DWORD now = GetTickCount();
-        if ((sig != g_poll_sig || now - g_poll_last_post > 60000) && !g_poll_stop) {
-            g_poll_sig = sig;
+        if ((changed || now - g_poll_last_post > 60000) && !g_poll_stop) {
             g_poll_last_post = now;
             PostMessageW(hwnd, WM_APP_STATS, 0, 0);
         }
@@ -1639,7 +1646,6 @@ static int  g_cert_trusted_flag = 0;
 /* Where the CA is trusted: CERT_TRUST_USER / CERT_TRUST_MACHINE bitmask. */
 static int  g_cert_trust_state = 0;
 static DWORD g_cert_checked_tick = 0;
-static long long g_poll_sig = -1;    /* signature of the last drawn snapshot */
 static DWORD g_poll_last_post = 0;   /* keep-alive post (clock) */
 /* First visible row of the "最近请求" card. The server keeps up to 400 newest
    entries (QLOG_RENDER_MAX) and only 11 fit into the card, so the card follows
