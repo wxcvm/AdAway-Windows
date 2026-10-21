@@ -147,15 +147,16 @@ try {
         $response.Dispose()
     }
     foreach($message in $messages) { $message.Dispose() }
-    function Wait-LogButtons([bool]$Previous,[bool]$Next) {
+    function Wait-LogButtons([bool]$ExpectedPrevious,[bool]$ExpectedNext) {
         $deadline=(Get-Date).AddSeconds(15)
         do {
-            $prev=[UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1210))
-            $next=[UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1211))
-            if ($prev -eq $Previous -and $next -eq $Next) { return }
+            $actualPrevious=[UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1210))
+            $actualNext=[UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1211))
+            if ($actualPrevious -eq $ExpectedPrevious -and $actualNext -eq $ExpectedNext) { return }
             Start-Sleep -Milliseconds 100
         } while((Get-Date) -lt $deadline)
-        throw "History buttons did not reach previous=$Previous next=$Next"
+        Save-Window 'logs-unexpected-buttons'
+        throw "History buttons expected previous=$ExpectedPrevious next=$ExpectedNext; actual previous=$actualPrevious next=$actualNext"
     }
     Wait-LogButtons $false $true
     Save-Window 'logs-history-first'
