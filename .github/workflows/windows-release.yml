@@ -362,6 +362,13 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Ijni update_channel_integration_test.c update_feed.o update_mongoose.o -o update_channel_integration_test.exe -lws2_32 -lwinhttp -lbcrypt -lwintrust -lcrypt32 -ladvapi32 -lshell32
           ./update_channel_integration_test.exe
 
+      - name: Test dashboard HTTP responses with actual Mongoose
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -DMG_TLS=0 -Ijni -c jni/mongoose/mongoose.c -o dashboard_mongoose.o
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni dashboard_response_test.c dashboard_mongoose.o -o dashboard_response_test.exe -lws2_32 -lbcrypt
+          ./dashboard_response_test.exe
+
       - name: Prepare resources (convert block placeholder images to webp)
         shell: bash
         run: |
