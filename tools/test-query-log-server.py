@@ -56,10 +56,17 @@ class Fixture:
             if self.process.poll() is None:
                 try:
                     self.control("shutdown")
+                except (OSError, AssertionError):
+                    # The frozen core can exit before flushing this reply.
+                    # Verify the owned process actually exits normally below.
+                    pass
+                try:
                     self.process.wait(timeout=8)
-                except (OSError, AssertionError, subprocess.TimeoutExpired):
+                except subprocess.TimeoutExpired:
                     self.process.terminate()
                     self.process.wait(timeout=5)
+                    raise AssertionError("Server needed forced shutdown")
+                assert self.process.returncode == 0, "Server exited abnormally"
             self.process = None
         if self.log is not None:
             self.log.close()
@@ -92,6 +99,7 @@ class Fixture:
                         assert len(payload) == lengths[0], "Surplus native response bytes"
                         break
         raw = b"".join(chunks)
+        assert b"\r\n\r\n" in raw, "Response ended before complete headers"
         head, payload = raw.split(b"\r\n\r\n", 1)
         return int(head.split(b" ", 2)[1]), payload, raw
 
