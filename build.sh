@@ -22,6 +22,7 @@ OUT="$HERE/dist"
 CORE_SOURCE="$HERE/.build-core/webserver.c"
 bash fetch-transport-contract.sh
 bash fetch-tcp-contract.sh
+bash fetch-log-contract.sh
 python3 tools/build-rule-core.py "$JNI/webserver.c" "$CORE_SOURCE"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
@@ -62,6 +63,7 @@ gcc \
   -I"$HERE/shared-contract" \
   -I"$HERE/transport-contract" \
   -I"$HERE/tcp-contract" \
+  -I"$HERE/log-contract" \
   -I"$SSL_PREFIX/include" \
   -I"$MINGW_PREFIX/include" \
   -o "$OUT/webserver.exe" \

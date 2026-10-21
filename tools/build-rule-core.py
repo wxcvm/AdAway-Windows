@@ -131,7 +131,11 @@ static void block_set_load(const char *resource_dir) {
     spec = importlib.util.spec_from_file_location("listen_overlay", pathlib.Path(__file__).with_name("listen-core-overlay.py"))
     overlay = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(overlay)
-    return overlay.prepare_listener(source)
+    source = overlay.prepare_listener(source)
+    spec = importlib.util.spec_from_file_location("logs_overlay", pathlib.Path(__file__).with_name("logs-core-overlay.py"))
+    logs = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(logs)
+    return logs.prepare_logs(source)
 
 
 if __name__ == "__main__":
