@@ -74,7 +74,10 @@ class Fixture:
 
     def exchange(self, port, path, hostname="127.0.0.1", body=None, token=None):
         method = "POST" if body is not None else "GET"
-        headers = f"{method} {path} HTTP/1.0\r\nHost: {hostname}\r\nConnection: close\r\n"
+        headers = f"{method} {path} HTTP/1.0\r\n"
+        if hostname is not None:
+            headers += f"Host: {hostname}\r\n"
+        headers += "Connection: close\r\n"
         if token is not None:
             headers += f"X-ADBlock-Token: {token}\r\n"
         if body is not None:
@@ -199,11 +202,20 @@ def run(exe, probe):
             fixture.page(0, restored_cursor, status=409)
             assert fixture.page()["total"] == 0
             assert fixture.exchange(fixture.stats, "/internal-qlog?limit=301000")[0] == 400
+            # These requests use the real server entrypoint after the original
+            # retention/restart assertions, so the established row counts stay
+            # unchanged. No URL path or query may substitute for a missing Host.
+            assert fixture.exchange(fixture.http, "/private?token=secret", hostname="[::1]:8443")[0] in (200, 204)
+            assert fixture.exchange(fixture.http, "/private/secret", hostname=None)[0] in (200, 204)
+            authority_page = fixture.page()
+            assert authority_page["total"] == 2
+            assert [entry["host"] for entry in authority_page["entries"]] == ["(unknown host)", "::1"]
             return dict(retention=4096, originalRows=600, concurrentWrites=25,
                         actualShortPage=first["returned"], overwriteExpired=True,
                         restartOrderAndMetadata=True, clearExpired=True,
                         productionClientParser=True, controlAuthentication=True,
                         longHostStatsComplete=True,
+                        ipv6AuthorityAndMissingHostPrivacy=True,
                         hostNetworkChanges=False)
         finally:
             fixture.stop()

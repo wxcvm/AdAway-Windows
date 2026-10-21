@@ -25,6 +25,8 @@ bash fetch-tcp-contract.sh
 bash fetch-log-contract.sh
 python3 tools/build-rule-core.py "$JNI/webserver.c" "$CORE_SOURCE"
 rm -rf "$OUT"; mkdir -p "$OUT"
+python3 tools/embed-portable-updater.py --check
+cp "$HERE/update_portable.ps1" "$OUT/update_portable.ps1"
 
 echo "==> Building pinned official OpenSSL 3.5.9 ..."
 bash "$HERE/scripts/build-official-openssl.sh"
@@ -68,7 +70,7 @@ gcc \
   -I"$MINGW_PREFIX/include" \
   -o "$OUT/webserver.exe" \
   "$CORE_SOURCE" "$JNI/mongoose/mongoose.c" "$HERE/gui_win32.c" "$HERE/gui_assist_dialogs_win32.c" "$HERE/update_win32.c" "$HERE/update_feed.c" \
-  "$HERE/subscription_update_win32.c" "$HERE/subscription_settings_win32.c" "$HERE/dns_policy_wire.c" \
+  "$HERE/subscription_update_win32.c" "$HERE/subscription_settings_win32.c" "$HERE/subscription_display_win32.c" "$HERE/policy_settings_win32.c" "$HERE/dns_policy_wire.c" \
   "$HERE/listener_arrival_win32.c" "$HERE/listener_arrival_dialog_win32.c" \
   "$HERE/listener_tls_win32.c" "$HERE/isolated_transport_win32.c" "$HERE/isolated_tcp_win32.c" "$HERE/isolated_transport_dialog_win32.c" \
   "$HERE/traffic_mode_policy.c" "$HERE/traffic_observer_win32.c" \

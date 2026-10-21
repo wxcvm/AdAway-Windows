@@ -527,8 +527,29 @@ static void test_host_boundaries(void) {
     parse_fail_preserving(json, &request);
 }
 
+static void test_request_attribution(void) {
+    struct qlp_row row;
+    CHECK(qlp_parse_row(mg_str(ROW_ONE), &row));
+    CHECK(row.uid == -1);
+    CHECK(qlp_parse_row(mg_str(ROW_MAX), &row));
+    CHECK(row.uid == -1); /* absent is unknown, never PID zero */
+    CHECK(qlp_parse_row(mg_str("{\"ts\":1,\"uid\":4321,\"action\":1,\"type\":2,\"mode\":1,\"host\":\"a.test\"}"), &row));
+    CHECK(row.uid == 4321);
+    const char *invalid[] = {
+        "{\"ts\":1,\"uid\":-2,\"action\":1,\"type\":2,\"mode\":1,\"host\":\"a.test\"}",
+        "{\"ts\":1,\"uid\":2147483648,\"action\":1,\"type\":2,\"mode\":1,\"host\":\"a.test\"}",
+        "{\"ts\":1,\"uid\":\"4321\",\"action\":1,\"type\":2,\"mode\":1,\"host\":\"a.test\"}"
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        struct qlp_row old = row;
+        CHECK(!qlp_parse_row(mg_str(invalid[i]), &row));
+        CHECK(memcmp(&row, &old, sizeof(row)) == 0);
+    }
+}
+
 int main(void) {
     mg_log_set(MG_LL_NONE);
+    test_request_attribution();
     test_empty_final_page();
     test_normal_page();
     test_short_page();

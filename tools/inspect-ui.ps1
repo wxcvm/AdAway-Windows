@@ -124,7 +124,7 @@ function Save-Window([string]$Name) {
 Set-ClientSize 1032 678
 Set-Page 0; Save-Window 'overview-light'
 Set-Page 1
-foreach ($id in @(1210,1211,1212)) {
+foreach ($id in @(1210,1211,1212,1213,1214,1215,1216,1217,1218)) {
     $button=[UiReviewNative]::GetDlgItem($window,$id)
     if (!$button -or ![UiReviewNative]::IsWindowVisible($button)) { throw "History control missing: $id" }
 }
@@ -164,6 +164,45 @@ try {
     Send-BoundedMessage $window 0x111 ([IntPtr]1212) ([IntPtr]::Zero)
     Wait-LogButtons $false $true
     Save-Window 'logs-history-first'
+    $logList=[UiReviewNative]::GetDlgItem($window,1215)
+    $logSearch=[UiReviewNative]::GetDlgItem($window,1213)
+    $logFilter=[UiReviewNative]::GetDlgItem($window,1214)
+    $logDetails=[UiReviewNative]::GetDlgItem($window,1216)
+    $rowCount=[UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32()
+    if ($rowCount -le 9) { throw "Full log list did not expose loaded rows: $rowCount" }
+    Send-BoundedMessage $logList 0x186 ([IntPtr]::Zero) ([IntPtr]::Zero) # LB_SETCURSEL
+    Send-BoundedMessage $window 0x111 ([IntPtr](1215 -bor (1 -shl 16))) $logList # LBN_SELCHANGE
+    $details=Read-ControlText $logDetails
+    if ($details -notmatch 'gui-log-' -or $details -notmatch 'PID：' -or $details -notmatch '当前记录未提供') { throw "Actual request details incomplete: $details" }
+    if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1218))) -ne '恢复实时') { throw 'Selecting request did not freeze history' }
+    Wait-LogButtons $false $true
+    Set-ControlText $logSearch 'GUI-LOG-'
+    if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne $rowCount) { throw 'Case-insensitive host search changed matching row count' }
+    Set-ControlText $logSearch 'not-present-in-this-page.example'
+    if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 0) { throw 'Host search did not filter loaded page' }
+    if (![UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1211))) { throw 'Empty local filter prevented browsing older history' }
+    Save-Window 'logs-search-empty-history-accessible'
+    Set-ControlText $logSearch ''
+    Send-BoundedMessage $logFilter 0x14E ([IntPtr]2) ([IntPtr]::Zero) # CB_SETCURSEL local exemptions
+    Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
+    if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 0) { throw 'Action filtering did not exclude blocked fixture requests' }
+    Send-BoundedMessage $logFilter 0x14E ([IntPtr]::Zero) ([IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
+    Send-BoundedMessage $window 0x111 ([IntPtr]1217) ([IntPtr]::Zero)
+    if ([UiReviewNative]::IsWindowVisible($logSearch)) { throw 'Log filters overlap independent application view' }
+    Save-Window 'logs-applications-view'
+    Send-BoundedMessage $window 0x111 ([IntPtr]1217) ([IntPtr]::Zero)
+    if (![UiReviewNative]::IsWindowVisible($logSearch)) { throw 'Returning to request history did not restore filters' }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1218) ([IntPtr]::Zero)
+    Wait-LogButtons $false $true
+    if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1218))) -ne '暂停刷新') { throw 'Resume did not restore live first-page mode' }
+    # The list consumes its own scrolling; verify the real child-control path.
+    Send-BoundedMessage $logList 0x115 ([IntPtr]1) ([IntPtr]::Zero) # WM_VSCROLL / SB_LINEDOWN
+    if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1218))) -ne '恢复实时') { throw 'Native log scrolling did not pin history' }
+    Wait-LogButtons $false $true
+    Send-BoundedMessage $window 0x111 ([IntPtr]1218) ([IntPtr]::Zero)
+    Wait-LogButtons $false $true
+    Save-Window 'logs-full-page-controls'
     Send-BoundedMessage $window 0x111 ([IntPtr]1211) ([IntPtr]::Zero)
     Wait-LogButtons $true $true
     Save-Window 'logs-history-older'
@@ -186,6 +225,32 @@ try {
     Save-Window 'logs-refreshed-empty'
 } finally { $http.Dispose(); $handler.Dispose() }
 Set-Page 2; Save-Window 'settings-light'
+if ($ResourceDirectory) {
+    if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Policy save fixture requires disposable GitHub runner' }
+    $policyPath=Join-Path $ResourceDirectory 'block_config.json'
+    $policyButton=[UiReviewNative]::GetDlgItem($window,1110)
+    # Seed through the actual command so the first save works even without a
+    # pre-existing policy file. Further failures must preserve this version.
+    Send-BoundedMessage $window 0x111 ([IntPtr]1110) ([IntPtr]::Zero)
+    if (!(Test-Path -LiteralPath $policyPath)) { throw 'Actual policy command did not create configuration' }
+    $policyBefore=[IO.File]::ReadAllText($policyPath)
+    $captionBefore=Read-ControlText $policyButton
+    $policyReader=[IO.File]::Open($policyPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        Send-BoundedMessage $window 0x111 ([IntPtr]1110) ([IntPtr]::Zero)
+        if ([IO.File]::ReadAllText($policyPath) -ne $policyBefore -or (Read-ControlText $policyButton) -ne $captionBefore) {
+            throw 'Failed policy save changed committed configuration or button state'
+        }
+        Save-Window 'settings-policy-save-failed'
+    } finally { $policyReader.Dispose() }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1110) ([IntPtr]::Zero)
+    if ([IO.File]::ReadAllText($policyPath) -eq $policyBefore -or (Read-ControlText $policyButton) -eq $captionBefore) {
+        throw 'Policy save retry did not commit file and UI together'
+    }
+    $policyDocument=[IO.File]::ReadAllText($policyPath) | ConvertFrom-Json
+    if ($policyDocument.mode_images -notin @(0,1,2,3)) { throw 'Policy command produced an invalid mode' }
+    Write-Output 'Actual policy button: locked replacement retained file and caption; retry committed complete JSON'
+}
 $ipControl=[UiReviewNative]::GetDlgItem($window,1190)
 $ipv6Control=[UiReviewNative]::GetDlgItem($window,1196)
 if ($ipv6Control -eq [IntPtr]::Zero -or ![UiReviewNative]::GetDlgItem($window,1197)) { throw 'Independent IPv6/startup creation options missing' }
@@ -267,7 +332,7 @@ Set-ControlText $ipv6Control '::1'
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch 'ZIP') { throw 'ZIP update preference not visible' }
 Send-BoundedMessage $window 0x111 ([IntPtr]1134) ([IntPtr]::Zero)
-if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch '自动') { throw 'ZIP update preference cannot be restored' }
+if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1134))) -notmatch '安装器优先') { throw 'ZIP update preference cannot be restored' }
 $channelButton=[UiReviewNative]::GetDlgItem($window,1300)
 if (!$channelButton -or ![UiReviewNative]::IsWindowVisible($channelButton)) { throw 'Preview channel button missing' }
 Send-BoundedMessage $channelButton 0xF5 ([IntPtr]::Zero) ([IntPtr]::Zero)
@@ -275,6 +340,12 @@ if ((Read-ControlText $channelButton) -notmatch '含预览') { throw 'Actual pre
 if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1203))) -ne 'IPv4' -or (Read-ControlText ([UiReviewNative]::GetDlgItem($window,1204))) -ne 'IPv6') { throw 'Channel action replaced address labels' }
 if ((Get-Content (Join-Path (Split-Path $guiProcess.Path) 'webserver.ini') -Raw) -notmatch 'include_preview=1') { throw 'Preview channel was not persisted' }
 Save-Window 'settings-preview-update-channel'
+$autoUpdateButton=[UiReviewNative]::GetDlgItem($window,1302)
+if (!$autoUpdateButton -or (Read-ControlText $autoUpdateButton) -notmatch '关闭') { throw 'Disposable UI fixture must start with automatic updating disabled' }
+Send-BoundedMessage $autoUpdateButton 0xF5 ([IntPtr]::Zero) ([IntPtr]::Zero)
+if ((Read-ControlText $autoUpdateButton) -notmatch '开启' -or (Get-Content (Join-Path (Split-Path $guiProcess.Path) 'webserver.ini') -Raw) -notmatch 'automatic_update=1') { throw 'Automatic update preference did not persist on' }
+Send-BoundedMessage $autoUpdateButton 0xF5 ([IntPtr]::Zero) ([IntPtr]::Zero)
+if ((Read-ControlText $autoUpdateButton) -notmatch '关闭') { throw 'Automatic update preference cannot be restored off' }
 Send-BoundedMessage $channelButton 0xF5 ([IntPtr]::Zero) ([IntPtr]::Zero)
 if ((Read-ControlText $channelButton) -notmatch '稳定版') { throw 'Stable update channel cannot be restored' }
 Save-Window 'settings-listener-feedback'
@@ -350,12 +421,36 @@ if ($ResourceDirectory) {
     [void][UiReviewNative]::SendMessage($list,0x186,[IntPtr]$count,[IntPtr]::Zero)
     Send-BoundedMessage $window 0x111 ([IntPtr](65536+1141)) $list
     $selected = [UiReviewNative]::GetDlgItem($window,1146)
-    if ((Read-ControlText $selected) -ne $candidate) { throw 'Selected source does not expose its complete address' }
-    $listBounds=[UiReviewNative+Rect]::new()
-    [void][UiReviewNative]::GetClientRect($list,[ref]$listBounds)
-    $extent=[UiReviewNative]::SendMessage($list,0x193,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
-    if ($extent -le $listBounds.Right) { throw 'Long source rows must allow horizontal scrolling' }
-    Save-Window 'subscriptions-long-source'
+    if ((Read-ControlText $selected) -ne 'https://example.test/extra') { throw 'Selected source exposed query parameters by default' }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1152) ([IntPtr]::Zero)
+    if ((Read-ControlText $selected) -ne $candidate) { throw 'Explicit full address action lost original URL' }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1152) ([IntPtr]::Zero)
+    if ((Read-ControlText $selected).Contains('inspection=')) { throw 'Address could not be hidden again' }
+    Save-Window 'subscriptions-readable-source'
+
+    $nameInput=[UiReviewNative]::GetDlgItem($window,1149)
+    $sourceBeforeRename=[IO.File]::ReadAllText($sourcePath)
+    $ruleBeforeRename=(Get-FileHash (Join-Path $ResourceDirectory 'subscriptions.txt') -Algorithm SHA256).Hash
+    Set-ControlText $nameInput 'My local rules'
+    $readerLock=[IO.File]::Open($sourcePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        Send-BoundedMessage $window 0x111 ([IntPtr]1150) ([IntPtr]::Zero)
+        if ((Read-ControlText $nameInput) -ne 'My local rules' -or [IO.File]::ReadAllText($sourcePath) -ne $sourceBeforeRename) {
+            throw 'Failed rename lost draft or changed source file'
+        }
+        Save-Window 'subscriptions-rename-failed'
+    } finally { $readerLock.Dispose() }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1150) ([IntPtr]::Zero)
+    if (![IO.File]::ReadAllText($sourcePath).Contains("# name: My local rules`n$candidate")) { throw 'Local name was not committed beside unchanged URL' }
+    Set-Page 0; Set-Page 4
+    if ((Read-ControlText $nameInput) -ne 'My local rules') { throw 'Navigating reset the committed name' }
+    if ((Get-FileHash (Join-Path $ResourceDirectory 'subscriptions.txt') -Algorithm SHA256).Hash -ne $ruleBeforeRename) { throw 'Rename changed imported rules' }
+    Save-Window 'subscriptions-renamed'
+    Set-ControlText $nameInput 'raw'
+    Send-BoundedMessage $window 0x111 ([IntPtr]1150) ([IntPtr]::Zero)
+    if ((Read-ControlText $nameInput) -ne 'raw') { throw 'Explicit raw custom name was overwritten' }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1151) ([IntPtr]::Zero)
+    if ((Read-ControlText $nameInput) -ne '' -or [IO.File]::ReadAllText($sourcePath).Contains('# name: raw')) { throw 'Restore automatic name did not clear local name' }
 
     $committedSources = [IO.File]::ReadAllText($sourcePath)
     $rulePath = Join-Path $ResourceDirectory 'subscriptions.txt'

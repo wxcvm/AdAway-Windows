@@ -44,7 +44,9 @@ int main(void) {
     json_apps("{\"other\":[{\"uid\":0}]}",&snapshot);
     CHECK(snapshot.app_count==0);
     json_apps("{\"apps\":[{\"uid\":17,\"requests\":9223372036854775807}]}",&snapshot);
-    CHECK(snapshot.app_count==1 && snapshot.apps[0].requests==LLONG_MAX && wcscmp(snapshot.apps[0].name,L"id 17")==0);
+    CHECK(snapshot.app_count==1 && snapshot.apps[0].uid==17 && snapshot.apps[0].requests==LLONG_MAX && wcscmp(snapshot.apps[0].name,L"PID 17")==0);
+    json_apps("{\"apps\":[{\"requests\":1}]}",&snapshot);
+    CHECK(snapshot.app_count==1 && snapshot.apps[0].uid==-1 && wcscmp(snapshot.apps[0].name,L"未归属进程")==0);
     puts("PASS: actual GUI app decoder preserves full rows, nested hosts, counters, flags, order and array boundaries");
     return 0;
 }

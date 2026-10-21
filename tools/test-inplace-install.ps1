@@ -6,7 +6,7 @@ $resources=Join-Path $base 'resources'
 New-Item -ItemType Directory -Force -Path $resources | Out-Null
 $ini=Join-Path $base 'webserver.ini'
 $marker=Join-Path $resources 'upgrade-user-data.txt'
-Set-Content $ini "http_port=19580`nhttps_port=19543`nstats_port=19687`nbind_ip=127.0.0.2`nupdate_mode=portable" -Encoding ascii
+Set-Content $ini "http_port=19580`nhttps_port=19543`nstats_port=19687`nbind_ip=127.0.0.2`nupdate_mode=portable`n[settings]`nautomatic_update=0" -Encoding ascii
 Set-Content $marker 'retain-user-data' -Encoding ascii
 $before=(Get-FileHash $ini -Algorithm SHA256).Hash
 $installer=(Resolve-Path 'dist-installer/adblock-webserver-setup.exe').Path

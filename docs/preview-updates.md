@@ -1,10 +1,18 @@
 # Preview updates
 
 On the Settings page choose **渠道：含预览版**, then **检查更新**. The separate
-**更新：自动 / 更新：ZIP** control chooses how the same update is applied. Automatic
-mode prefers the installer and retains its verified ZIP fallback. ZIP mode updates
+**包：安装器优先 / 包：ZIP 覆盖** control chooses how the same update is applied. The
+installer preference retains its verified ZIP fallback. ZIP mode updates
 the running folder directly. The chosen channel is persisted as
 `[settings] include_preview=1` in `webserver.ini` beside the executable.
+
+**自动更新：开启 / 关闭** independently controls whether a newly discovered update
+is downloaded, checked and applied without another application confirmation.
+When enabled, discovery starts one minute after launch and repeats every six
+hours. Background no-change/failure results remain quiet; manual checks retain
+their feedback. Windows administrator confirmation may still be required.
+The path-scoped portable helper shipped in 1.83 is used by 1.83 and later;
+an upgrade initiated from 1.82 still uses that old client's update implementation.
 
 The default channel reads only `win11-latest/windows-manifest.json`. Opt-in checks
 also read `win11-preview/windows-manifest.json` and compare both results. A stable
