@@ -379,7 +379,7 @@ for ($cycle=0;$cycle -lt 2;$cycle++) {
         $probeText=Read-ControlText ([UiReviewNative]::GetDlgItem($transport,2103))
     } until ($probeText -match '清理：' -or (Get-Date) -gt $probeDeadline)
     foreach ($protocol in @('UDP/IPv4','UDP/IPv6','TCP/IPv4','TCP/IPv6')) {
-        if ($probeText -notmatch "$protocol：转发回执通过") { throw "Actual GUI $protocol failed: $probeText" }
+        if ($probeText -notmatch "${protocol}：转发回执通过") { throw "Actual GUI $protocol failed: $probeText" }
     }
     if ($probeText -notmatch '本次资源均已释放' -or $probeText -notmatch '已关闭 6/6') { throw "TCP resource cleanup missing: $probeText" }
 }
