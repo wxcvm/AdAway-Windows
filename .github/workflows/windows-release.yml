@@ -368,6 +368,9 @@ jobs:
           gcc -std=c11 -O2 -DMG_TLS=0 -Ijni -c jni/mongoose/mongoose.c -o dashboard_mongoose.o
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni dashboard_response_test.c dashboard_mongoose.o -o dashboard_response_test.exe -lws2_32 -lbcrypt
           ./dashboard_response_test.exe
+          python3 tools/dashboard-apps-fixture.py .build-core/dashboard-apps-test.c
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni .build-core/dashboard-apps-test.c dashboard_mongoose.o -o dashboard-apps-test.exe -lws2_32 -lbcrypt
+          ./dashboard-apps-test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni query_log_page_test.c dashboard_mongoose.o -o query_log_page_test.exe -lws2_32 -lbcrypt
           ./query_log_page_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni query_log_navigation_test.c dashboard_mongoose.o -o query_log_navigation_test.exe -lws2_32 -lbcrypt

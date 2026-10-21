@@ -47,6 +47,10 @@ and sanitizes app-host display metadata through the existing helper. The
 shared fixture compiles the actual Android/Windows rendering blocks and checks
 130 population/metadata scenarios with real Mongoose. Zero/failed clock reads
 are skipped before altering the shared log ring, preserving valid history.
+The app table uses Mongoose to iterate complete top-level app objects; nested
+host counters no longer become phantom `id 0` applications or hide the final
+pinning flag. The actual GUI decoder is compiled in a separate regression
+fixture covering nested hosts, counters, flags, ordering and array boundaries.
 
 DeepSeek Flash Max drafted the page parser and its tests with complete relevant
 public files and the provider/catalog default output cap. The draft passed its

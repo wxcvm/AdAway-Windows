@@ -432,28 +432,21 @@ static void json_listeners(const char *body, struct snapshot *sn) {
    additive in the server's JSON, so an older server that does not emit them
    simply leaves the page empty instead of failing. */
 static void json_apps(const char *body, struct snapshot *sn) {
-    const char *p = strstr(body, "\"apps\":[");
+    struct mg_str array = mg_json_get_tok(mg_str(body), "$.apps"), row_key, row;
+    size_t offset = 0;
     sn->app_count = 0;
-    if (p == NULL) return;
-    p = strchr(p, '[');
-    if (p == NULL) return;
-    p++;
-    /* AUDIT: the loop used to look only for the next '{' without ever checking
-       that it still sits inside THIS array, so an empty "apps":[] made it read
-       the next array's objects and invent an "id 0" process row. Bound it. */
-    const char *arr_end = json_array_end(p);
-    while (sn->app_count < GUI_APP_MAX) {
-        const char *open = strchr(p, '{');
-        const char *close = open ? strchr(open, '}') : NULL;
-        if (open != NULL && arr_end != NULL && open > arr_end) break;
-        char item[512];
+    if (!array.len || array.buf[0] != '[') return;
+    /* Iterate complete top-level app objects. Nested hosts[] objects must not
+       become phantom zero-valued applications or hide the trailing fields. */
+    while (sn->app_count < GUI_APP_MAX &&
+           (offset = mg_json_next(array, offset, &row_key, &row)) != 0) {
+        char item[4096]; /* Existing complete apps-array byte bound. */
         size_t il;
         struct app_row *a;
         const char *q, *e;
-        if (open == NULL || close == NULL) break;
-        il = (size_t)(close - open) + 1;
-        if (il >= sizeof(item)) il = sizeof(item) - 1;
-        memcpy(item, open, il);
+        if (!row.len || row.buf[0] != '{' || row.len >= sizeof(item)) continue;
+        il = row.len;
+        memcpy(item, row.buf, il);
         item[il] = '\0';
         a = &sn->apps[sn->app_count];
         memset(a, 0, sizeof(*a));
@@ -475,7 +468,6 @@ static void json_apps(const char *body, struct snapshot *sn) {
         if (a->name[0] == 0)
             swprintf(a->name, 64, L"id %d", (int) json_num(item, "uid"));
         sn->app_count++;
-        p = close + 1;
     }
     /* Busiest first: the server keeps insertion order, the dashboard wants a
        ranking (12 rows max, so an insertion sort is plenty). */
