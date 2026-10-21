@@ -900,7 +900,7 @@ jobs:
             }
           }
           Copy-Item -LiteralPath docs/preview-installation.md -Destination dist/README.txt -Force
-          Copy-Item -LiteralPath docs/m1-rule-loader-validation.md -Destination dist/IMPLEMENTATION-STATUS.md -Force
+          Get-Content -LiteralPath docs/m1-rule-loader-validation.md,docs/tcp-backend.md | Set-Content -LiteralPath dist/IMPLEMENTATION-STATUS.md -Encoding utf8
 
       - name: Package zip
         shell: bash
