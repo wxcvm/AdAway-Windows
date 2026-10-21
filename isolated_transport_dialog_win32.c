@@ -2,29 +2,38 @@
 #define UNICODE
 #define _UNICODE
 #include "isolated_transport_win32.h"
+#include "isolated_tcp_win32.h"
 #include <stdio.h>
 #include <string.h>
 #define IT_RUN 2101
 #define IT_STOP 2102
 #define IT_REPORT 2103
 #define IT_DONE (WM_APP+95)
-struct it_dialog { HWND window; HFONT font; HANDLE cancel,thread; bool running,closing; wchar_t report[2048]; };
+struct it_dialog { HWND window; HFONT font; HANDLE cancel,thread; bool running,closing; wchar_t report[4096]; };
 static DWORD WINAPI it_dialog_work(void *opaque) {
-    struct it_dialog *state=opaque; struct it_result results[2];
+    struct it_dialog *state=opaque; struct it_result results[4];
     for (unsigned i=0;i<2;i++) {
-        struct it_options options={i?6:4,900,state->cancel,NULL,IT_NORMAL};
-        isolated_transport_run(&options,&results[i]);
+        struct it_options udp={i?6:4,900,state->cancel,NULL,IT_NORMAL};
+        struct tcp_options tcp={i?6:4,1200,state->cancel,NULL,TCP_NORMAL};
+        isolated_transport_run(&udp,&results[i]);
+        isolated_tcp_run(&tcp,&results[i+2]);
     }
-    swprintf(state->report,2048,
-        L"IPv4：%ls · %u ms · 已关闭 %u/%u 个套接字 · 阶段 %u / 错误 %u\r\n"
-        L"IPv6：%ls · %u ms · 已关闭 %u/%u 个套接字 · 阶段 %u / 错误 %u\r\n\r\n"
-        L"清理：%ls\r\n\r\n"
-        L"测试路径：本机 UDP 中的原始 IP 报文 → 严格报文校验 → 固定回环 UDP 端点 → 校验回执 → IP 回包。\r\n"
-        L"每次运行使用新的端点和随机请求标识；关闭任务先取消，再等待资源清理，可重新测试。\r\n\r\n"
-        L"结果只代表隔离数据链路。Windows TUN/WFP、系统路由、外部网络、TCP 与 QUIC 尚未通过此测试验证。没有修改系统网络、DNS、证书或 AdGuard。",
-        isolated_transport_status(results[0].status),results[0].elapsed_ms,results[0].sockets_closed,results[0].sockets_opened,results[0].stage,results[0].error,
-        isolated_transport_status(results[1].status),results[1].elapsed_ms,results[1].sockets_closed,results[1].sockets_opened,results[1].stage,results[1].error,
-        results[0].cleanup_ok && results[1].cleanup_ok?L"本次资源均已释放":L"失败，请保留本报告");
+    size_t at=0;bool clean=true;
+    for(unsigned i=0;i<4;i++) {
+        struct it_result *r=&results[i];clean=clean && r->cleanup_ok;
+        int written=swprintf(state->report+at,4096-at,
+            L"%ls/IPv%u：%ls · %u ms · 已关闭 %u/%u 个套接字 · 阶段 %u / 错误 %u\r\n",
+            i<2?L"UDP":L"TCP",r->family,isolated_transport_status(r->status),r->elapsed_ms,r->sockets_closed,r->sockets_opened,r->stage,r->error);
+        if(written<0) { state->report[0]=0;break; }
+        at+=(size_t)written;
+    }
+    swprintf(state->report+at,4096-at,
+        L"\r\n清理：%ls\r\n\r\n"
+        L"UDP：本机原始 IP 报文 → 严格校验 → 固定回环端点 → 校验回包。\r\n"
+        L"TCP：临时回环端点 → 随机凭据认证 → 固定目标 CONNECT → 分片读写与半关闭 → 校验回复。\r\n"
+        L"每次使用新的端点与请求标识；停止后释放资源，可重新测试。\r\n\r\n"
+        L"TCP 结果仅验证后端，尚未接入 TUN 中的 TCP 报文。Windows TUN/WFP、系统路由、外部网络、TLS 与 QUIC 尚未验证。没有修改系统网络、DNS、证书或 AdGuard。",
+        clean?L"本次资源均已释放":L"失败，请保留本报告");
     PostMessageW(state->window,IT_DONE,0,0); return 0;
 }
 static void it_layout(HWND window) {
@@ -43,8 +52,8 @@ static LRESULT CALLBACK it_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
         state=((CREATESTRUCTW *)lp)->lpCreateParams;state->window=window;SetWindowLongPtrW(window,GWLP_USERDATA,(LONG_PTR)state);
         state->font=CreateFontW(-MulDiv(15,(int)GetDpiForWindow(window),96),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,0,0,CLEARTYPE_QUALITY,0,L"Microsoft YaHei UI");
         const struct { int id;const wchar_t *kind,*text;DWORD style; } controls[]={
-            {2110,L"STATIC",L"验证 IPv4 / IPv6 的隔离 UDP 转发与回包。测试仅在本机回环端点之间运行，不需要管理员权限，也不启用全机接管。点击开始后才会创建临时套接字。",SS_LEFT},
-            {IT_REPORT,L"EDIT",L"尚未运行。点击“测试双栈转发”后分别显示 IPv4、IPv6 和资源清理结果。",WS_BORDER|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL|WS_TABSTOP},
+            {2110,L"STATIC",L"验证 IPv4 / IPv6 的隔离 UDP 回包与 TCP 后端。测试仅在本机回环端点之间运行，不需要管理员权限，也不启用全机接管。点击开始后才会创建临时套接字。",SS_LEFT},
+            {IT_REPORT,L"EDIT",L"尚未运行。点击“测试双栈转发”后分别显示 UDP/TCP 的 IPv4、IPv6 和资源清理结果。",WS_BORDER|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL|WS_TABSTOP},
             {IT_RUN,L"BUTTON",L"测试双栈转发",BS_DEFPUSHBUTTON|WS_TABSTOP},
             {IT_STOP,L"BUTTON",L"停止测试",BS_PUSHBUTTON|WS_TABSTOP},
             {IDCANCEL,L"BUTTON",L"关闭",BS_PUSHBUTTON|WS_TABSTOP}
