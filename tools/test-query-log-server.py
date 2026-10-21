@@ -82,6 +82,15 @@ class Fixture:
                 length += len(chunk)
                 assert length < 192 * 1024, "Response exceeds actual desktop buffer"
                 chunks.append(chunk)
+                received = b"".join(chunks)
+                if b"\r\n\r\n" in received:
+                    head, payload = received.split(b"\r\n\r\n", 1)
+                    lengths = [int(line.split(b":", 1)[1].strip()) for line in head.split(b"\r\n")[1:]
+                               if line.lower().startswith(b"content-length:")]
+                    assert len(lengths) == 1, "Expected one native Content-Length"
+                    if len(payload) >= lengths[0]:
+                        assert len(payload) == lengths[0], "Surplus native response bytes"
+                        break
         raw = b"".join(chunks)
         head, payload = raw.split(b"\r\n\r\n", 1)
         return int(head.split(b" ", 2)[1]), payload, raw

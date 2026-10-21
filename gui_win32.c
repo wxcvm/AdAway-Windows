@@ -605,7 +605,9 @@ static int http_get_status(int port, const char *path, char *out, size_t outsz, 
             path);
         if (rl > 0 && send(s, req, rl, 0) == rl) {
             size_t got = 0;
+            ULONGLONG deadline = GetTickCount64() + 2000;
             while (got + 1 < outsz) {
+                if (GetTickCount64() >= deadline) break;
                 fd_set fds;
                 FD_ZERO(&fds); FD_SET(s, &fds);
                 struct timeval tv; tv.tv_sec = 1; tv.tv_usec = 0;
@@ -622,6 +624,10 @@ static int http_get_status(int port, const char *path, char *out, size_t outsz, 
                  */
                 if (n > room) n = room;
                 got += (size_t)n;
+                struct mg_http_message message;
+                if (mg_http_parse(out, got, &message) > 0 &&
+                    mg_http_get_header(&message, "Content-Length") != NULL &&
+                    message.message.len <= got) break;
             }
             /*
              * Clamp before terminating. The loop condition already keeps `got`
