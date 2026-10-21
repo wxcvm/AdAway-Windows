@@ -158,6 +158,10 @@ try {
         Save-Window 'logs-unexpected-buttons'
         throw "History buttons expected previous=$ExpectedPrevious next=$ExpectedNext; actual previous=$actualPrevious next=$actualNext"
     }
+    # The live GUI may still display a valid earlier head captured while the
+    # fixture was inserting. Refresh after all 650 replies before freezing that
+    # head; an earlier head can legitimately have only two byte-limited pages.
+    Send-BoundedMessage $window 0x111 ([IntPtr]1212) ([IntPtr]::Zero)
     Wait-LogButtons $false $true
     Save-Window 'logs-history-first'
     Send-BoundedMessage $window 0x111 ([IntPtr]1211) ([IntPtr]::Zero)
@@ -177,7 +181,7 @@ try {
     Wait-LogButtons $false $false
     Save-Window 'logs-expired-rows-retained'
     Send-BoundedMessage $window 0x111 ([IntPtr]1212) ([IntPtr]::Zero)
-    Start-Sleep -Seconds 1
+    Start-Sleep -Seconds 3
     Wait-LogButtons $false $false
     Save-Window 'logs-refreshed-empty'
 } finally { $http.Dispose(); $handler.Dispose() }
