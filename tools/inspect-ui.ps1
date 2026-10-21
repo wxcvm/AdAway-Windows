@@ -123,6 +123,68 @@ function Save-Window([string]$Name) {
 }
 Set-ClientSize 1032 678
 Set-Page 0; Save-Window 'overview-light'
+Set-Page 1
+foreach ($id in @(1210,1211,1212)) {
+    $button=[UiReviewNative]::GetDlgItem($window,$id)
+    if (!$button -or ![UiReviewNative]::IsWindowVisible($button)) { throw "History control missing: $id" }
+}
+$handler=[System.Net.Http.HttpClientHandler]::new()
+$handler.UseProxy=$false
+$handler.MaxConnectionsPerServer=16
+$http=[System.Net.Http.HttpClient]::new($handler)
+try {
+    $tasks=[System.Collections.Generic.List[System.Threading.Tasks.Task[System.Net.Http.HttpResponseMessage]]]::new()
+    $messages=[System.Collections.Generic.List[System.Net.Http.HttpRequestMessage]]::new()
+    for ($i=1;$i -le 650;$i++) {
+        $request=[System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get,'http://127.0.0.1:18083/gui-query-log.gif')
+        $request.Headers.Host="gui-log-$i.$('a'*50).$('b'*50).$('c'*40).example.test"
+        $messages.Add($request)
+        $tasks.Add($http.SendAsync($request))
+    }
+    $responses=[System.Threading.Tasks.Task]::WhenAll($tasks.ToArray()).GetAwaiter().GetResult()
+    foreach($response in $responses) {
+        if (!$response.IsSuccessStatusCode) { throw 'GUI log fixture request failed' }
+        $response.Dispose()
+    }
+    foreach($message in $messages) { $message.Dispose() }
+    function Wait-LogButtons([bool]$ExpectedPrevious,[bool]$ExpectedNext) {
+        $deadline=(Get-Date).AddSeconds(15)
+        do {
+            $actualPrevious=[UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1210))
+            $actualNext=[UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1211))
+            if ($actualPrevious -eq $ExpectedPrevious -and $actualNext -eq $ExpectedNext) { return }
+            Start-Sleep -Milliseconds 100
+        } while((Get-Date) -lt $deadline)
+        Save-Window 'logs-unexpected-buttons'
+        throw "History buttons expected previous=$ExpectedPrevious next=$ExpectedNext; actual previous=$actualPrevious next=$actualNext"
+    }
+    # The live GUI may still display a valid earlier head captured while the
+    # fixture was inserting. Refresh after all 650 replies before freezing that
+    # head; an earlier head can legitimately have only two byte-limited pages.
+    Send-BoundedMessage $window 0x111 ([IntPtr]1212) ([IntPtr]::Zero)
+    Wait-LogButtons $false $true
+    Save-Window 'logs-history-first'
+    Send-BoundedMessage $window 0x111 ([IntPtr]1211) ([IntPtr]::Zero)
+    Wait-LogButtons $true $true
+    Save-Window 'logs-history-older'
+    Send-BoundedMessage $window 0x111 ([IntPtr]1210) ([IntPtr]::Zero)
+    Wait-LogButtons $false $true
+    Send-BoundedMessage $window 0x111 ([IntPtr]1211) ([IntPtr]::Zero)
+    Wait-LogButtons $true $true
+    $token=[IO.File]::ReadAllText((Join-Path $ResourceDirectory 'control_token.txt')).Trim()
+    $clear=[System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post,'http://127.0.0.1:18083/control')
+    [void]$clear.Headers.TryAddWithoutValidation('X-ADBlock-Token',$token)
+    $clear.Content=[System.Net.Http.StringContent]::new('cmd=clear_query_log',[Text.Encoding]::ASCII,'application/x-www-form-urlencoded')
+    $cleared=$http.SendAsync($clear).GetAwaiter().GetResult()
+    try { if (!$cleared.IsSuccessStatusCode) { throw 'Unable to expire fixture history' } }
+    finally { $cleared.Dispose(); $clear.Dispose(); $token=$null }
+    Wait-LogButtons $false $false
+    Save-Window 'logs-expired-rows-retained'
+    Send-BoundedMessage $window 0x111 ([IntPtr]1212) ([IntPtr]::Zero)
+    Start-Sleep -Seconds 3
+    Wait-LogButtons $false $false
+    Save-Window 'logs-refreshed-empty'
+} finally { $http.Dispose(); $handler.Dispose() }
 Set-Page 2; Save-Window 'settings-light'
 $ipControl=[UiReviewNative]::GetDlgItem($window,1190)
 $ipv6Control=[UiReviewNative]::GetDlgItem($window,1196)

@@ -51,6 +51,7 @@
 #include "listener_arrival_dialog_win32.h"
 #include "control_http_result.h"
 #include "dashboard_response.h"
+#include "query_log_navigation.h"
 #include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
@@ -132,14 +133,9 @@ static void utf8_to_wide(const char *src, wchar_t *dst, size_t n) {
 #define LISTENER_MAX_GUI 14
 /* Rows shown on the "应用 / 日志" page. */
 #define GUI_APP_MAX 12
-/* Rows kept from /internal-stats. The server sends up to 400 newest entries
-   (QLOG_RENDER_MAX); only 11 of them are visible at a time and the card
-   scrolls with the mouse wheel. */
-/* 日志窗口保留的行数。/internal-stats 只带最新 400 条，日志窗口现在改从
-   /internal-qlog 取第一页（服务端保留最近 10000 条），所以这里放宽到 1000 行：
-   可翻历史更长，同时 GUI 侧内存仍然有界（1000 × sizeof(qlog_row) ≈ 280 KB）。 */
+/* Keep the existing bounded GUI allocation; each real history page has at
+ * most 300 rows. Windows retains 4096 entries, the stats summary at most 400. */
 #define GUI_QLOG_MAX 1000
-/* /internal-qlog 单页响应的接收缓冲（1000 条约 120 KB，留足余量）。 */
 #define QLOG_PULL_BUF (192 * 1024)
 /* Top blocked hosts shown on the ranking page. The server sends at most 20. */
 #define GUI_TOP_MAX 20
@@ -180,7 +176,7 @@ struct qlog_row {
     int action;              /* 0 = proxied, 1 = blocked, 2 = allowed */
     int type;                /* blocked policy type index, -1 = unknown */
     int mode;                /* 0 = placeholder, 1 = 204, 2 = passthrough */
-    wchar_t host[128];
+    wchar_t host[192]; /* Every supported 191-byte UTF-8 log host fits in UTF-16. */
 };
 
 /* One entry of the server's "top_blocked" ranking (busiest first). */
@@ -206,7 +202,12 @@ struct snapshot {
     int hist_count;
     struct histogram daily[HIST_MAX];
     int daily_count;
-    int valid;
+    int valid; /* Live response, distinct from retained display data. */
+    int has_data;
+    time_t updated_at;
+    int qlog_ready, qlog_error; /* 1 read failure, 2 expired cursor, 3 pending */
+    uint64_t qlog_revision;
+    struct qln_page qlog_page;
     /* v1.11 listener diagnostics (absent -> zeros) */
     int bind_ok;
     int stats_port;
@@ -256,6 +257,9 @@ static int  g_poll_started;
 static volatile int g_poll_stop;
 static pthread_t g_poll_thread;
 static pthread_mutex_t g_snap_mutex;
+static struct qln_state g_log_nav;
+static HANDLE g_poll_wake;
+
 static struct snapshot g_snap_next;
 static struct snapshot *g_sn;
 static long long g_cert_days;
@@ -428,28 +432,21 @@ static void json_listeners(const char *body, struct snapshot *sn) {
    additive in the server's JSON, so an older server that does not emit them
    simply leaves the page empty instead of failing. */
 static void json_apps(const char *body, struct snapshot *sn) {
-    const char *p = strstr(body, "\"apps\":[");
+    struct mg_str array = mg_json_get_tok(mg_str(body), "$.apps"), row_key, row;
+    size_t offset = 0;
     sn->app_count = 0;
-    if (p == NULL) return;
-    p = strchr(p, '[');
-    if (p == NULL) return;
-    p++;
-    /* AUDIT: the loop used to look only for the next '{' without ever checking
-       that it still sits inside THIS array, so an empty "apps":[] made it read
-       the next array's objects and invent an "id 0" process row. Bound it. */
-    const char *arr_end = json_array_end(p);
-    while (sn->app_count < GUI_APP_MAX) {
-        const char *open = strchr(p, '{');
-        const char *close = open ? strchr(open, '}') : NULL;
-        if (open != NULL && arr_end != NULL && open > arr_end) break;
-        char item[512];
+    if (!array.len || array.buf[0] != '[') return;
+    /* Iterate complete top-level app objects. Nested hosts[] objects must not
+       become phantom zero-valued applications or hide the trailing fields. */
+    while (sn->app_count < GUI_APP_MAX &&
+           (offset = mg_json_next(array, offset, &row_key, &row)) != 0) {
+        char item[4096]; /* Existing complete apps-array byte bound. */
         size_t il;
         struct app_row *a;
         const char *q, *e;
-        if (open == NULL || close == NULL) break;
-        il = (size_t)(close - open) + 1;
-        if (il >= sizeof(item)) il = sizeof(item) - 1;
-        memcpy(item, open, il);
+        if (!row.len || row.buf[0] != '{' || row.len >= sizeof(item)) continue;
+        il = row.len;
+        memcpy(item, row.buf, il);
         item[il] = '\0';
         a = &sn->apps[sn->app_count];
         memset(a, 0, sizeof(*a));
@@ -471,7 +468,6 @@ static void json_apps(const char *body, struct snapshot *sn) {
         if (a->name[0] == 0)
             swprintf(a->name, 64, L"id %d", (int) json_num(item, "uid"));
         sn->app_count++;
-        p = close + 1;
     }
     /* Busiest first: the server keeps insertion order, the dashboard wants a
        ranking (12 rows max, so an insertion sort is plenty). */
@@ -578,11 +574,10 @@ static void json_qlog(const char *body, struct snapshot *sn) {
 }
 
 /* 分页接口的响应：{"offset":…,"limit":…,"total":…,"entries":[…]} */
-static void json_qlog_entries(const char *body, struct snapshot *sn) {
-    json_qlog_key(body, sn, "\"entries\":[");
-}
 
-static int http_get(int port, const char *path, char *out, size_t outsz) {
+
+static int http_get_status(int port, const char *path, char *out, size_t outsz, int *status) {
+    if (status) *status = 0;
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == INVALID_SOCKET) return -1;
     if (out == NULL || outsz == 0) {   /* nothing could be returned anyway */
@@ -602,7 +597,9 @@ static int http_get(int port, const char *path, char *out, size_t outsz) {
             path);
         if (rl > 0 && send(s, req, rl, 0) == rl) {
             size_t got = 0;
+            ULONGLONG deadline = GetTickCount64() + 2000;
             while (got + 1 < outsz) {
+                if (GetTickCount64() >= deadline) break;
                 fd_set fds;
                 FD_ZERO(&fds); FD_SET(s, &fds);
                 struct timeval tv; tv.tv_sec = 1; tv.tv_usec = 0;
@@ -619,6 +616,10 @@ static int http_get(int port, const char *path, char *out, size_t outsz) {
                  */
                 if (n > room) n = room;
                 got += (size_t)n;
+                struct mg_http_message message;
+                if (mg_http_parse(out, got, &message) > 0 &&
+                    mg_http_get_header(&message, "Content-Length") != NULL &&
+                    message.message.len <= got) break;
             }
             /*
              * Clamp before terminating. The loop condition already keeps `got`
@@ -630,6 +631,7 @@ static int http_get(int port, const char *path, char *out, size_t outsz) {
              */
             if (got >= outsz) got = outsz - 1;
             out[got] = '\0';
+            if (status) *status = control_http_status(out);
             struct mg_str body;
             if (dashboard_response_body(out, got, &body)) {
                 memmove(out, body.buf, body.len);
@@ -641,6 +643,10 @@ static int http_get(int port, const char *path, char *out, size_t outsz) {
     closesocket(s);
     return rc;
 }
+static int http_get(int port, const char *path, char *out, size_t capacity) {
+    return http_get_status(port, path, out, capacity, NULL);
+}
+
 
 /*
  * True when the URL starts with "http" or "https" followed by "://"
@@ -705,21 +711,9 @@ static void snapshot_fetch(int port, struct snapshot *sn) {
     json_apps(buf, sn);
     json_top(buf, sn);
     json_qlog(buf, sn);
-    /*
-     * 日志窗口改走 /internal-qlog：/internal-stats 只带最新 400 条，而服务端保留最近
-     * 10000 条。这里取第一页（offset=0，limit 就是窗口上限），可翻历史更长，且 GUI 侧
-     * 内存始终有界；请求失败（例如旧版服务器没有该接口）就沿用上面那 400 条。
-     */
-    {
-        static char qbuf[QLOG_PULL_BUF];
-        char qpath[96];
-        snprintf(qpath, sizeof(qpath), "/internal-qlog?offset=0&limit=%d", GUI_QLOG_MAX);
-        if (http_get(port, qpath, qbuf, sizeof(qbuf)) == 0 &&
-            dashboard_qlog_valid(mg_str(qbuf))) {
-            json_qlog_entries(qbuf, sn);
-        }
-    }
     sn->valid = 1;
+    sn->has_data = 1;
+    sn->updated_at = time(NULL);
 }
 
 /* Try the loopback management port first (it exists exactly so statistics
@@ -866,12 +860,76 @@ static void cert_refresh(bool force) {
     g_cert_checked_tick = now;
 }
 
+
+/* The worker owns all HTTP reads. Successful stats and history pages publish
+ * together; old request revisions cannot replace a newer navigation choice. */
+static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *request,
+                               uint64_t revision) {
+    static char buffer[QLOG_PULL_BUF];
+    static struct qlp_page page;
+    char path[200];
+    int status = 0;
+    int length = snprintf(path, sizeof(path), "/internal-qlog?offset=%d&limit=300%s%s%s%s",
+        (int)request->offset, request->generation[0] ? "&generation=" : "", request->generation,
+        request->generation[0] ? "&anchor=" : "", request->anchor);
+    sn->qlog_error = 1;
+    if (length < 0 || (size_t)length >= sizeof(path)) return;
+    if (http_get_status(g_active_port, path, buffer, sizeof(buffer), &status) != 0) {
+        if (status == 409) sn->qlog_error = 2;
+        return;
+    }
+    if (!qlp_parse(mg_str(buffer), request, &page)) return;
+    sn->qlog_count = (int)page.returned;
+    memset(sn->qlog, 0, sizeof(sn->qlog));
+    for (int i = 0; i < sn->qlog_count; i++) {
+        sn->qlog[i].ts = page.rows[i].timestamp <= LLONG_MAX ? (long long)page.rows[i].timestamp : 0;
+        sn->qlog[i].action = page.rows[i].action;
+        sn->qlog[i].type = page.rows[i].type;
+        sn->qlog[i].mode = page.rows[i].mode;
+        utf8_to_wide(page.rows[i].host, sn->qlog[i].host,
+                     sizeof(sn->qlog[i].host) / sizeof(sn->qlog[i].host[0]));
+    }
+    sn->qlog_page.offset = (int)page.offset;
+    sn->qlog_page.next_offset = (int)page.next_offset;
+    sn->qlog_page.total = (int)page.total;
+    sn->qlog_page.has_more = page.has_more;
+    memcpy(sn->qlog_page.generation, page.generation, sizeof(page.generation));
+    memcpy(sn->qlog_page.anchor, page.anchor, sizeof(page.anchor));
+    sn->qlog_ready = 1;
+    sn->qlog_revision = revision;
+    sn->qlog_error = 0;
+}
+
+static void snapshot_copy_log(struct snapshot *to, const struct snapshot *from) {
+    to->qlog_count = from->qlog_count;
+    memcpy(to->qlog, from->qlog, sizeof(to->qlog));
+    to->qlog_ready = from->qlog_ready;
+    to->qlog_page = from->qlog_page;
+    to->qlog_revision = from->qlog_revision;
+}
+
 static void *stats_poll_thread(void *arg) {
     HWND hwnd = (HWND)arg;
     while (!g_poll_stop) {
         struct snapshot tmp;
-        snapshot_fetch_any(&tmp);
+        struct qlp_request request;
+        uint64_t revision;
         pthread_mutex_lock(&g_snap_mutex);
+        request = g_log_nav.request;
+        revision = g_log_nav.revision;
+        pthread_mutex_unlock(&g_snap_mutex);
+        snapshot_fetch_any(&tmp);
+        if (tmp.valid) snapshot_read_page(&tmp, &request, revision);
+        pthread_mutex_lock(&g_snap_mutex);
+        if (!tmp.valid && g_snap_next.has_data) {
+            tmp = g_snap_next;
+            tmp.valid = 0;
+            tmp.qlog_error = 1;
+        } else if (!tmp.qlog_ready || revision != g_log_nav.revision) {
+            int error = revision != g_log_nav.revision ? 3 : tmp.qlog_error;
+            if (g_snap_next.qlog_ready) snapshot_copy_log(&tmp, &g_snap_next);
+            tmp.qlog_error = error;
+        }
         /* Compare every rendered field, excluding the uptime clock. A hand
          * picked arithmetic signature missed TLS failures and log changes and
          * could overflow signed counters. Both snapshots have zeroed padding. */
@@ -890,11 +948,15 @@ static void *stats_poll_thread(void *arg) {
         }
         /* 2 s while the dashboard is on screen, 10 s while it lives in the
          * tray only: a hidden window needs no fresh charts. */
-        for (int i = 0; i < 20 && !g_poll_stop; i++) Sleep(g_ui_visible ? 100 : 500);
+        if (g_poll_wake) WaitForSingleObject(g_poll_wake, g_ui_visible ? 2000 : 10000);
+        else for (int i = 0; i < 20 && !g_poll_stop; i++) Sleep(g_ui_visible ? 100 : 500);
     }
     return NULL;
 }
 
+#define IDC_QLOG_PREVIOUS 1210
+#define IDC_QLOG_NEXT 1211
+#define IDC_QLOG_REFRESH 1212
 #define IDC_POL0      1110
 #define IDC_SUBRELOAD 1130
 #define IDC_POLDEF    1131   /* 恢复推荐默认 */
@@ -1647,8 +1709,9 @@ static int  g_cert_trusted_flag = 0;
 static int  g_cert_trust_state = 0;
 static DWORD g_cert_checked_tick = 0;
 static DWORD g_poll_last_post = 0;   /* keep-alive post (clock) */
-/* First visible row of the "最近请求" card. The server keeps up to 400 newest
-   entries (QLOG_RENDER_MAX) and only 11 fit into the card, so the card follows
+/* First visible row of the current bounded page; history navigation uses
+   the server cursor instead of pretending a 400-row summary is the full ring.
+   The card follows
    the mouse wheel instead of silently dropping everything older. */
 static int g_qlog_scroll = 0;
 
@@ -2033,7 +2096,16 @@ static void draw_statusbar(HDC hdc) {
 
     SetTextColor(hdc, g_pal.muted);
     RECT status_message = {S(16), S(660), S(980), S(680)};
-    DrawTextW(hdc, g_status, -1, &status_message,
+    wchar_t stale_message[4200];
+    const wchar_t *message = g_status;
+    if (g_sn && g_sn->has_data && !g_sn->valid) {
+        wchar_t last[64] = L"未知时间";
+        struct tm *observed = localtime(&g_sn->updated_at);
+        if (observed) wcsftime(last, 64, L"%m-%d %H:%M:%S", observed);
+        swprintf(stale_message, 4200, L"统计暂不可达，保留 %ls 的数据 · %ls", last, g_status);
+        message = stale_message;
+    }
+    DrawTextW(hdc, message, -1, &status_message,
               DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
 
     SelectObject(hdc, old);
@@ -2418,6 +2490,39 @@ static const struct ctl_desc g_sublayout[] = {
     { IDC_SUB_CANCEL, 808, 500, 194, 28, L"BUTTON", L"取消", BS_PUSHBUTTON },
 };
 #define CL_SUB ((int) (sizeof(g_sublayout) / sizeof(g_sublayout[0])))
+static const struct ctl_desc g_loglayout[] = {
+    { IDC_QLOG_PREVIOUS, 218, 584, 122, 26, L"BUTTON", L"上一页", BS_PUSHBUTTON },
+    { IDC_QLOG_NEXT,     350, 584, 148, 26, L"BUTTON", L"更早记录", BS_PUSHBUTTON },
+    { IDC_QLOG_REFRESH,  508, 584, 166, 26, L"BUTTON", L"刷新到最新", BS_PUSHBUTTON },
+};
+#define CL_LOG ((int)(sizeof(g_loglayout) / sizeof(g_loglayout[0])))
+_Static_assert(CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 1 <= 64, "Native control registry capacity");
+
+static void log_controls_refresh(HWND hwnd) {
+    bool current = g_sn && g_sn->qlog_ready && !g_sn->qlog_error &&
+        g_sn->qlog_revision == g_log_nav.revision;
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_PREVIOUS), current && g_log_nav.depth > 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_NEXT), current && g_sn->qlog_page.has_more);
+}
+
+static void log_navigation(HWND hwnd, int action) {
+    bool changed = false;
+    pthread_mutex_lock(&g_snap_mutex);
+    if (action == IDC_QLOG_REFRESH) { qln_refresh(&g_log_nav); changed = true; }
+    else if (g_sn && g_sn->qlog_ready && !g_sn->qlog_error && g_sn->qlog_revision == g_log_nav.revision) {
+        changed = action == IDC_QLOG_PREVIOUS ? qln_previous(&g_log_nav)
+            : qln_next(&g_log_nav, &g_sn->qlog_page, g_sn->qlog_revision);
+    }
+    pthread_mutex_unlock(&g_snap_mutex);
+    if (changed) {
+        g_qlog_scroll = 0;
+        if (g_sn) g_sn->qlog_error = 3;
+        if (g_poll_wake) SetEvent(g_poll_wake);
+        log_controls_refresh(hwnd);
+        InvalidateRect(hwnd, NULL, FALSE);
+    }
+}
+
 
 /* The dashboard is painted in a fixed 1032x678 logical canvas (sidebar
    0..190, content to x=1000, status bar to y=678). Deriving g_scale from the
@@ -2463,6 +2568,9 @@ static void layout_controls(HWND hwnd) {
         SetWindowPos(GetDlgItem(hwnd, g_sublayout[i].id), NULL,
                      S(g_sublayout[i].x), S(g_sublayout[i].y),
                      S(g_sublayout[i].w), S(g_sublayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
+    for (int i = 0; i < CL_LOG; i++)
+        SetWindowPos(GetDlgItem(hwnd, g_loglayout[i].id), NULL,
+            S(g_loglayout[i].x), S(g_loglayout[i].y), S(g_loglayout[i].w), S(g_loglayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),NULL,S(218),S(560),S(366),S(26),SWP_NOZORDER|SWP_NOACTIVATE);
     subs_list_extent(hwnd);
 }
@@ -2480,6 +2588,9 @@ static void show_controls(HWND hwnd, int tab) {
         ShowWindow(GetDlgItem(hwnd, IDC_POL0 + i), show ? SW_SHOW : SW_HIDE);
     for (int i = 0; i < CL_SUB; i++)
         ShowWindow(GetDlgItem(hwnd, g_sublayout[i].id), subs ? SW_SHOW : SW_HIDE);
+    for (int i = 0; i < CL_LOG; i++)
+        ShowWindow(GetDlgItem(hwnd, g_loglayout[i].id), tab == 1 ? SW_SHOW : SW_HIDE);
+    log_controls_refresh(hwnd);
     ShowWindow(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),tab==5?SW_SHOW:SW_HIDE);
     subs_controls_refresh(hwnd);
 }
@@ -2794,7 +2905,7 @@ static void draw_ranking_page(HDC hdc) {
     SelectObject(hdc, lf);
     SetTextColor(hdc, g_pal.muted);
     TextOutW(hdc, S(218), S(48), HINT, (int) wcslen(HINT));
-    if (sn == NULL || !sn->valid) {
+    if (sn == NULL || !sn->has_data) {
         TextOutW(hdc, S(222), S(100), WAIT, (int) wcslen(WAIT));
     } else if (sn->top_count == 0) {
         TextOutW(hdc, S(222), S(100), NONE, (int) wcslen(NONE));
@@ -2856,7 +2967,7 @@ static void draw_ranking_page(HDC hdc) {
         static const wchar_t *THINT = L"服务端按命中的策略类别累计（自本次安装以来的总数）";
         TextOutW(hdc, S(218), S(408), THINT, (int) wcslen(THINT));
     }
-    if (sn != NULL && sn->valid) {
+    if (sn != NULL && sn->has_data) {
         long long maxv = 1;
         for (int i = 0; i < BLOCK_TYPE_COUNT && i < 16; i++)
             if (sn->blocked_by_type[i] > maxv) maxv = sn->blocked_by_type[i];
@@ -2899,7 +3010,7 @@ static void draw_activity_page(HDC hdc) {
     static const wchar_t *HINT_APPS =
         L"按请求数排序 - Windows 侧按连接所属进程统计（PID → 进程名）";
     static const wchar_t *HINT_LOG =
-        L"最新在最上 · 方式列 = 命中的策略类型 + 该类型的处理方式（占位 / 204 / 放行）";
+        L"仅记录 Web 响应请求；翻页固定历史，刷新回到最新。";
     static const wchar_t *WAIT = L"等待服务器统计数据 ...";
     static const wchar_t *NO_APPS = L"暂无数据：还没有可归属的客户端连接经过拦截端口。";
     static const wchar_t *NO_LOG = L"暂无请求记录。";
@@ -2913,7 +3024,7 @@ static void draw_activity_page(HDC hdc) {
     SelectObject(hdc, lf);
     SetTextColor(hdc, g_pal.muted);
     TextOutW(hdc, S(218), S(48), HINT_APPS, (int) wcslen(HINT_APPS));
-    if (sn == NULL || !sn->valid) {
+    if (sn == NULL || !sn->has_data) {
         TextOutW(hdc, S(222), S(100), WAIT, (int) wcslen(WAIT));
     } else if (sn->app_count == 0) {
         TextOutW(hdc, S(222), S(100), NO_APPS, (int) wcslen(NO_APPS));
@@ -2962,13 +3073,20 @@ static void draw_activity_page(HDC hdc) {
     TextOutW(hdc, S(218), S(336), L"最近请求", 4);
     SelectObject(hdc, lf);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(218), S(360), HINT_LOG, (int) wcslen(HINT_LOG));
-    if (sn == NULL || !sn->valid) {
+    const wchar_t *log_hint = HINT_LOG;
+    if (sn && sn->qlog_error) {
+        log_hint = sn->qlog_error == 2 ? L"历史已过期，请刷新；已显示记录保留。" :
+                   sn->qlog_error == 3 ? L"正在读取历史，当前仍显示上一页。" :
+                   L"历史读取失败；保留已有记录，可刷新重试。";
+        SetTextColor(hdc, sn->qlog_error == 3 ? g_pal.muted : C_RED);
+    }
+    TextOutW(hdc, S(218), S(360), log_hint, (int) wcslen(log_hint));
+    if (sn == NULL || !sn->has_data) {
         TextOutW(hdc, S(222), S(412), WAIT, (int) wcslen(WAIT));
     } else if (sn->qlog_count == 0) {
         TextOutW(hdc, S(222), S(412), NO_LOG, (int) wcslen(NO_LOG));
     } else {
-        const int visible = 11;
+        const int visible = 9;
         int max_scroll = sn->qlog_count > visible ? sn->qlog_count - visible : 0;
         if (g_qlog_scroll > max_scroll) g_qlog_scroll = max_scroll;
         if (g_qlog_scroll < 0) g_qlog_scroll = 0;
@@ -2977,7 +3095,9 @@ static void draw_activity_page(HDC hdc) {
         /* How much history is kept, so "为什么只有 11 条" answers itself. */
         {
             wchar_t more[64];
-            swprintf(more, 64, L"共 %d 条 · 滚轮查看更多", sn->qlog_count);
+            if (sn->qlog_ready) swprintf(more, 64, L"第 %d–%d 条 / %d 条",
+                sn->qlog_page.offset + 1, sn->qlog_page.offset + sn->qlog_count, sn->qlog_page.total);
+            else swprintf(more, 64, L"摘要 %d 条 · 历史未就绪", sn->qlog_count);
             TextOutW(hdc, S(660), S(360), more, (int) wcslen(more));
         }
         TextOutW(hdc, S(222), S(388), L"时间", 2);
@@ -2986,15 +3106,13 @@ static void draw_activity_page(HDC hdc) {
         TextOutW(hdc, S(500), S(388), L"主机", 2);
         for (int i = 0; i < rows; i++) {
             struct qlog_row *r = &sn->qlog[g_qlog_scroll + i];
-            wchar_t tb[32] = L"--:--:--", hb[48], way[64] = L"—";
+            wchar_t tb[32] = L"--:--:--", way[64] = L"—";
             const wchar_t *act;
             int y = 412 + i * 19;
             time_t t = (time_t) r->ts;
             struct tm *tmv = localtime(&t);
             if (tmv != NULL)
                 swprintf(tb, 32, L"%02d:%02d:%02d", tmv->tm_hour, tmv->tm_min, tmv->tm_sec);
-            wcsncpy(hb, r->host, 44);
-            hb[44] = 0;
             if (r->action == 1 || r->action == 2)
                 swprintf(way, 64, L"%ls · %ls", log_type_label(r->type), log_mode_label(r->mode));
             SetTextColor(hdc, g_pal.muted);
@@ -3013,7 +3131,9 @@ static void draw_activity_page(HDC hdc) {
             SetTextColor(hdc, g_pal.muted);
             TextOutW(hdc, S(372), S(y), way, (int) wcslen(way));
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(500), S(y), hb, (int) wcslen(hb));
+            RECT host_bounds = {S(500), S(y), S(982), S(y + 19)};
+            DrawTextW(hdc, r->host, -1, &host_bounds,
+                      DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
         }
     }
 
@@ -3464,6 +3584,13 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
+        for (int i = 0; i < CL_LOG; i++) {
+            const struct ctl_desc *d = &g_loglayout[i];
+            HWND w = CreateWindowExW(0, d->cls, d->text,
+                WS_CHILD | WS_TABSTOP | d->style, S(d->x), S(d->y), S(d->w), S(d->h),
+                hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
+            s_ctrls[s_ctrl_count++] = w;
+        }
         s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"测试双栈转发与恢复",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
                 0,0,1,1,hwnd,(HMENU)(INT_PTR)IDC_TRANSPORT_PROBE,hinst,NULL);
         for (int i = 0; i < POLICY_COUNT; i++) {
@@ -3515,8 +3642,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
         tray_add(hwnd);
         cert_refresh(true);
+        qln_refresh(&g_log_nav);
+        g_poll_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
         if (pthread_create(&g_poll_thread, NULL, stats_poll_thread, hwnd) == 0)
-            g_poll_started = 1;   /* else: WM_TIMER fallback below */
+            g_poll_started = 1;
+        else swprintf(g_status, 4096, L"无法启动后台统计读取，请重启应用；当前统计不可用");
         SetTimer(hwnd, 1, 2000, NULL);
         g_adguard_signal = adguard_process_probe();
         g_adguard_probe_tick = GetTickCount();
@@ -3543,10 +3673,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         } else if (vis) {
             g_hidden_trimmed = 0;
         }
-        if (!g_poll_started && g_sn) {
-            /* Fallback when the worker thread could not start. */
-            snapshot_fetch_any(g_sn);
-        }
+
         cert_refresh(false);
         diag_sample();
         /* Heartbeat every 5 minutes: after a sudden death the tail of
@@ -3574,8 +3701,15 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
          * report.
          */
         int delta = GET_WHEEL_DELTA_WPARAM(wp);
-        int total = (g_sn != NULL && g_sn->valid) ? g_sn->qlog_count : 0;
-        int max_scroll = total > 11 ? total - 11 : 0;
+        int total = (g_sn != NULL && g_sn->has_data) ? g_sn->qlog_count : 0;
+        int max_scroll = total > 9 ? total - 9 : 0;
+        if (delta < 0 && g_sn && g_sn->qlog_ready && !g_sn->qlog_error) {
+            pthread_mutex_lock(&g_snap_mutex);
+            bool frozen = qln_freeze(&g_log_nav, &g_sn->qlog_page, g_sn->qlog_revision);
+            pthread_mutex_unlock(&g_snap_mutex);
+            if (frozen && g_poll_wake) SetEvent(g_poll_wake);
+            log_controls_refresh(hwnd);
+        }
         g_qlog_scroll += (delta > 0) ? -3 : 3;
         if (g_qlog_scroll < 0) g_qlog_scroll = 0;
         if (g_qlog_scroll > max_scroll) g_qlog_scroll = max_scroll;
@@ -3588,6 +3722,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             *g_sn = g_snap_next;
             pthread_mutex_unlock(&g_snap_mutex);
             cert_refresh(false);
+            log_controls_refresh(hwnd);
             if (g_ui_visible) InvalidateRect(hwnd, NULL, FALSE);
         }
         return 0;
@@ -3605,6 +3740,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_QLOG_PREVIOUS || LOWORD(wp) == IDC_QLOG_NEXT || LOWORD(wp) == IDC_QLOG_REFRESH) {
+            log_navigation(hwnd, LOWORD(wp)); return 0;
+        }
         if (LOWORD(wp)==IDC_TRANSPORT_PROBE) { gui_show_transport_dialog(hwnd); return 0; }
         if (HIWORD(wp) == 1) { /* keyboard accelerator */
             int id = LOWORD(wp);
@@ -4028,30 +4166,31 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         /* statistics page */
         const struct snapshot *sn = g_sn;
         wchar_t val[64], txt[256];
-        long long req = sn && sn->valid ? sn->total_requests : 0;
+        bool show_data = sn && sn->has_data;
+        long long req = sn && sn->has_data ? sn->total_requests : 0;
         /* Lifetime counter (same window as 请求量): summing the ring history
            only showed the current session, so the KPI contradicted the request
            count right next to it. */
-        long long blk = (sn && sn->valid) ? sn->total_blocked : 0;
+        long long blk = (sn && sn->has_data) ? sn->total_blocked : 0;
         fmt_num(val, 64, req);
-        draw_kpi(hdc, 210, 24, 120, 72, L"请求量", val, C_BLUE);
+        draw_kpi(hdc, 210, 24, 120, 72, L"请求量", show_data ? val : L"—", C_BLUE);
         fmt_num(val, 64, blk);
-        draw_kpi(hdc, 348, 24, 120, 72, L"拦截量", val, C_RED);
+        draw_kpi(hdc, 348, 24, 120, 72, L"拦截量", show_data ? val : L"—", C_RED);
         /* block_rate is ALREADY a percentage (0-100) in the JSON; the old code
            multiplied it by 100 again, so a fully blocked device showed
            "10000%". Clamp it and print one decimal. */
-        double rate = (sn && sn->valid) ? sn->block_rate : 0.0;
+        double rate = (sn && sn->has_data) ? sn->block_rate : 0.0;
         if (rate < 0.0) rate = 0.0;
         if (rate > 100.0) rate = 100.0;
         swprintf(val, 64, L"%.1f%%", rate);
-        draw_kpi(hdc, 486, 24, 120, 72, L"拦截率", val, C_ACCENT);
-        fmt_num(val, 64, sn && sn->valid ? sn->total_connections : 0);
-        draw_kpi(hdc, 624, 24, 120, 72, L"连接数", val, C_GREEN);
-        fmt_num(val, 64, sn && sn->valid ? sn->sni_certs_issued : 0);
-        draw_kpi(hdc, 762, 24, 120, 72, L"签发证书", val, RGB(139, 92, 246));
-        long long up = sn && sn->valid ? sn->uptime_seconds : 0;
+        draw_kpi(hdc, 486, 24, 120, 72, L"拦截率", show_data ? val : L"—", C_ACCENT);
+        fmt_num(val, 64, sn && sn->has_data ? sn->total_connections : 0);
+        draw_kpi(hdc, 624, 24, 120, 72, L"连接数", show_data ? val : L"—", C_GREEN);
+        fmt_num(val, 64, sn && sn->has_data ? sn->sni_certs_issued : 0);
+        draw_kpi(hdc, 762, 24, 120, 72, L"签发证书", show_data ? val : L"—", RGB(139, 92, 246));
+        long long up = sn && sn->has_data ? sn->uptime_seconds : 0;
         swprintf(val, 64, L"%lldh %lldm", up / 3600, (up % 3600) / 60);
-        draw_kpi(hdc, 900, 24, 120, 72, L"运行时长", val, RGB(20, 184, 166));
+        draw_kpi(hdc, 900, 24, 120, 72, L"运行时长", show_data ? val : L"—", RGB(20, 184, 166));
 
         RECT ph = {210, 120, 600, 430};
         draw_chart(hdc, ph, L"最近 24 小时",
@@ -4216,9 +4355,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         KillTimer(hwnd, 1);
         if (g_poll_started) {
             g_poll_stop = 1;
+            if (g_poll_wake) SetEvent(g_poll_wake);
             pthread_join(g_poll_thread, NULL);
             g_poll_started = 0;
         }
+        if (g_poll_wake) { CloseHandle(g_poll_wake); g_poll_wake = NULL; }
         tray_remove();
         if (g_ctl_font) { DeleteObject(g_ctl_font); g_ctl_font = NULL; }
         PostQuitMessage(0);

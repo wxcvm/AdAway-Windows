@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.81
+      TAG: win11-webserver-v1.82
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -368,6 +368,27 @@ jobs:
           gcc -std=c11 -O2 -DMG_TLS=0 -Ijni -c jni/mongoose/mongoose.c -o dashboard_mongoose.o
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni dashboard_response_test.c dashboard_mongoose.o -o dashboard_response_test.exe -lws2_32 -lbcrypt
           ./dashboard_response_test.exe
+          python3 tools/dashboard-apps-fixture.py .build-core/dashboard-apps-test.c
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni .build-core/dashboard-apps-test.c dashboard_mongoose.o -o dashboard-apps-test.exe -lws2_32 -lbcrypt
+          ./dashboard-apps-test.exe
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni query_log_page_test.c dashboard_mongoose.o -o query_log_page_test.exe -lws2_32 -lbcrypt
+          ./query_log_page_test.exe
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni query_log_navigation_test.c dashboard_mongoose.o -o query_log_navigation_test.exe -lws2_32 -lbcrypt
+          ./query_log_navigation_test.exe
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -I. -Ijni tools/query-log-client-probe.c dashboard_mongoose.o -o query-log-client-probe.exe -lws2_32 -lbcrypt
+
+      - name: Test pinned query log contract and atomic Windows persistence
+        shell: msys2 {0}
+        run: |
+          bash fetch-log-contract.sh
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_atomic_win32_test.c -o query_log_atomic_win32_test.exe
+          ./query_log_atomic_win32_test.exe "$(cygpath -m "$RUNNER_TEMP")"
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni -Ilog-contract log-contract/query_log_store_test.c dashboard_mongoose.o -o query_log_store_test.exe -lws2_32 -lbcrypt
+          ./query_log_store_test.exe "$(cygpath -m "$RUNNER_TEMP")"
+          python3 tools/build-rule-core.py jni/webserver.c .build-core/stats-bounds-core.c
+          python3 log-contract/stats-json-bounds-fixture.py .build-core/stats-bounds-core.c .build-core/stats-bounds-test.c
+          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni .build-core/stats-bounds-test.c dashboard_mongoose.o -o stats-bounds-test.exe -lws2_32 -lbcrypt
+          ./stats-bounds-test.exe
 
       - name: Prepare resources (convert block placeholder images to webp)
         shell: bash
@@ -436,6 +457,22 @@ jobs:
           cp -r resources dist/resources
           cp README.txt dist/README.txt
           cp start.bat dist/start.bat
+
+      - name: Test actual server history with production desktop page parser
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          python tools/test-query-log-server.py dist/webserver.exe query-log-client-probe.exe > query-log-server-results.json
+          if ($LASTEXITCODE -ne 0) { throw 'Actual query log server/client integration failed' }
+          Get-Content query-log-server-results.json
+
+      - name: Preserve actual query log server results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-query-log-server
+          path: query-log-server-results.json
+          if-no-files-found: warn
 
       - name: Build strict HTTPS arrival client using the pinned OpenSSL
         shell: msys2 {0}
@@ -1325,3 +1362,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash tools/publish-progress-preview.sh
+
+  log-client-sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Test production page parser and navigation under ASan and UBSan
+        shell: bash
+        run: |
+          bash fetch-upstream.sh
+          cc -std=c11 -O1 -g -D_GNU_SOURCE -DMG_TLS=0 -fsanitize=address,undefined -fno-omit-frame-pointer -Ijni -c jni/mongoose/mongoose.c -o log-mongoose.o
+          for test in query_log_page query_log_navigation; do
+            cc -std=c11 -O1 -g -D_GNU_SOURCE -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer -Ijni "${test}_test.c" log-mongoose.o -pthread -o "$test"
+            "./$test"
+          done
+          bash fetch-log-contract.sh
+          python3 tools/build-rule-core.py jni/webserver.c stats-bounds-core.c
+          python3 log-contract/stats-json-bounds-fixture.py stats-bounds-core.c stats-bounds-test.c
+          cc -std=c11 -O1 -g -D_GNU_SOURCE -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer -Ijni stats-bounds-test.c log-mongoose.o -pthread -o stats-bounds-test
+          ./stats-bounds-test
