@@ -18,6 +18,13 @@ Restart, clear and overwritten history expire the cursor. A revision taken
 under the dashboard mutex prevents an older request from replacing a newer
 navigation choice. Reads run in the worker; buttons wake it immediately.
 Failures retain displayed rows, explain the failure and permit refresh.
+The UTF-16 display buffer holds every hostname supported by the 191-byte log
+contract; the drawing surface adds an ellipsis when a name exceeds its width.
+
+Control requests use the existing per-run token. The overlay corrects the old
+boolean check of Mongoose's negative missing-variable result, so header-only
+desktop clients reach the token-header fallback. Missing and wrong credentials
+remain rejected, including a wrong form token paired with a valid header.
 
 The production page parser reuses Mongoose, validates cursor, scalar types,
 metadata consistency, row count and bounded UTF-8 hostnames, and publishes only

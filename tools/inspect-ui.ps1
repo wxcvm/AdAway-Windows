@@ -137,7 +137,7 @@ try {
     $messages=[System.Collections.Generic.List[System.Net.Http.HttpRequestMessage]]::new()
     for ($i=1;$i -le 650;$i++) {
         $request=[System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get,'http://127.0.0.1:18083/gui-query-log.gif')
-        $request.Headers.Host="gui-log-$i.example.test"
+        $request.Headers.Host="gui-log-$i.$('a'*50).$('b'*50).$('c'*40).example.test"
         $messages.Add($request)
         $tasks.Add($http.SendAsync($request))
     }

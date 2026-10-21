@@ -176,7 +176,7 @@ struct qlog_row {
     int action;              /* 0 = proxied, 1 = blocked, 2 = allowed */
     int type;                /* blocked policy type index, -1 = unknown */
     int mode;                /* 0 = placeholder, 1 = 204, 2 = passthrough */
-    wchar_t host[128];
+    wchar_t host[192]; /* Every supported 191-byte UTF-8 log host fits in UTF-16. */
 };
 
 /* One entry of the server's "top_blocked" ranking (busiest first). */
@@ -894,7 +894,8 @@ static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *re
         sn->qlog[i].action = page.rows[i].action;
         sn->qlog[i].type = page.rows[i].type;
         sn->qlog[i].mode = page.rows[i].mode;
-        utf8_to_wide(page.rows[i].host, sn->qlog[i].host, 128);
+        utf8_to_wide(page.rows[i].host, sn->qlog[i].host,
+                     sizeof(sn->qlog[i].host) / sizeof(sn->qlog[i].host[0]));
     }
     sn->qlog_page.offset = (int)page.offset;
     sn->qlog_page.next_offset = (int)page.next_offset;
