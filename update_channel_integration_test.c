@@ -28,7 +28,8 @@ int main(void) {
     stable_body="{\"tag\":\"win11-webserver-v1.75\",\"version\":\"1.75\","
         "\"zip_url\":\"https://github.com/wxcvm/AdAway-Windows/releases/download/win11-webserver-v1.75/adblock-webserver-win64.zip\","
         "\"zip_sha256\":\"610d5bf14041fff0347fc9c3c08cccc4295a654d0b1bbb87c82f555d37b97796\"}";
-    preview_body="{\"version\":\"1.80\",\"tag\":\"progress-win-20261020.4\",\"channel\":\"preview\",\"build\":\"39410500291\","
+    /* Same app version, newer build: remain meaningful across app version bumps. */
+    preview_body="{\"version\":\"" ADBLOCK_APP_VERSION "\",\"tag\":\"progress-win-20261020.4\",\"channel\":\"preview\",\"build\":\"99999999999999999999\","
         "\"exe_url\":\"https://github.com/wxcvm/AdAway-Windows/releases/download/progress-win-20261020.4/adblock-webserver-setup.exe\","
         "\"exe_sha256\":\"sha256:1177114d9bf58f070579b9da2ad373931010f701bb1f1432941cb15ad2526da9\"}";
     assert(!update_include_preview());

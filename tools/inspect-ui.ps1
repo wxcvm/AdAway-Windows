@@ -378,7 +378,10 @@ for ($cycle=0;$cycle -lt 2;$cycle++) {
         Start-Sleep -Milliseconds 100
         $probeText=Read-ControlText ([UiReviewNative]::GetDlgItem($transport,2103))
     } until ($probeText -match '清理：' -or (Get-Date) -gt $probeDeadline)
-    if ($probeText -notmatch 'IPv4：转发回执通过' -or $probeText -notmatch 'IPv6：转发回执通过' -or $probeText -notmatch '本次资源均已释放') { throw "Actual GUI transport failed: $probeText" }
+    foreach ($protocol in @('UDP/IPv4','UDP/IPv6','TCP/IPv4','TCP/IPv6')) {
+        if ($probeText -notmatch "${protocol}：转发回执通过") { throw "Actual GUI $protocol failed: $probeText" }
+    }
+    if ($probeText -notmatch '本次资源均已释放' -or $probeText -notmatch '已关闭 6/6') { throw "TCP resource cleanup missing: $probeText" }
 }
 $dashboardWindow=$window
 try { $window=$transport; Save-Window 'dual-stack-transport-dialog' }
