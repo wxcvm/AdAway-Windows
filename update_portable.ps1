@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory=$true)][int]$PreviousPid
 )
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
 $ownedProcess=$null
 $moved=$false
 $placed=$false
@@ -52,7 +53,17 @@ function Stop-OwnedProcess {
     }
 }
 function Start-Application {
-    return Start-Process -WindowStyle Hidden -FilePath $executable -ArgumentList '--minimized' -WorkingDirectory $Application -PassThru
+    # Start-Process resolves WorkingDirectory through the PowerShell provider;
+    # [] in a legitimate installation path can therefore turn into a wildcard.
+    # ProcessStartInfo passes both paths literally to Windows.
+    $start=New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName=$executable
+    $start.WorkingDirectory=$Application
+    $start.Arguments='--minimized'
+    $start.UseShellExecute=$false
+    $start.CreateNoWindow=$true
+    $start.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden
+    return [Diagnostics.Process]::Start($start)
 }
 function Remove-VerifiedTree([string]$target,[string]$expected) {
     $resolved=Full-Directory $target
@@ -132,6 +143,9 @@ try {
     catch { Write-Step ('Applied update; backup cleanup deferred: '+$_.Exception.Message) }
 } catch {
     $failure=$_.Exception.Message
+    $details=$_.InvocationInfo.PositionMessage
+    [Console]::Error.WriteLine($details)
+    [Console]::Error.WriteLine($_.ScriptStackTrace)
     if($moved) {
         try {
             Stop-OwnedProcess

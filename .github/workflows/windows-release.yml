@@ -372,6 +372,14 @@ jobs:
         shell: powershell
         run: ./tools/test-portable-updater.ps1 -FixtureExecutable ./update_portable_fixture.exe
 
+      - name: Upload portable update fixture diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-update-fixture-diagnostics
+          path: ${{ runner.temp }}/AdAwayPortable-*/**/*.log
+          if-no-files-found: warn
+
       - name: Test dashboard HTTP responses with actual Mongoose
         shell: msys2 {0}
         run: |
