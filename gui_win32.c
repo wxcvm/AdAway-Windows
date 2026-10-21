@@ -3114,15 +3114,13 @@ static void draw_activity_page(HDC hdc) {
         TextOutW(hdc, S(500), S(388), L"主机", 2);
         for (int i = 0; i < rows; i++) {
             struct qlog_row *r = &sn->qlog[g_qlog_scroll + i];
-            wchar_t tb[32] = L"--:--:--", hb[48], way[64] = L"—";
+            wchar_t tb[32] = L"--:--:--", way[64] = L"—";
             const wchar_t *act;
             int y = 412 + i * 19;
             time_t t = (time_t) r->ts;
             struct tm *tmv = localtime(&t);
             if (tmv != NULL)
                 swprintf(tb, 32, L"%02d:%02d:%02d", tmv->tm_hour, tmv->tm_min, tmv->tm_sec);
-            wcsncpy(hb, r->host, 44);
-            hb[44] = 0;
             if (r->action == 1 || r->action == 2)
                 swprintf(way, 64, L"%ls · %ls", log_type_label(r->type), log_mode_label(r->mode));
             SetTextColor(hdc, g_pal.muted);
@@ -3141,7 +3139,9 @@ static void draw_activity_page(HDC hdc) {
             SetTextColor(hdc, g_pal.muted);
             TextOutW(hdc, S(372), S(y), way, (int) wcslen(way));
             SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(500), S(y), hb, (int) wcslen(hb));
+            RECT host_bounds = {S(500), S(y), S(982), S(y + 19)};
+            DrawTextW(hdc, r->host, -1, &host_bounds,
+                      DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
         }
     }
 
