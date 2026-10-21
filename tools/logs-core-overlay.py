@@ -26,6 +26,10 @@ def prepare_logs(source):
         start, end = hooks.function_span(source, signature)
         source = source[:start] + source[end:]
     replace('#define QLOG_MAGIC 0x514C4F47u   /* "QLOG" */', "")
+    # Mongoose returns a negative value for an absent form variable. A boolean
+    # check never reached the existing header fallback for header-only clients.
+    replace('if (!mg_http_get_var(&hm->body, "token", token_buf, sizeof(token_buf))) {',
+            'if (mg_http_get_var(&hm->body, "token", token_buf, sizeof(token_buf)) < 0) {')
     start, end = hooks.function_span(source, "static void json_safe_copy(")
     source = source[:end] + '''
 #include "query_log_atomic_win32.h"

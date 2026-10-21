@@ -459,6 +459,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Actual query log server/client integration failed' }
           Get-Content query-log-server-results.json
 
+      - name: Preserve actual query log server results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-query-log-server
+          path: query-log-server-results.json
+          if-no-files-found: warn
+
       - name: Build strict HTTPS arrival client using the pinned OpenSSL
         shell: msys2 {0}
         run: |

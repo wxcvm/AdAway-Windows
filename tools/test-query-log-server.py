@@ -136,7 +136,19 @@ class Fixture:
 
     def control(self, command):
         token = (self.resources / "control_token.txt").read_text(encoding="ascii").strip()
-        assert self.exchange(self.stats, "/control", body=("cmd=" + command).encode("ascii"), token=token)[0] == 200
+        result = self.exchange(self.stats, "/control", body=("cmd=" + command).encode("ascii"), token=token)
+        assert result[0] == 200, (result[0], result[1])
+
+    def verify_control_authentication(self):
+        # Use a harmless flush to verify real header/body clients and rejection.
+        token = (self.resources / "control_token.txt").read_text(encoding="ascii").strip()
+        command = b"cmd=flush_stats"
+        assert self.exchange(self.stats, "/control", body=command)[0] == 403
+        assert self.exchange(self.stats, "/control", body=command, token="wrong")[0] == 403
+        assert self.exchange(self.stats, "/control", body=command, token=token)[0] == 200
+        assert self.exchange(self.stats, "/control", body=command + b"&token=" + token.encode("ascii"))[0] == 200
+        # An explicitly wrong body token must not be rescued by a valid header.
+        assert self.exchange(self.stats, "/control", body=command + b"&token=wrong", token=token)[0] == 403
 
 
 def run(exe, probe):
@@ -144,6 +156,7 @@ def run(exe, probe):
         fixture = Fixture(exe, probe, Path(directory))
         try:
             fixture.start()
+            fixture.verify_control_authentication()
             assert fixture.page()["total"] == 0
             fixture.batch(1, 600)
             first = fixture.page()
@@ -169,7 +182,8 @@ def run(exe, probe):
             return dict(retention=4096, originalRows=600, concurrentWrites=25,
                         actualShortPage=first["returned"], overwriteExpired=True,
                         restartOrderAndMetadata=True, clearExpired=True,
-                        productionClientParser=True, hostNetworkChanges=False)
+                        productionClientParser=True, controlAuthentication=True,
+                        hostNetworkChanges=False)
         finally:
             fixture.stop()
 
