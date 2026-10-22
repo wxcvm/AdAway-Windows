@@ -2474,7 +2474,7 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_CHECK_LISTEN,738,70,110,26,L"BUTTON",L"检测冲突",BS_PUSHBUTTON },
     { IDC_LOOP_PAIR,860,70,130,26,L"BUTTON",L"仅本机（推荐）",BS_PUSHBUTTON },
     { IDC_LISTEN_STATUS,218,208,772,40,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL },
-    { IDC_ADGUARD_HOME, 742, 590, 250, 26, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
+    { IDC_ADGUARD_HOME, 834, 590, 168, 26, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
     { IDC_SAVE,       640, 174, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
     { IDC_RESTART,    760, 174, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
     { IDC_FIXPORT,    860, 106, 130, 28, L"BUTTON", L"备用端口", BS_PUSHBUTTON },
@@ -2489,10 +2489,10 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_SUBRELOAD,  218, 556, 250, 26, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
     { IDC_FLUSH,      480, 556, 250, 26, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
     { IDC_POLDEF,     742, 556, 250, 26, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
-    { IDC_PORTABLEUPD,218, 590, 112, 26, L"BUTTON", L"包：安装器优先", BS_PUSHBUTTON },
-    { IDC_PREVIEWUPD,338, 590, 130, 26, L"BUTTON", L"渠道：稳定版", BS_PUSHBUTTON },
-    { IDM_UPDATE,    480, 590, 250, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
-    { IDC_AUTOUPD,   742, 590, 250, 26, L"BUTTON", L"自动更新：开启", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 590, 148, 26, L"BUTTON", L"包：安装器优先", BS_PUSHBUTTON },
+    { IDC_PREVIEWUPD,376, 590, 138, 26, L"BUTTON", L"渠道：稳定版", BS_PUSHBUTTON },
+    { IDM_UPDATE,    684, 590, 140, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDC_AUTOUPD,   524, 590, 150, 26, L"BUTTON", L"自动更新：开启", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
    be a hand-kept constant, and when IDM_UPDATE (检查更新) was appended the
