@@ -106,6 +106,7 @@ jobs:
       - name: Test atomic subscription source settings and save rollback
         shell: msys2 {0}
         run: |
+          python tools/check-control-ids.py
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic subscription_settings_win32.c subscription_settings_win32_test.c -o subscription_settings_win32_test.exe
           ./subscription_settings_win32_test.exe
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic subscription_settings_win32.c subscription_display_win32.c subscription_display_win32_test.c -o subscription_display_win32_test.exe -lwinhttp

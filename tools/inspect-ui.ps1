@@ -422,34 +422,34 @@ if ($ResourceDirectory) {
     Send-BoundedMessage $window 0x111 ([IntPtr](65536+1141)) $list
     $selected = [UiReviewNative]::GetDlgItem($window,1146)
     if ((Read-ControlText $selected) -ne 'https://example.test/extra') { throw 'Selected source exposed query parameters by default' }
-    Send-BoundedMessage $window 0x111 ([IntPtr]1152) ([IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr]1313) ([IntPtr]::Zero)
     if ((Read-ControlText $selected) -ne $candidate) { throw 'Explicit full address action lost original URL' }
-    Send-BoundedMessage $window 0x111 ([IntPtr]1152) ([IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr]1313) ([IntPtr]::Zero)
     if ((Read-ControlText $selected).Contains('inspection=')) { throw 'Address could not be hidden again' }
     Save-Window 'subscriptions-readable-source'
 
-    $nameInput=[UiReviewNative]::GetDlgItem($window,1149)
+    $nameInput=[UiReviewNative]::GetDlgItem($window,1310)
     $sourceBeforeRename=[IO.File]::ReadAllText($sourcePath)
     $ruleBeforeRename=(Get-FileHash (Join-Path $ResourceDirectory 'subscriptions.txt') -Algorithm SHA256).Hash
     Set-ControlText $nameInput 'My local rules'
     $readerLock=[IO.File]::Open($sourcePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {
-        Send-BoundedMessage $window 0x111 ([IntPtr]1150) ([IntPtr]::Zero)
+        Send-BoundedMessage $window 0x111 ([IntPtr]1311) ([IntPtr]::Zero)
         if ((Read-ControlText $nameInput) -ne 'My local rules' -or [IO.File]::ReadAllText($sourcePath) -ne $sourceBeforeRename) {
             throw 'Failed rename lost draft or changed source file'
         }
         Save-Window 'subscriptions-rename-failed'
     } finally { $readerLock.Dispose() }
-    Send-BoundedMessage $window 0x111 ([IntPtr]1150) ([IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr]1311) ([IntPtr]::Zero)
     if (![IO.File]::ReadAllText($sourcePath).Contains("# name: My local rules`n$candidate")) { throw 'Local name was not committed beside unchanged URL' }
     Set-Page 0; Set-Page 4
     if ((Read-ControlText $nameInput) -ne 'My local rules') { throw 'Navigating reset the committed name' }
     if ((Get-FileHash (Join-Path $ResourceDirectory 'subscriptions.txt') -Algorithm SHA256).Hash -ne $ruleBeforeRename) { throw 'Rename changed imported rules' }
     Save-Window 'subscriptions-renamed'
     Set-ControlText $nameInput 'raw'
-    Send-BoundedMessage $window 0x111 ([IntPtr]1150) ([IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr]1311) ([IntPtr]::Zero)
     if ((Read-ControlText $nameInput) -ne 'raw') { throw 'Explicit raw custom name was overwritten' }
-    Send-BoundedMessage $window 0x111 ([IntPtr]1151) ([IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr]1312) ([IntPtr]::Zero)
     if ((Read-ControlText $nameInput) -ne '' -or [IO.File]::ReadAllText($sourcePath).Contains('# name: raw')) { throw 'Restore automatic name did not clear local name' }
 
     $committedSources = [IO.File]::ReadAllText($sourcePath)
