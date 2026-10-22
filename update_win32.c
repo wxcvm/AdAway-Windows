@@ -89,6 +89,7 @@ int update_state(void) {
 #define UPDATE_MODE_INSTALLER 1
 #define UPDATE_MODE_PORTABLE 2
 #include "update_package_policy.h"
+#include "update_portable_script.h"
 
 /* Defined further down (the proxy/ini helpers); declared here because the mode
    reader above needs it. */
@@ -122,6 +123,19 @@ int update_set_include_preview(int enabled) {
     wchar_t ini[MAX_PATH];
     if (update_state() != UPDATE_STATE_IDLE || !ini_path(ini, MAX_PATH)) return 0;
     return WritePrivateProfileStringW(L"settings", L"include_preview", enabled ? L"1" : L"0", ini) != 0;
+}
+
+int update_automatic(void) {
+    wchar_t ini[MAX_PATH];
+    return ini_path(ini, MAX_PATH) &&
+        GetPrivateProfileIntW(L"settings", L"automatic_update", 1, ini) == 1;
+}
+
+int update_set_automatic(int enabled) {
+    wchar_t ini[MAX_PATH];
+    if (update_state() != UPDATE_STATE_IDLE || !ini_path(ini, MAX_PATH)) return 0;
+    return WritePrivateProfileStringW(L"settings", L"automatic_update",
+                                     enabled ? L"1" : L"0", ini) != 0;
 }
 
 /* Copy text to the clipboard (used by the failure dialogs' "复制诊断信息"). */
@@ -1053,6 +1067,7 @@ const wchar_t *update_last_error(void) { return s_check_error; }
 /* Set by update_check_async(): a check the user asked for must not be answered
    from the "HTTP 403, do not ask again for 30 minutes" cooldown cache. */
 static int s_force_check;
+static int s_background_check;
 
 /* HTTP status of the last manifest attempt (0 = the download itself failed);
    the dashboard message names both routes, which is what made "检查更新失败"
@@ -1069,6 +1084,7 @@ static DWORD WINAPI check_thread(LPVOID param) {
     struct update_info *info = NULL;
     DWORD st = 0;
     int force = s_force_check;
+    int background = s_background_check;
     s_force_check = 0;
     /* 1) fixed-tag manifest: no REST API, therefore no rate limit at all. */
     int rc = manifest_check(&pick, &st);
@@ -1136,6 +1152,9 @@ static DWORD WINAPI check_thread(LPVOID param) {
             wcsncpy(info->alt_url, alt_url, 1023);
             wcsncpy(info->alt_api_url, alt_api, 1023);
             utf8_to_wide(alt_digest, info->alt_sha256, 128);
+        } else {
+            rc = -1;
+            swprintf(s_check_error, 192, L"内存不足，未能准备更新信息；请稍后重试。");
         }
     } else if (rc < 0) {
         if (st == 403 || st == 429) {
@@ -1165,11 +1184,12 @@ static DWORD WINAPI check_thread(LPVOID param) {
     }
     /* The check is over; the GUI may now start a download (see apply_async). */
     InterlockedExchange(&s_update_state, UPDATE_STATE_IDLE);
-    PostMessageW(hwnd, WM_APP_UPDATE_FOUND, rc > 0 ? 1 : (rc == 0 ? 0 : 2), (LPARAM) info);
+    WPARAM result = rc > 0 ? 1 : (background ? 3 : (rc == 0 ? 0 : 2));
+    if (!PostMessageW(hwnd, WM_APP_UPDATE_FOUND, result, (LPARAM) info)) free(info);
     return 0;
 }
 
-void update_check_async(HWND hwnd) {
+static void update_check_start(HWND hwnd, int background) {
 #ifdef ADBLOCK_PREVIEW_BUILD
     MessageBoxW(hwnd, L"这是进度预览版。请从 GitHub 预览 Release 手动下载更新；不会使用正式版更新通道。", L"ADBlock Preview", MB_OK | MB_ICONINFORMATION);
     return;
@@ -1201,7 +1221,8 @@ void update_check_async(HWND hwnd) {
      */
     s_proxy_resolved = 0;
     s_mirror_loaded = 0;
-    s_force_check = 1;
+    s_force_check = !background;
+    s_background_check = background;
     /*
      * A failed CreateThread used to leave the state at CHECKING for the rest of
      * the process lifetime - every later click was then answered with "already
@@ -1214,11 +1235,16 @@ void update_check_async(HWND hwnd) {
                        (unsigned long) GetLastError());
         s_force_check = 0;
         InterlockedExchange(&s_update_state, UPDATE_STATE_IDLE);
-        MessageBoxW(hwnd, L"无法启动更新检查（系统暂时无法创建线程）。请稍后重试。",
-                    L"更新", MB_OK | MB_ICONWARNING);
+        if (!background) MessageBoxW(hwnd, L"无法启动更新检查（系统暂时无法创建线程）。请稍后重试。",
+                                    L"更新", MB_OK | MB_ICONWARNING);
         return;
     }
     CloseHandle(th);
+}
+
+void update_check_async(HWND hwnd) { update_check_start(hwnd, 0); }
+void update_check_background_async(HWND hwnd) {
+    if (update_automatic()) update_check_start(hwnd, 1);
 }
 
 void update_info_free(struct update_info *info) {
@@ -1246,13 +1272,13 @@ static int run_and_wait(const wchar_t *cmdline) {
     return (int) code;
 }
 
-/* Write a text file in the ANSI code page (cmd.exe reads .bat that way). */
-static int write_ansi_file(const wchar_t *path, const wchar_t *text) {
-    int need = WideCharToMultiByte(CP_ACP, 0, text, -1, NULL, 0, NULL, NULL);
+/* Embedded PowerShell helper is UTF-8, matching the executable under review. */
+static int write_utf8_file(const wchar_t *path, const wchar_t *text) {
+    int need = WideCharToMultiByte(CP_UTF8, 0, text, -1, NULL, 0, NULL, NULL);
     if (need <= 0) return 0;
     char *bytes = (char *) malloc((size_t) need);
     if (!bytes) return 0;
-    WideCharToMultiByte(CP_ACP, 0, text, -1, bytes, need, NULL, NULL);
+    WideCharToMultiByte(CP_UTF8, 0, text, -1, bytes, need, NULL, NULL);
     FILE *fp = _wfopen(path, L"wb");
     int ok = 0;
     if (fp) {
@@ -1477,7 +1503,7 @@ int adblock_http_download_bounded(const wchar_t *url, const wchar_t *file, unsig
 static DWORD WINAPI apply_thread(LPVOID param) {
     struct update_info *info = (struct update_info *) param;
     wchar_t temp[MAX_PATH], zip[MAX_PATH], list[MAX_PATH], dir[MAX_PATH], src[MAX_PATH];
-    wchar_t appdir[MAX_PATH], exe[MAX_PATH], cmd[4096], script[8192], bat[MAX_PATH];
+    wchar_t appdir[MAX_PATH], exe[MAX_PATH], cmd[4096], bat[MAX_PATH];
     src[0] = 0;   /* read by the failure log even when no search matched */
     DWORD pid = GetCurrentProcessId();
     DWORD stamp = GetTickCount();
@@ -1608,7 +1634,7 @@ static DWORD WINAPI apply_thread(LPVOID param) {
 stage_parent_ready:
     swprintf(dir, MAX_PATH, L"%lsadblock-update-%lu-%lu", stage_parent, (unsigned long) pid, (unsigned long) stamp);
     swprintf(list, MAX_PATH, L"%lsadblock-update-%lu-%lu.list", stage_parent, (unsigned long) pid, (unsigned long) stamp);
-    swprintf(bat, MAX_PATH, L"%lsadblock-update-%lu-%lu.bat", stage_parent, (unsigned long) pid, (unsigned long) stamp);
+    swprintf(bat, MAX_PATH, L"%lsadblock-update-%lu-%lu.ps1", stage_parent, (unsigned long) pid, (unsigned long) stamp);
 
     /*
      * Chance 1: the package this machine normally wants (installer for an
@@ -1949,116 +1975,22 @@ portable_fallback:
      * explicitly told to keep - user certificate, stats, block/allow lists,
      * cosmetic.css, webserver.ini and the user's own placeholder images.
      */
-    swprintf(script, 8192,
-             L"@echo off\r\n"
-             L"setlocal enableextensions\r\n"
-             /*
-              * ROOT CAUSE of "更新成功但版本号没变": this script is started by the
-              * updater, which runs from the install directory, so the script
-              * INHERITED that directory as its own current directory. Windows
-              * refuses to rename a directory that is the current directory of
-              * any process - so the move below failed, the batch took the
-              * restore_old branch and simply restarted the OLD build, while the
-              * user had already been told the update succeeded.
-              * Getting out of the way is the whole fix.
-              */
-             L"cd /d \"%%TEMP%%\"\r\n"
-             L"set APP=%ls\r\n"
-             L"set SRC=%ls\r\n"
-             L"set STAGE=%ls\r\n"
-             L"set BK=%ls.backup-%lu\r\n"
-             L"set PID=%lu\r\n"
-             /* Step log: the batch used to swallow every error with >nul 2>&1, so
-                "nothing happened" was undiagnosable. Failures now also drop a copy
-                next to the user's data (see the failure branches). */
-             L"set ULOG=%%TEMP%%\\adblock-update.log\r\n"
-             L"echo [%%DATE%% %%TIME%%] updating \"%%APP%%\" (pid %%PID%%)>>\"%%ULOG%%\"\r\n"
-             L":waitloop\r\n"
-             L"tasklist /FI \"PID eq %%PID%%\" 2>nul | find \"%%PID%%\" >nul\r\n"
-             L"if not errorlevel 1 (\r\n"
-             L"  timeout /t 1 /nobreak >nul\r\n"
-             L"  goto waitloop\r\n"
-             L")\r\n"
-             L"echo [%%DATE%% %%TIME%%] previous process gone>>\"%%ULOG%%\"\r\n"
-             L"rem 1) move the running build aside: a rename cannot half-succeed.\r\n"
-             L"rem    Retried, because a lock can outlive the process by a moment.\r\n"
-             L"set TRIES=0\r\n"
-             L":moveloop\r\n"
-             L"rmdir /S /Q \"%%BK%%\" >nul 2>&1\r\n"
-             L"move \"%%APP%%\" \"%%BK%%\" >nul 2>&1\r\n"
-             L"if not errorlevel 1 goto moved\r\n"
-             L"set /a TRIES+=1\r\n"
-             L"if %%TRIES%% GEQ 20 goto :restore_old\r\n"
-             L"timeout /t 1 /nobreak >nul\r\n"
-             L"goto moveloop\r\n"
-             L":moved\r\n"
-             L"echo [%%DATE%% %%TIME%%] old build moved aside (src=\"%%SRC%%\")>>\"%%ULOG%%\"\r\n"
-             L"rem 2) the extracted build takes its place. A rename is preferred - fast\r\n"
-             L"rem    and atomic - but cmd's move refuses to move a DIRECTORY across\r\n"
-             L"rem    volumes (\"Access is denied\"), so xcopy is the fallback for a\r\n"
-             L"rem    staging folder that ended up on another drive.\r\n"
-             L"move \"%%SRC%%\" \"%%APP%%\" >nul 2>&1\r\n"
-             L"if not errorlevel 1 goto placed\r\n"
-             L"echo [%%DATE%% %%TIME%%] move failed (cross-volume?) - trying xcopy>>\"%%ULOG%%\"\r\n"
-             L"xcopy /E /I /Y \"%%SRC%%\" \"%%APP%%\" >nul 2>&1\r\n"
-             L"if errorlevel 1 goto :rollback\r\n"
-             L"rmdir /S /Q \"%%SRC%%\" >nul 2>&1\r\n"
-             L":placed\r\n"
-             L"echo [%%DATE%% %%TIME%%] new build in place>>\"%%ULOG%%\"\r\n"
-             L"rem 3) user data comes back (installer exclusion list + own images)\r\n"
-             L"xcopy /E /I /Y \"%%BK%%\\resources\\*.dat\" \"%%APP%%\\resources\\\" >nul 2>&1\r\n"
-             L"xcopy /Y /I \"%%BK%%\\resources\\img_*.webp\" \"%%APP%%\\resources\\\" <nul >nul 2>&1\r\n"
-             /*
-              * NOTE the quadruple percent: this string is a swprintf FORMAT
-              * string, so %% collapses to a single % on the way into the file.
-              * A batch FOR variable therefore needs %%%%F here to end up as
-              * %%F in the script. With the old %%F the file got "%F", which is
-              * not a batch FOR variable at all - cmd reported a syntax error and
-              * ABORTED THE WHOLE SCRIPT at this line, leaving the update half
-              * applied: the .dat files copied, webserver.ini / the CA cert and
-              * key / the logs NOT copied, the new server never started and the
-              * backup never removed. Nobody had ever reached this line before,
-              * because every earlier attempt already rolled back at the move.
-              */
-             L"for %%%%F in (localhost-2410.crt localhost-2410.key allowlist.txt blocklist.txt cosmetic.css update_cache.json webserver.log webserver.log.1 crash.log) do copy /y \"%%BK%%\\resources\\%%%%F\" \"%%APP%%\\resources\\\" >nul 2>&1\r\n"
-             L"copy /y \"%%BK%%\\webserver.ini\" \"%%APP%%\\webserver.ini\" >nul 2>&1\r\n"
-             L"rem 4) start it and see whether it survives the first seconds\r\n"
-             L"start \"\" \"%%APP%%\\webserver.exe\" --minimized\r\n"
-             L"ping -n 6 127.0.0.1 >nul\r\n"
-             L"tasklist /FI \"IMAGENAME eq webserver.exe\" 2>nul | find /I \"webserver.exe\" >nul\r\n"
-             L"if errorlevel 1 goto :rollback\r\n"
-             L"echo [%%DATE%% %%TIME%%] update applied, backup removed>>\"%%ULOG%%\"\r\n"
-             L"rem 5) done: drop the backup and the staging leftovers\r\n"
-             L"rmdir /S /Q \"%%BK%%\" >nul 2>&1\r\n"
-             L"rmdir /S /Q \"%%STAGE%%\" >nul 2>&1\r\n"
-             L"del \"%%~f0\" >nul 2>&1\r\n"
-             L"exit /b 0\r\n"
-             L":rollback\r\n"
-             L"rem the new build is not healthy: put the previous one back\r\n"
-             L"echo [%%DATE%% %%TIME%%] ROLLBACK - the new build did not survive>>\"%%ULOG%%\"\r\n"
-             L"copy /y \"%%ULOG%%\" \"%%APP%%\\resources\\update-failed.log\" >nul 2>&1\r\n"
-             L"taskkill /F /IM webserver.exe >nul 2>&1\r\n"
-             L"rmdir /S /Q \"%%APP%%\" >nul 2>&1\r\n"
-             L"move \"%%BK%%\" \"%%APP%%\" >nul 2>&1\r\n"
-             L"start \"\" \"%%APP%%\\webserver.exe\" --minimized\r\n"
-             L"rmdir /S /Q \"%%STAGE%%\" >nul 2>&1\r\n"
-             L"del \"%%~f0\" >nul 2>&1\r\n"
-             L"exit /b 1\r\n"
-             L":restore_old\r\n"
-             L"rem the old directory is locked: nothing was changed, just restart\r\n"
-             L"echo [%%DATE%% %%TIME%%] FAILED - the install directory could not be moved aside>>\"%%ULOG%%\"\r\n"
-             L"copy /y \"%%ULOG%%\" \"%%APP%%\\resources\\update-failed.log\" >nul 2>&1\r\n"
-             L"start \"\" \"%%APP%%\\webserver.exe\" --minimized\r\n"
-             L"rmdir /S /Q \"%%STAGE%%\" >nul 2>&1\r\n"
-             L"del \"%%~f0\" >nul 2>&1\r\n"
-             L"exit /b 2\r\n",
-             appdir, src, dir, appdir, (unsigned long) pid, (unsigned long) pid);
-    if (!write_ansi_file(bat, script)) {
+    if (!write_utf8_file(bat, portable_update_script)) {
         InterlockedExchange(&s_update_state, UPDATE_STATE_IDLE);   /* failure: the updater must stay usable */
         free(info);
         return 0;
     }
-    swprintf(cmd, 4096, L"cmd.exe /c \"%ls\"", bat);
+    wchar_t powershell[MAX_PATH];
+    UINT system_length = GetSystemDirectoryW(powershell, MAX_PATH);
+    if (!system_length || system_length + 48 >= MAX_PATH) {
+        DeleteFileW(bat);
+        InterlockedExchange(&s_update_state, UPDATE_STATE_IDLE);
+        free(info);
+        return 0;
+    }
+    wcscat(powershell, L"\\WindowsPowerShell\\v1.0\\powershell.exe");
+    swprintf(cmd, 4096, L"\"%ls\" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"%ls\" -Application \"%ls\" -Source \"%ls\" -Stage \"%ls\" -PreviousPid %lu",
+             powershell, bat, appdir, src, dir, (unsigned long)pid);
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     memset(&si, 0, sizeof(si));
@@ -2067,7 +1999,24 @@ portable_fallback:
     wchar_t mutable_cmd[4096];
     wcsncpy(mutable_cmd, cmd, 4095);
     mutable_cmd[4095] = 0;
-    if (CreateProcessW(NULL, mutable_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, stage_parent, &si, &pi)) {
+    wchar_t ready[MAX_PATH];
+    swprintf(ready, MAX_PATH, L"%ls.ready", dir);
+    DeleteFileW(ready);
+    if (CreateProcessW(powershell, mutable_cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, stage_parent, &si, &pi)) {
+        bool prepared = false;
+        for (unsigned attempt = 0; attempt < 100; attempt++) {
+            if (GetFileAttributesW(ready) != INVALID_FILE_ATTRIBUTES) { prepared = true; break; }
+            if (WaitForSingleObject(pi.hProcess, 100) == WAIT_OBJECT_0) break;
+        }
+        if (!prepared) {
+            TerminateProcess(pi.hProcess, 1); /* The helper has not moved any files. */
+            WaitForSingleObject(pi.hProcess, 2000);
+            CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+            DeleteFileW(bat); DeleteFileW(ready);
+            MessageBoxW(NULL, L"更新脚本未能完成准备；当前程序与文件保留。请查看暂存目录日志。", L"更新", MB_OK | MB_ICONERROR);
+            InterlockedExchange(&s_update_state, UPDATE_STATE_IDLE);
+            free(info); return 0;
+        }
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     } else {

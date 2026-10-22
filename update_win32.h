@@ -25,9 +25,15 @@ struct update_info {
 
 /* Check the release feed in the background (never blocks the UI). */
 void update_check_async(HWND hwnd);
+/* Same serialized discovery; wParam=3 means a quiet background no-update/failure. */
+void update_check_background_async(HWND hwnd);
 /* Persistent and reversible. Returns 0 on write failure or while updating. */
 int update_include_preview(void);
 int update_set_include_preview(int enabled);
+/* Automatically apply a verified newer offer from the selected channel.
+   Default enabled; disabling only changes future offers. */
+int update_automatic(void);
+int update_set_automatic(int enabled);
 int update_portable_mode(void);
 int update_set_portable_mode(int enabled);
 /* Download url into file with the updater's HTTP client (WinHTTP, proxy
@@ -43,7 +49,7 @@ void update_info_free(struct update_info *info);
 /* Reason of the last failed check (empty when the last check succeeded). */
 const wchar_t *update_last_error(void);
 /* Pipeline state, so the dashboard can disable the button and show the phase:
-   0 = idle, 1 = checking, 2 = downloading, 3 = installing. */
+   0 = idle, 1 = checking, 2 = downloading, 3 = verifying, 4 = installing. */
 int update_state(void);
 
 #endif

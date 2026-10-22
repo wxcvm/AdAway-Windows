@@ -9,6 +9,49 @@ static void read_file(const wchar_t *path, char *bytes, size_t cap) {
     size_t count = fread(bytes, 1, cap - 1, file); bytes[count] = 0;
     CHECK(!ferror(file)); CHECK(fclose(file) == 0);
 }
+static void names_roundtrip(const wchar_t *directory, const wchar_t *target) {
+    static wchar_t urls[SUBSCRIPTION_MAX_SOURCES][SUBSCRIPTION_URL_CAPACITY];
+    static wchar_t names[SUBSCRIPTION_MAX_SOURCES][SUBSCRIPTION_NAME_CAPACITY];
+    wcscpy(urls[0], L"https://user:private@example.test/rules?token=private");
+    wcscpy(urls[1], L"https://example.test/allow");
+    wcscpy(names[0], L"  自定义规则  "); wcscpy(names[1], L"raw");
+    CHECK(subscription_settings_save_sources(directory,(const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])urls,
+        (const wchar_t (*)[SUBSCRIPTION_NAME_CAPACITY])names,2));
+    char before[2048],after[2048]; read_file(target,before,sizeof(before));
+    CHECK(strstr(before,"# name:   自定义规则  \n"));
+    memset(urls,0,sizeof(urls)); memset(names,0,sizeof(names)); unsigned count=7;
+    CHECK(subscription_settings_load_sources(directory,urls,names,&count));
+    CHECK(count==2 && !wcscmp(names[0],L"  自定义规则  ") && !wcscmp(names[1],L"raw"));
+    CHECK(!wcscmp(urls[0],L"https://user:private@example.test/rules?token=private"));
+    HANDLE lock=CreateFileW(target,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,0,NULL);
+    CHECK(lock!=INVALID_HANDLE_VALUE);
+    wcscpy(names[0],L"replacement");
+    CHECK(!subscription_settings_save_sources(directory,(const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])urls,
+        (const wchar_t (*)[SUBSCRIPTION_NAME_CAPACITY])names,2));
+    CHECK(CloseHandle(lock)); read_file(target,after,sizeof(after)); CHECK(!strcmp(before,after));
+    CHECK(subscription_settings_load_sources(directory,urls,names,&count));
+    names[0][0]=0;
+    CHECK(subscription_settings_save_sources(directory,(const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])urls,
+        (const wchar_t (*)[SUBSCRIPTION_NAME_CAPACITY])names,2));
+    CHECK(subscription_settings_load_sources(directory,urls,names,&count)); CHECK(!names[0][0] && !wcscmp(names[1],L"raw"));
+    const char *corrupt[]={"# name: dangling\n","# name: first\n# name: second\nhttps://example.test\n",
+        "# name: invalid\xff\nhttps://example.test\n","https://example.test/\xff\n"};
+    for(size_t i=0;i<sizeof(corrupt)/sizeof(corrupt[0]);i++) {
+        FILE *f=_wfopen(target,L"wb"); CHECK(f); CHECK(fputs(corrupt[i],f)>=0); CHECK(!fclose(f));
+        CHECK(!subscription_settings_load_sources(directory,urls,names,&count));
+        CHECK(count==2 && !names[0][0] && !wcscmp(names[1],L"raw"));
+        CHECK(!wcscmp(urls[1],L"https://example.test/allow"));
+    }
+    FILE *f=_wfopen(target,L"wb"); CHECK(f);
+    for(unsigned i=0;i<=SUBSCRIPTION_MAX_SOURCES;i++) CHECK(fputs("https://example.test\n",f)>=0);
+    CHECK(!fclose(f)); CHECK(!subscription_settings_load_sources(directory,urls,names,&count)); CHECK(count==2);
+    CHECK(!subscription_settings_name_valid(L"injected\nurl"));
+    CHECK(!subscription_settings_name_valid(L"\xd800"));
+    CHECK(DeleteFileW(target));
+    CHECK(subscription_settings_load_sources(directory,urls,names,&count)); CHECK(!count && !urls[0][0] && !names[1][0]);
+    CHECK(subscription_settings_save_sources(directory,(const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])urls,
+        (const wchar_t (*)[SUBSCRIPTION_NAME_CAPACITY])names,0));
+}
 int main(void) {
     wchar_t temporary[MAX_PATH], directory[MAX_PATH], target[MAX_PATH], status_path[MAX_PATH], lock_path[MAX_PATH];
     CHECK(GetTempPathW(MAX_PATH, temporary)); CHECK(GetTempFileNameW(temporary, L"asc", 0, directory));
@@ -37,6 +80,7 @@ int main(void) {
     read_file(status_path, bytes, sizeof(bytes)); CHECK(strstr(bytes, "规则\t保留旧规则\n"));
     CHECK(subscription_settings_save_urls(directory, (const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])urls, 0));
     read_file(target, bytes, sizeof(bytes)); CHECK(!strstr(bytes, "https://"));
+    names_roundtrip(directory,target);
     CHECK(DeleteFileW(target)); CHECK(DeleteFileW(status_path)); CHECK(DeleteFileW(lock_path)); CHECK(RemoveDirectoryW(directory));
     puts("Subscription settings: UTF-8, lock/replace rollback, injection rejection and empty save passed");
     return 0;

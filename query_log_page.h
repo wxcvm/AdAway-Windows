@@ -29,6 +29,7 @@ struct qlp_request {
 
 struct qlp_row {
     uint64_t timestamp;
+    int uid; /* -1 when unknown or an older server omitted attribution */
     int action;
     int type;
     int mode;
@@ -329,6 +330,7 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
     int action = 0;
     int type = 0;
     int mode = 0;
+    int uid = -1;
 
     if (out == NULL || row.buf == NULL || row.len == 0u ||
         !dashboard_json_object(row)) {
@@ -339,6 +341,14 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
         !qlp_json_type(row, &type) ||
         !qlp_json_small_uint(row, "$.mode", 255u, &mode)) {
         return false;
+    }
+    struct mg_str uid_token = mg_json_get_tok(row, "$.uid");
+    if (uid_token.len) {
+        bool negative = false;
+        uint64_t value = 0;
+        if (!qlp_json_integer(uid_token, true, &negative, &value) ||
+            (negative ? value != 1u : value > INT_MAX)) return false;
+        uid = negative ? -1 : (int)value;
     }
     if (!qlp_string_escapes_supported(row, "$.host")) return false;
     memset(host_stage, 0, sizeof host_stage);
@@ -353,6 +363,7 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
     }
 
     out->timestamp = timestamp;
+    out->uid = uid;
     out->action = action;
     out->type = type;
     out->mode = mode;

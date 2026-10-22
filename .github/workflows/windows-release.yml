@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.82
+      TAG: win11-webserver-v1.83
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -106,8 +106,13 @@ jobs:
       - name: Test atomic subscription source settings and save rollback
         shell: msys2 {0}
         run: |
+          python tools/check-control-ids.py
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic subscription_settings_win32.c subscription_settings_win32_test.c -o subscription_settings_win32_test.exe
           ./subscription_settings_win32_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic subscription_settings_win32.c subscription_display_win32.c subscription_display_win32_test.c -o subscription_display_win32_test.exe -lwinhttp
+          ./subscription_display_win32_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic policy_settings_win32.c policy_settings_win32_test.c -o policy_settings_win32_test.exe
+          ./policy_settings_win32_test.exe
 
       - name: Test pinned shared rule and native core contracts
         shell: msys2 {0}
@@ -361,6 +366,20 @@ jobs:
           ./update_feed_test.exe tests/fixtures/windows-stable-manifest.json
           gcc -std=c11 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Ijni update_channel_integration_test.c update_feed.o update_mongoose.o -o update_channel_integration_test.exe -lws2_32 -lwinhttp -lbcrypt -lwintrust -lcrypt32 -ladvapi32 -lshell32
           ./update_channel_integration_test.exe
+          python tools/embed-portable-updater.py --check
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic tools/update-portable-fixture.c -o update_portable_fixture.exe
+
+      - name: Test isolated portable update restart and rollback
+        shell: powershell
+        run: ./tools/test-portable-updater.ps1 -FixtureExecutable ./update_portable_fixture.exe
+
+      - name: Upload portable update fixture diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-update-fixture-diagnostics
+          path: ${{ runner.temp }}/AdAwayPortable-*/**/*.log
+          if-no-files-found: warn
 
       - name: Test dashboard HTTP responses with actual Mongoose
         shell: msys2 {0}
@@ -375,12 +394,16 @@ jobs:
           ./query_log_page_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni query_log_navigation_test.c dashboard_mongoose.o -o query_log_navigation_test.exe -lws2_32 -lbcrypt
           ./query_log_navigation_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_filter_test.c -o query_log_filter_test.exe
+          ./query_log_filter_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -I. -Ijni tools/query-log-client-probe.c dashboard_mongoose.o -o query-log-client-probe.exe -lws2_32 -lbcrypt
 
       - name: Test pinned query log contract and atomic Windows persistence
         shell: msys2 {0}
         run: |
           bash fetch-log-contract.sh
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic log-contract/request_host_test.c -o request_host_test.exe
+          ./request_host_test.exe
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_atomic_win32_test.c -o query_log_atomic_win32_test.exe
           ./query_log_atomic_win32_test.exe "$(cygpath -m "$RUNNER_TEMP")"
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni -Ilog-contract log-contract/query_log_store_test.c dashboard_mongoose.o -o query_log_store_test.exe -lws2_32 -lbcrypt
@@ -620,6 +643,7 @@ jobs:
           $uiRoot = Join-Path $env:RUNNER_TEMP 'adblock-ui-inspection'
           New-Item -ItemType Directory -Force -Path $uiRoot | Out-Null
           Copy-Item -Path 'dist/*' -Destination $uiRoot -Recurse -Force
+          Set-Content (Join-Path $uiRoot 'webserver.ini') "[settings]`nautomatic_update=0" -Encoding ascii
           $res3 = Join-Path $uiRoot 'resources'
           # Offline fixture: management / selection only, no update is triggered.
           Set-Content -LiteralPath (Join-Path $res3 'subscription_urls.txt') -Encoding utf8 -Value @('https://example.test/hosts','https://example.test/allow')
@@ -695,6 +719,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stable, $preview | Out-Null
           Copy-Item -Path 'dist/*' -Destination $stable -Recurse -Force
           Copy-Item -Path 'dist/*' -Destination $preview -Recurse -Force
+          Set-Content (Join-Path $stable 'webserver.ini') "[settings]`nautomatic_update=0" -Encoding ascii
+          Set-Content (Join-Path $preview 'webserver.ini') "[settings]`nautomatic_update=0" -Encoding ascii
           $a = $null
           $b = $null
           try {

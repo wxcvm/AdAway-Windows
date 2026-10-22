@@ -46,12 +46,15 @@
 #include "windows_network_inventory_win32.h"
 #include "subscription_update_win32.h"
 #include "subscription_settings_win32.h"
+#include "policy_settings_win32.h"
+#include "subscription_display_win32.h"
 #include "listener_conflict_win32.h"
 #include "managed_listener_address_win32.h"
 #include "listener_arrival_dialog_win32.h"
 #include "control_http_result.h"
 #include "dashboard_response.h"
 #include "query_log_navigation.h"
+#include "query_log_filter.h"
 #include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
@@ -157,6 +160,7 @@ struct histogram {
    (the app itself maps it to a package name, so name stays empty there). */
 struct app_row {
     wchar_t name[64];
+    int uid;
     long long connections;
     long long requests;
     long long blocked;
@@ -173,6 +177,7 @@ struct app_row {
 /* One entry of the server's query log ring buffer (newest first). */
 struct qlog_row {
     long long ts;
+    int uid;
     int action;              /* 0 = proxied, 1 = blocked, 2 = allowed */
     int type;                /* blocked policy type index, -1 = unknown */
     int mode;                /* 0 = placeholder, 1 = 204, 2 = passthrough */
@@ -450,6 +455,7 @@ static void json_apps(const char *body, struct snapshot *sn) {
         item[il] = '\0';
         a = &sn->apps[sn->app_count];
         memset(a, 0, sizeof(*a));
+        a->uid = strstr(item, "\"uid\":") != NULL ? (int)json_num(item, "uid") : -1;
         a->connections = json_num(item, "connections");
         a->requests = json_num(item, "requests");
         a->blocked = json_num(item, "blocked");
@@ -465,8 +471,10 @@ static void json_apps(const char *body, struct snapshot *sn) {
             if (e != NULL && e > q)
                 MultiByteToWideChar(CP_UTF8, 0, q, (int)(e - q), a->name, 63);
         }
-        if (a->name[0] == 0)
-            swprintf(a->name, 64, L"id %d", (int) json_num(item, "uid"));
+        if (a->name[0] == 0) {
+            if (a->uid >= 0) swprintf(a->name, 64, L"PID %d", a->uid);
+            else wcscpy(a->name, L"未归属进程");
+        }
         sn->app_count++;
     }
     /* Busiest first: the server keeps insertion order, the dashboard wants a
@@ -552,6 +560,7 @@ static void json_qlog_key(const char *body, struct snapshot *sn, const char *key
         r = &sn->qlog[sn->qlog_count];
         memset(r, 0, sizeof(*r));
         r->ts = json_num(item, "ts");
+        r->uid = strstr(item, "\"uid\":") != NULL ? (int)json_num(item, "uid") : -1;
         r->action = (int) json_num(item, "action");
         /* An older server does not publish "type" at all - that must show as
            "unknown", not as type 0 (图片). */
@@ -883,6 +892,7 @@ static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *re
     memset(sn->qlog, 0, sizeof(sn->qlog));
     for (int i = 0; i < sn->qlog_count; i++) {
         sn->qlog[i].ts = page.rows[i].timestamp <= LLONG_MAX ? (long long)page.rows[i].timestamp : 0;
+        sn->qlog[i].uid = page.rows[i].uid;
         sn->qlog[i].action = page.rows[i].action;
         sn->qlog[i].type = page.rows[i].type;
         sn->qlog[i].mode = page.rows[i].mode;
@@ -957,6 +967,12 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_PREVIOUS 1210
 #define IDC_QLOG_NEXT 1211
 #define IDC_QLOG_REFRESH 1212
+#define IDC_QLOG_SEARCH 1213
+#define IDC_QLOG_FILTER 1214
+#define IDC_QLOG_LIST 1215
+#define IDC_QLOG_DETAILS 1216
+#define IDC_QLOG_APPS 1217
+#define IDC_QLOG_LIVE 1218
 #define IDC_POL0      1110
 #define IDC_SUBRELOAD 1130
 #define IDC_POLDEF    1131   /* 恢复推荐默认 */
@@ -971,6 +987,10 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_SUB_SELECTED 1146
 #define IDC_SUB_CONFIRM 1147
 #define IDC_SUB_CANCEL 1148
+#define IDC_SUB_NAME 1310
+#define IDC_SUB_RENAME 1311
+#define IDC_SUB_DEFAULT_NAME 1312
+#define IDC_SUB_FULL_URL 1313
 #define IDC_BIND_IP 1190
 #define IDC_CHECK_LISTEN 1191
 #define IDC_LISTEN_STATUS 1192
@@ -988,6 +1008,7 @@ static bool s_address_busy;
 #define IDC_IPV6_LABEL 1204
 #define IDC_PREVIEWUPD 1300
 #define IDC_PORTABLEUPD 1134 /* 用便携包更新（zip 就地替换） */
+#define IDC_AUTOUPD 1302
 
 /*
  * Per-type blocking method: label, block_config.json key, control id and the
@@ -1178,19 +1199,13 @@ static wchar_t g_status[4096];
 
 /* modes[i]: 0 = placeholder reply, 1 = 204 deny, 2 = allow (no blocking).
    reply_* is kept in sync for compatibility with older servers. */
-static void policy_save_modes(const char *dir, const int *modes) {
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/block_config.json", dir);
-    FILE *f = fopen(path, "w");
-    if (!f) return;
-    fprintf(f, "{\n");
+static bool policy_save_modes(const char *dir, const int *modes) {
+    wchar_t directory[MAX_PATH];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir, -1, directory, MAX_PATH) <= 0) return false;
+    struct policy_setting settings[POLICY_COUNT];
     for (int i = 0; i < POLICY_COUNT; i++)
-        fprintf(f, "  \"%s\": %s,\n", g_policy[i].key, modes[i] != 2 ? "true" : "false");
-    for (int i = 0; i < POLICY_COUNT; i++)
-        fprintf(f, "  \"%s\": %d%s\n", g_policy[i].mode_key, modes[i],
-                i + 1 < POLICY_COUNT ? "," : "");
-    fprintf(f, "}\n");
-    fclose(f);
+        settings[i] = (struct policy_setting){g_policy[i].key, g_policy[i].mode_key, modes[i]};
+    return policy_settings_save(directory, settings, POLICY_COUNT) != 0;
 }
 
 /* Current method of one type: mode_* when present, otherwise the legacy
@@ -1239,12 +1254,17 @@ static void policy_sync_controls(HWND hwnd) {
 
 /* Write all ten modes and let the running server pick them up immediately. */
 static void policy_apply_modes(HWND hwnd, const int *modes, const wchar_t *what) {
-    policy_save_modes(g_res, modes);
+    if (!policy_save_modes(g_res, modes)) {
+        policy_sync_controls(hwnd);
+        swprintf(g_status, 4096, L"拦截策略保存失败；原配置保留，未请求服务端加载。请检查文件占用或写入权限后重试。");
+        InvalidateRect(hwnd, NULL, FALSE);
+        return;
+    }
     wchar_t st[128] = L"";
     bool confirmed=control_post(mgmt_port(), "reload_config", st, 128);
     policy_sync_controls(hwnd);
-    swprintf(g_status, 4096, L"%ls；%ls（%ls）", what ? what : L"拦截方式设置请求",
-             confirmed ? L"服务端已重新读取配置" : L"未确认服务端加载",st);
+    swprintf(g_status, 4096, L"%ls；配置已保存；%ls（%ls）", what ? what : L"拦截方式设置请求",
+             confirmed ? L"已收到重新读取确认，活动版本未核对" : L"尚未收到加载确认，活动版本未确认", st);
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
@@ -1687,7 +1707,6 @@ static struct wintun_probe_result g_wintun_probe;
 static int g_tab = 0;               /* 0 = statistics, 1 = 应用日志, 2 = settings */
 /* Operation results persist; live service and certificate state have dedicated labels. */
 static wchar_t g_status[4096] = L"就绪 · 使用左侧“订阅”管理规则来源";
-static HWND s_ctrls[64];
 static int s_ctrl_count = 0;
 static HFONT g_ctl_font = NULL;
 
@@ -1713,7 +1732,12 @@ static DWORD g_poll_last_post = 0;   /* keep-alive post (clock) */
    the server cursor instead of pretending a 400-row summary is the full ring.
    The card follows
    the mouse wheel instead of silently dropping everything older. */
-static int g_qlog_scroll = 0;
+static bool g_log_apps = false;
+static bool g_log_rendering = false;
+static int g_log_shown = 0;
+static uint64_t g_log_render_hash;
+static wchar_t g_log_search[192];
+static int g_log_filter = -1;
 
 /* ── resource accounting (shown in the dashboard + diagnose.txt) ────
  * "高消耗" was reported without numbers, so the app now measures itself:
@@ -2450,7 +2474,7 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_CHECK_LISTEN,738,70,110,26,L"BUTTON",L"检测冲突",BS_PUSHBUTTON },
     { IDC_LOOP_PAIR,860,70,130,26,L"BUTTON",L"仅本机（推荐）",BS_PUSHBUTTON },
     { IDC_LISTEN_STATUS,218,208,772,40,L"EDIT",L"",ES_MULTILINE|ES_READONLY|WS_VSCROLL },
-    { IDC_ADGUARD_HOME, 742, 590, 250, 26, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
+    { IDC_ADGUARD_HOME, 834, 590, 168, 26, L"BUTTON", L"AdGuard 检测与协同…", BS_PUSHBUTTON },
     { IDC_SAVE,       640, 174, 110, 28, L"BUTTON", L"保存设置", BS_PUSHBUTTON },
     { IDC_RESTART,    760, 174, 120, 28, L"BUTTON", L"保存并重启", BS_PUSHBUTTON },
     { IDC_FIXPORT,    860, 106, 130, 28, L"BUTTON", L"备用端口", BS_PUSHBUTTON },
@@ -2465,9 +2489,10 @@ static const struct ctl_desc g_clayout[] = {
     { IDC_SUBRELOAD,  218, 556, 250, 26, L"BUTTON", L"重新加载本地订阅", BS_PUSHBUTTON },
     { IDC_FLUSH,      480, 556, 250, 26, L"BUTTON", L"立即保存统计", BS_PUSHBUTTON },
     { IDC_POLDEF,     742, 556, 250, 26, L"BUTTON", L"恢复推荐拦截策略", BS_PUSHBUTTON },
-    { IDC_PORTABLEUPD,218, 590, 112, 26, L"BUTTON", L"更新：自动", BS_PUSHBUTTON },
-    { IDC_PREVIEWUPD,338, 590, 130, 26, L"BUTTON", L"渠道：稳定版", BS_PUSHBUTTON },
-    { IDM_UPDATE,    480, 590, 250, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDC_PORTABLEUPD,218, 590, 148, 26, L"BUTTON", L"包：安装器优先", BS_PUSHBUTTON },
+    { IDC_PREVIEWUPD,376, 590, 138, 26, L"BUTTON", L"渠道：稳定版", BS_PUSHBUTTON },
+    { IDM_UPDATE,    684, 590, 140, 26, L"BUTTON", L"检查更新", BS_PUSHBUTTON },
+    { IDC_AUTOUPD,   524, 590, 150, 26, L"BUTTON", L"自动更新：开启", BS_PUSHBUTTON },
 };
 /* Number of controls in g_clayout: derive it from the array itself. It used to
    be a hand-kept constant, and when IDM_UPDATE (检查更新) was appended the
@@ -2481,9 +2506,13 @@ static const struct ctl_desc g_sublayout[] = {
     { IDC_SUB_URL,   218,  70, 560, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
     { IDC_SUB_ADD,   790,  70, 100, 26, L"BUTTON", L"添加", BS_PUSHBUTTON },
     { IDC_SUB_DEL,   898,  70, 104, 26, L"BUTTON", L"删除选中", BS_PUSHBUTTON },
-    { IDC_SUB_LIST,  218, 110, 784, 326, L"LISTBOX", L"",
+    { IDC_SUB_LIST,  218, 110, 784, 230, L"LISTBOX", L"",
       WS_BORDER | WS_VSCROLL | WS_HSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
-    { IDC_SUB_SELECTED, 218, 448, 784, 28, L"EDIT", L"", WS_BORDER | ES_READONLY | ES_AUTOHSCROLL },
+    { IDC_SUB_SELECTED, 218, 370, 580, 26, L"EDIT", L"", WS_BORDER | ES_READONLY | ES_AUTOHSCROLL },
+    { IDC_SUB_FULL_URL, 808, 370, 194, 26, L"BUTTON", L"显示完整地址", BS_PUSHBUTTON },
+    { IDC_SUB_NAME, 218, 426, 390, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
+    { IDC_SUB_RENAME, 618, 426, 180, 26, L"BUTTON", L"保存名称", BS_PUSHBUTTON },
+    { IDC_SUB_DEFAULT_NAME, 808, 426, 194, 26, L"BUTTON", L"恢复自动名称", BS_PUSHBUTTON },
     { IDC_SUB_UPD,   218, 500, 190, 28, L"BUTTON", L"立即更新全部", BS_PUSHBUTTON },
     { IDC_SUB_OPEN,  418, 500, 190, 28, L"BUTTON", L"打开订阅文件夹", BS_PUSHBUTTON },
     { IDC_SUB_CONFIRM, 618, 500, 180, 28, L"BUTTON", L"确认移除", BS_PUSHBUTTON },
@@ -2494,15 +2523,34 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_PREVIOUS, 218, 584, 122, 26, L"BUTTON", L"上一页", BS_PUSHBUTTON },
     { IDC_QLOG_NEXT,     350, 584, 148, 26, L"BUTTON", L"更早记录", BS_PUSHBUTTON },
     { IDC_QLOG_REFRESH,  508, 584, 166, 26, L"BUTTON", L"刷新到最新", BS_PUSHBUTTON },
+    { IDC_QLOG_SEARCH, 218, 90, 480, 28, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
+    { IDC_QLOG_FILTER, 710, 90, 158, 200, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
+    { IDC_QLOG_LIST, 218, 132, 784, 290, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
+    { IDC_QLOG_DETAILS, 218, 466, 784, 96, L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL },
+    { IDC_QLOG_APPS, 856, 24, 146, 28, L"BUTTON", L"查看应用统计", BS_PUSHBUTTON },
+    { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
 };
 #define CL_LOG ((int)(sizeof(g_loglayout) / sizeof(g_loglayout[0])))
-_Static_assert(CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 1 <= 64, "Native control registry capacity");
+static HWND s_ctrls[CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 1];
 
+static void log_list_refresh(HWND hwnd, bool force);
+static void log_details_refresh(HWND hwnd);
 static void log_controls_refresh(HWND hwnd) {
     bool current = g_sn && g_sn->qlog_ready && !g_sn->qlog_error &&
         g_sn->qlog_revision == g_log_nav.revision;
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_PREVIOUS), current && g_log_nav.depth > 0);
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_NEXT), current && g_sn->qlog_page.has_more);
+    for (int i = 0; i < CL_LOG; ++i) {
+        int id = g_loglayout[i].id;
+        bool visible = g_tab == 1 && (!g_log_apps || id == IDC_QLOG_LIST ||
+            id == IDC_QLOG_DETAILS || id == IDC_QLOG_APPS);
+        ShowWindow(GetDlgItem(hwnd, id), visible ? SW_SHOW : SW_HIDE);
+    }
+    SetDlgItemTextW(hwnd, IDC_QLOG_APPS, g_log_apps ? L"返回请求日志" : L"查看应用统计");
+    SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
+        g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE), g_sn && g_sn->qlog_ready && !g_sn->qlog_error);
+    log_list_refresh(hwnd, false);
 }
 
 static void log_navigation(HWND hwnd, int action) {
@@ -2515,7 +2563,6 @@ static void log_navigation(HWND hwnd, int action) {
     }
     pthread_mutex_unlock(&g_snap_mutex);
     if (changed) {
-        g_qlog_scroll = 0;
         if (g_sn) g_sn->qlog_error = 3;
         if (g_poll_wake) SetEvent(g_poll_wake);
         log_controls_refresh(hwnd);
@@ -2626,11 +2673,137 @@ static const wchar_t *log_type_label(int t) {
 
 static const wchar_t *log_mode_label(int m) {
     switch (m) {
+    case 0: return L"占位";
     case 1: return L"204";
     case 2: return L"放行";
     case 3: return L"空响应";
-    default: return L"占位";
+    default: return L"未知策略";
     }
+}
+
+static const wchar_t *log_action_label(int action) {
+    return action == 1 ? L"拦截响应" : action == 2 ? L"本地豁免" : L"转发已启动";
+}
+
+static void log_time(long long stamp, wchar_t *out, size_t capacity, bool date) {
+    time_t value = (time_t)stamp;
+    struct tm *local = stamp > 0 ? localtime(&value) : NULL;
+    if (!local || !wcsftime(out, capacity, date ? L"%Y-%m-%d %H:%M:%S" : L"%H:%M:%S", local))
+        swprintf(out, capacity, L"时间未知");
+}
+
+static void log_freeze_current(HWND hwnd) {
+    if (g_sn && g_sn->qlog_ready && !g_sn->qlog_error) {
+        pthread_mutex_lock(&g_snap_mutex);
+        bool frozen = qln_freeze(&g_log_nav, &g_sn->qlog_page, g_sn->qlog_revision);
+        pthread_mutex_unlock(&g_snap_mutex);
+        if (frozen && g_poll_wake) SetEvent(g_poll_wake);
+    }
+    log_controls_refresh(hwnd);
+}
+
+static WNDPROC g_log_list_original;
+static LRESULT CALLBACK log_list_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
+    /* Native listboxes consume their own wheel/scroll messages. The parent's
+       WM_MOUSEWHEEL handler alone cannot protect a page being read this way. */
+    if (!g_log_apps && (message == WM_MOUSEWHEEL || message == WM_VSCROLL))
+        log_freeze_current(GetParent(hwnd));
+    return CallWindowProcW(g_log_list_original, hwnd, message, wp, lp);
+}
+
+static void log_details_refresh(HWND hwnd) {
+    HWND list = GetDlgItem(hwnd, IDC_QLOG_LIST);
+    LRESULT selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
+    LRESULT index = selected == LB_ERR ? LB_ERR : SendMessageW(list, LB_GETITEMDATA, (WPARAM)selected, 0);
+    wchar_t text[1500];
+    if (!g_sn || index == LB_ERR || index < 0 || index >= (g_log_apps ? g_sn->app_count : g_sn->qlog_count)) {
+        SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, g_log_apps ? L"选中进程查看计数；仅统计到达响应服务器的连接。" :
+            L"选中请求查看详情。这里记录响应服务器收到的 HTTP 请求，不代表全部 DNS／Hosts 拦截。键盘方向键可浏览，Ctrl+C 可复制详情。");
+        return;
+    }
+    if (g_log_apps) {
+        struct app_row *app = &g_sn->apps[index];
+        wchar_t pid[40];
+        if (app->uid >= 0) swprintf(pid, 40, L"%d", app->uid); else wcscpy(pid, L"未知");
+        swprintf(text, 1500, L"进程：%ls    PID：%ls\r\n连接：%lld    请求：%lld    拦截响应：%lld\r\n最近观测速率：%lld 次/秒    TLS 失败：%lld\r\n进程归属为连接建立时的观测，不证明当前同 PID 的进程身份。",
+            app->name, pid, app->connections, app->requests, app->blocked, app->tps, app->tls_fail);
+    } else {
+        struct qlog_row *row = &g_sn->qlog[index];
+        wchar_t time[64], pid[40];
+        log_time(row->ts, time, 64, true);
+        if (row->uid >= 0) swprintf(pid, 40, L"%d", row->uid); else wcscpy(pid, L"未知／未归属");
+        const wchar_t *meaning = row->action == 1 ? L"服务器返回了拦截响应。" : row->action == 2 ?
+            L"服务器命中本地豁免并返回无内容响应；不代表原站可访问。" :
+            L"已启动到上游的转发；这条记录不证明上游访问成功。";
+        swprintf(text, 1500, L"域名：%ls\r\n时间：%ls    PID：%ls\r\n结果：%ls    类型：%ls    响应策略：%ls\r\n%ls 规则／来源标识：当前记录未提供。",
+            row->host, time, pid, log_action_label(row->action), log_type_label(row->type),
+            row->action == 1 ? log_mode_label(row->mode) : L"不适用", meaning);
+    }
+    SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, text);
+}
+
+static uint64_t log_hash_bytes(uint64_t value, const void *bytes, size_t count) {
+    const unsigned char *input = bytes;
+    for (size_t i = 0; i < count; ++i) { value ^= input[i]; value *= UINT64_C(1099511628211); }
+    return value;
+}
+
+static void log_list_refresh(HWND hwnd, bool force) {
+    HWND list = GetDlgItem(hwnd, IDC_QLOG_LIST);
+    if (!list || !g_sn || g_tab != 1) return;
+    uint64_t hash = UINT64_C(14695981039346656037);
+    hash = log_hash_bytes(hash, &g_log_apps, sizeof(g_log_apps));
+    hash = log_hash_bytes(hash, &g_log_filter, sizeof(g_log_filter));
+    hash = log_hash_bytes(hash, g_log_search, wcslen(g_log_search) * sizeof(wchar_t));
+    int count = g_log_apps ? g_sn->app_count : g_sn->qlog_count;
+    hash = log_hash_bytes(hash, &count, sizeof(count));
+    hash = log_hash_bytes(hash, g_log_apps ? (const void *)g_sn->apps : (const void *)g_sn->qlog,
+        (size_t)count * (g_log_apps ? sizeof(struct app_row) : sizeof(struct qlog_row)));
+    if (!force && hash == g_log_render_hash) return;
+    g_log_render_hash = hash;
+    struct qlog_row selected_log = {0};
+    int selected_pid = -2;
+    LRESULT selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
+    LRESULT old_index = selected == LB_ERR ? LB_ERR : SendMessageW(list, LB_GETITEMDATA, (WPARAM)selected, 0);
+    /* Once snapshots change, the old index belongs to the previous snapshot.
+       Clearing selection avoids ever presenting another request as its details. */
+    bool preserve = force && old_index >= 0 && old_index < count;
+    if (preserve) {
+        if (g_log_apps) selected_pid = g_sn->apps[old_index].uid;
+        else selected_log = g_sn->qlog[old_index];
+    }
+    LRESULT top = SendMessageW(list, LB_GETTOPINDEX, 0, 0);
+    g_log_rendering = true;
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(list, LB_RESETCONTENT, 0, 0);
+    g_log_shown = 0;
+    for (int i = 0; i < count; ++i) {
+        wchar_t line[512];
+        if (g_log_apps) {
+            struct app_row *app = &g_sn->apps[i];
+            swprintf(line, 512, L"%ls    连接 %lld    请求 %lld    拦截 %lld",
+                app->name, app->connections, app->requests, app->blocked);
+        } else {
+            struct qlog_row *row = &g_sn->qlog[i];
+            if (!qlf_matches(row->host, row->action, g_log_search, g_log_filter)) continue;
+            wchar_t time[32]; log_time(row->ts, time, 32, false);
+            swprintf(line, 512, L"%ls    [%ls]    %ls", time, log_action_label(row->action), row->host);
+        }
+        LRESULT item = SendMessageW(list, LB_ADDSTRING, 0, (LPARAM)line);
+        if (item == LB_ERR || item == LB_ERRSPACE) break;
+        SendMessageW(list, LB_SETITEMDATA, (WPARAM)item, (LPARAM)i);
+        ++g_log_shown;
+        if (preserve && (g_log_apps ? g_sn->apps[i].uid == selected_pid :
+                memcmp(&selected_log, &g_sn->qlog[i], sizeof(selected_log)) == 0)) {
+            SendMessageW(list, LB_SETCURSEL, (WPARAM)item, 0);
+            preserve = false;
+        }
+    }
+    if (force && top != LB_ERR && top < g_log_shown) SendMessageW(list, LB_SETTOPINDEX, (WPARAM)top, 0);
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(list, NULL, TRUE);
+    g_log_rendering = false;
+    log_details_refresh(hwnd);
 }
 
 /*
@@ -2780,6 +2953,7 @@ static void update_button_refresh(HWND hwnd) {
     EnableWindow(b, st == 0);
     EnableWindow(GetDlgItem(hwnd, IDC_PORTABLEUPD), st == 0);
     EnableWindow(GetDlgItem(hwnd, IDC_PREVIEWUPD), st == 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_AUTOUPD), st == 0);
 }
 
 static bool refresh_owned_autostart(void) {
@@ -3001,145 +3175,50 @@ static void draw_ranking_page(HDC hdc) {
 
 static void draw_activity_page(HDC hdc) {
     struct snapshot *sn = g_sn;
-    HFONT hf = mfont(15, FW_SEMIBOLD);
-    HFONT lf = mfont(12, FW_NORMAL);
-    HFONT old;
-    /* Kept as named constants so every TextOutW() gets the real length -
-       a hand-counted cchString that is one too large makes GDI read past the
-       end of the literal. */
-    static const wchar_t *HINT_APPS =
-        L"按请求数排序 - Windows 侧按连接所属进程统计（PID → 进程名）";
-    static const wchar_t *HINT_LOG =
-        L"仅记录 Web 响应请求；翻页固定历史，刷新回到最新。";
-    static const wchar_t *WAIT = L"等待服务器统计数据 ...";
-    static const wchar_t *NO_APPS = L"暂无数据：还没有可归属的客户端连接经过拦截端口。";
-    static const wchar_t *NO_LOG = L"暂无请求记录。";
+    rounded_card(hdc, 202, 12, 812, 608, 12, g_pal.card, g_pal.border);
+    HFONT title_font = mfont(18, FW_SEMIBOLD);
+    HFONT body_font = mfont(11, FW_NORMAL);
+    HFONT old = (HFONT)SelectObject(hdc, title_font);
     SetBkMode(hdc, TRANSPARENT);
-
-    /* per-app card */
-    rounded_card(hdc, 202, 12, 812, 300, 12, g_pal.card, g_pal.border);
-    old = (HFONT) SelectObject(hdc, hf);
     SetTextColor(hdc, g_pal.text);
-    TextOutW(hdc, S(218), S(24), L"按应用统计", 5);
-    SelectObject(hdc, lf);
+    RECT title = {S(218), S(24), S(838), S(54)};
+    DrawTextW(hdc, g_log_apps ? L"应用活动" : L"请求日志", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, body_font);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(218), S(48), HINT_APPS, (int) wcslen(HINT_APPS));
-    if (sn == NULL || !sn->has_data) {
-        TextOutW(hdc, S(222), S(100), WAIT, (int) wcslen(WAIT));
-    } else if (sn->app_count == 0) {
-        TextOutW(hdc, S(222), S(100), NO_APPS, (int) wcslen(NO_APPS));
-    } else {
-        int rows = sn->app_count > 9 ? 9 : sn->app_count;
-        SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(222), S(74), L"进程 / 应用", 7);
-        TextOutW(hdc, S(690), S(74), L"连接", 2);
-        TextOutW(hdc, S(780), S(74), L"请求", 2);
-        TextOutW(hdc, S(880), S(74), L"拦截", 2);
-        for (int i = 0; i < rows; i++) {
-            wchar_t nm[40], num[32];
-            int y = 100 + i * 24;
-            size_t nl = wcslen(sn->apps[i].name);
-            wcsncpy(nm, sn->apps[i].name, 26);
-            nm[26] = 0;
-            if (nl > 26) wcscat(nm, L"...");
-            SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(222), S(y), nm, (int) wcslen(nm));
-            SetTextColor(hdc, g_pal.muted);
-            fmt_num(num, 32, sn->apps[i].connections);
-            TextOutW(hdc, S(690), S(y), num, (int) wcslen(num));
-            fmt_num(num, 32, sn->apps[i].requests);
-            /* 「请求风暴」标记：速率 ≥ 20 次/秒（与 Android 端同一阈值；速率由服务端在
-               两次统计快照之间实测，旧服务器没有该字段时为 0 → 不显示）。
-               num 在相邻几行里都以 32 为界使用，所以拼接前先查长度，绝不溢出。 */
-            if (sn->apps[i].tps >= 20 && wcslen(num) <= 32 - 8) {
-                wcscat(num, L"(风暴)");
-            }
-            /* 「已改为廉价拒绝」：固定证书策略命中（用户在设置里开了该策略才可能出现）。
-               两次拼接都先查长度，32 字节的 num 绝不溢出。 */
-            if (sn->apps[i].pin_refused && wcslen(num) <= 32 - 12) {
-                wcscat(num, L"(仅拒绝)");
-            }
-            TextOutW(hdc, S(780), S(y), num, (int) wcslen(num));
-            if (sn->apps[i].blocked > 0) SetTextColor(hdc, C_RED);
-            fmt_num(num, 32, sn->apps[i].blocked);
-            TextOutW(hdc, S(880), S(y), num, (int) wcslen(num));
-        }
+    RECT hint = {S(218), S(60), S(1002), S(82)};
+    DrawTextW(hdc, g_log_apps ? L"仅显示服务器观测到的进程；连接、HTTP 请求与拦截响应分别计数。" :
+        L"HTTP 响应服务器活动 · 搜索与筛选作用于本页，读取更早记录可继续查找。", -1, &hint,
+        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    if (g_log_apps) {
+        RECT app_scope = {S(218), S(90), S(1002), S(119)};
+        DrawTextW(hdc, L"按请求数排列，列表可滚动；选中进程查看完整计数。", -1, &app_scope,
+            DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
-
-    /* query log card */
-    rounded_card(hdc, 202, 324, 812, 296, 12, g_pal.card, g_pal.border);
-    SelectObject(hdc, hf);
-    SetTextColor(hdc, g_pal.text);
-    TextOutW(hdc, S(218), S(336), L"最近请求", 4);
-    SelectObject(hdc, lf);
-    SetTextColor(hdc, g_pal.muted);
-    const wchar_t *log_hint = HINT_LOG;
-    if (sn && sn->qlog_error) {
-        log_hint = sn->qlog_error == 2 ? L"历史已过期，请刷新；已显示记录保留。" :
-                   sn->qlog_error == 3 ? L"正在读取历史，当前仍显示上一页。" :
-                   L"历史读取失败；保留已有记录，可刷新重试。";
+    wchar_t count[240];
+    if (g_log_apps) {
+        swprintf(count, 240, L"已观测 %d 个进程；未知 PID 不推断为系统或当前应用。", sn ? sn->app_count : 0);
+    } else if (!sn || !sn->has_data) {
+        swprintf(count, 240, L"统计不可用；请检查响应服务器是否正在运行。这里不会把未采集当作零拦截。");
+    } else if (sn->qlog_error) {
+        const wchar_t *status = sn->qlog_error == 2 ? L"历史已过期，请刷新" :
+            sn->qlog_error == 3 ? L"正在读取历史" : L"历史读取失败，请刷新重试";
+        swprintf(count, 240, L"%ls · 保留当前 %d 条显示记录。", status, g_log_shown);
         SetTextColor(hdc, sn->qlog_error == 3 ? g_pal.muted : C_RED);
-    }
-    TextOutW(hdc, S(218), S(360), log_hint, (int) wcslen(log_hint));
-    if (sn == NULL || !sn->has_data) {
-        TextOutW(hdc, S(222), S(412), WAIT, (int) wcslen(WAIT));
-    } else if (sn->qlog_count == 0) {
-        TextOutW(hdc, S(222), S(412), NO_LOG, (int) wcslen(NO_LOG));
+    } else if (!sn->qlog_ready) {
+        swprintf(count, 240, L"摘要 %d 条 · 完整历史尚未就绪；当前筛选匹配 %d 条。", sn->qlog_count, g_log_shown);
+    } else if (!sn->qlog_count) {
+        swprintf(count, 240, L"当前历史为空 · 只有实际到达本机响应服务器的请求会出现在这里。");
     } else {
-        const int visible = 9;
-        int max_scroll = sn->qlog_count > visible ? sn->qlog_count - visible : 0;
-        if (g_qlog_scroll > max_scroll) g_qlog_scroll = max_scroll;
-        if (g_qlog_scroll < 0) g_qlog_scroll = 0;
-        int rows = sn->qlog_count - g_qlog_scroll;
-        if (rows > visible) rows = visible;
-        /* How much history is kept, so "为什么只有 11 条" answers itself. */
-        {
-            wchar_t more[64];
-            if (sn->qlog_ready) swprintf(more, 64, L"第 %d–%d 条 / %d 条",
-                sn->qlog_page.offset + 1, sn->qlog_page.offset + sn->qlog_count, sn->qlog_page.total);
-            else swprintf(more, 64, L"摘要 %d 条 · 历史未就绪", sn->qlog_count);
-            TextOutW(hdc, S(660), S(360), more, (int) wcslen(more));
-        }
-        TextOutW(hdc, S(222), S(388), L"时间", 2);
-        TextOutW(hdc, S(300), S(388), L"结果", 2);
-        TextOutW(hdc, S(372), S(388), L"方式", 2);
-        TextOutW(hdc, S(500), S(388), L"主机", 2);
-        for (int i = 0; i < rows; i++) {
-            struct qlog_row *r = &sn->qlog[g_qlog_scroll + i];
-            wchar_t tb[32] = L"--:--:--", way[64] = L"—";
-            const wchar_t *act;
-            int y = 412 + i * 19;
-            time_t t = (time_t) r->ts;
-            struct tm *tmv = localtime(&t);
-            if (tmv != NULL)
-                swprintf(tb, 32, L"%02d:%02d:%02d", tmv->tm_hour, tmv->tm_min, tmv->tm_sec);
-            if (r->action == 1 || r->action == 2)
-                swprintf(way, 64, L"%ls · %ls", log_type_label(r->type), log_mode_label(r->mode));
-            SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(222), S(y), tb, (int) wcslen(tb));
-            if (r->action == 1) {
-                SetTextColor(hdc, C_RED);
-                act = L"拦截";
-            } else if (r->action == 2) {
-                SetTextColor(hdc, C_GREEN_TXT);
-                act = L"放行";
-            } else {
-                SetTextColor(hdc, g_pal.text);
-                act = L"代理";
-            }
-            TextOutW(hdc, S(300), S(y), act, 2);
-            SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(372), S(y), way, (int) wcslen(way));
-            SetTextColor(hdc, g_pal.text);
-            RECT host_bounds = {S(500), S(y), S(982), S(y + 19)};
-            DrawTextW(hdc, r->host, -1, &host_bounds,
-                      DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-        }
+        swprintf(count, 240, L"%ls · 本页第 %u–%u / %u 条 · 筛选匹配 %d 条%ls",
+            g_log_nav.request.generation[0] ? L"历史已固定" : L"实时刷新",
+            (unsigned)sn->qlog_page.offset + 1u, (unsigned)sn->qlog_page.offset + (unsigned)sn->qlog_count,
+            (unsigned)sn->qlog_page.total, g_log_shown, !g_log_shown ? L"（可翻页继续查找）" : L"");
     }
-
+    RECT count_rect = {S(218), S(430), S(1002), S(453)};
+    DrawTextW(hdc, count, -1, &count_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, old);
-    DeleteObject(hf);
-    DeleteObject(lf);
+    DeleteObject(title_font);
+    DeleteObject(body_font);
     draw_statusbar(hdc);
 }
 
@@ -3172,14 +3251,18 @@ static void draw_activity_page(HDC hdc) {
 #define WM_APP_SUBS_DONE (WM_APP + 31)
 
 static wchar_t s_sub_urls[SUBS_MAX][SUBS_URL_MAX];
+static wchar_t s_sub_names[SUBS_MAX][SUBSCRIPTION_NAME_CAPACITY];
 static wchar_t s_sub_status[SUBS_MAX][160];
 static int s_sub_count;
 static int s_sub_loaded;
 static int s_sub_written;
+static bool s_sub_written_known, s_sub_read_failed;
 static volatile LONG s_subs_running;
 static wchar_t s_sub_feedback[240];
 static bool s_sub_feedback_error;
 static bool s_sub_input_truncated;
+static bool s_sub_name_truncated, s_sub_name_editing, s_sub_show_full;
+static wchar_t s_sub_edit_url[SUBS_URL_MAX];
 static int s_sub_remove_index = -1;
 static wchar_t s_sub_remove_url[SUBS_URL_MAX];
 
@@ -3208,24 +3291,19 @@ static void subs_load(void) {
     if (s_sub_loaded) return;
     s_sub_loaded = 1;
     s_sub_count = 0;
-    wchar_t path[MAX_PATH];
-    subs_path(path, MAX_PATH, L"subscription_urls.txt");
-    FILE *f = _wfopen(path, L"r");
-    if (f != NULL) {
-        char line[SUBS_URL_MAX * 4 + 4];
-        while (s_sub_count < SUBS_MAX && fgets(line, sizeof(line), f) != NULL) {
-            char *p = subs_trim(line);
-            if (p[0] == 0 || p[0] == '#') continue;
-            if (MultiByteToWideChar(CP_UTF8, 0, p, -1, s_sub_urls[s_sub_count],
-                                    SUBS_URL_MAX) <= 0) continue;
-            s_sub_status[s_sub_count][0] = 0;
-            s_sub_count++;
-        }
-        fclose(f);
+    wchar_t path[MAX_PATH], directory[MAX_PATH];
+    unsigned count = 0;
+    s_sub_read_failed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_res, -1, directory, MAX_PATH) <= 0 ||
+        !subscription_settings_load_sources(directory, s_sub_urls, s_sub_names, &count);
+    if (s_sub_read_failed) {
+        wcscpy(s_sub_feedback, L"来源配置读取失败或超出限制，原文件保留。请在订阅文件夹修复后重新打开程序；当前禁止覆盖配置。");
+        s_sub_feedback_error = true;
+        return;
     }
+    s_sub_count = (int)count;
     /* Per-source status survives a restart: "<url>\t<status text>". */
     subs_path(path, MAX_PATH, L"subscription_status.txt");
-    f = _wfopen(path, L"r");
+    FILE *f = _wfopen(path, L"r");
     if (f != NULL) {
         char line[SUBS_URL_MAX * 4 + SUBSCRIPTION_STATUS_CAPACITY * 4 + 4];
         while (fgets(line, sizeof(line), f) != NULL) {
@@ -3250,8 +3328,10 @@ static void subs_load(void) {
 static int subs_save_urls(unsigned count) {
     wchar_t directory[MAX_PATH];
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, g_res, -1, directory, MAX_PATH) <= 0) return 0;
-    return subscription_settings_save_urls(directory,
-            (const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])s_sub_urls, count);
+    if (s_sub_read_failed) return 0;
+    return subscription_settings_save_sources(directory,
+            (const wchar_t (*)[SUBSCRIPTION_URL_CAPACITY])s_sub_urls,
+            (const wchar_t (*)[SUBSCRIPTION_NAME_CAPACITY])s_sub_names, count);
 }
 
 static int subs_save_status(void) {
@@ -3283,8 +3363,9 @@ static DWORD WINAPI subs_thread(LPVOID opaque) {
     return 0;
 }
 static void subs_start_update(HWND hwnd) {
-    if (s_subs_running || s_sub_remove_index >= 0) return;
+    if (s_subs_running || s_sub_read_failed || s_sub_remove_index >= 0) return;
     subs_load();
+    if (s_sub_read_failed) return;
     if (!s_sub_count) {
         if (MessageBoxW(hwnd, L"没有配置订阅源。清空先前导入的订阅规则？手动配置不受影响。",
                         L"清空订阅规则", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
@@ -3308,7 +3389,7 @@ static void subs_start_update(HWND hwnd) {
 }
 
 static void subs_controls_refresh(HWND hwnd) {
-    int busy = InterlockedCompareExchange(&s_subs_running, 0, 0) != 0;
+    int busy = InterlockedCompareExchange(&s_subs_running, 0, 0) != 0 || s_sub_read_failed;
     bool pending = s_sub_remove_index >= 0;
     int selected = (int)SendDlgItemMessageW(hwnd, IDC_SUB_LIST, LB_GETCURSEL, 0, 0);
     EnableWindow(GetDlgItem(hwnd, IDC_SUB_URL), !busy && !pending);
@@ -3325,8 +3406,32 @@ static void subs_controls_refresh(HWND hwnd) {
     EnableWindow(GetDlgItem(hwnd, IDC_SUB_CONFIRM), pending && !busy);
     EnableWindow(GetDlgItem(hwnd, IDC_SUB_CANCEL), pending && !busy);
     SetDlgItemTextW(hwnd, IDC_SUB_UPD, busy ? L"正在验证并更新…" : (s_sub_count ? L"立即更新全部" : L"清空已导入规则"));
-    SetDlgItemTextW(hwnd, IDC_SUB_SELECTED,
-                   pending ? s_sub_remove_url : (selected >= 0 && selected < s_sub_count ? s_sub_urls[selected] : L""));
+    const wchar_t *url = pending ? s_sub_remove_url :
+        (selected >= 0 && selected < s_sub_count ? s_sub_urls[selected] : L"");
+    wchar_t display[SUBS_URL_MAX];
+    if (*url && !s_sub_show_full) subscription_display_url(url, display, SUBS_URL_MAX);
+    else { wcsncpy(display, url, SUBS_URL_MAX - 1); display[SUBS_URL_MAX - 1] = 0; }
+    SetDlgItemTextW(hwnd, IDC_SUB_SELECTED, display);
+    SetDlgItemTextW(hwnd, IDC_SUB_FULL_URL, s_sub_show_full ? L"隐藏凭据与参数" : L"显示完整地址");
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_FULL_URL), *url != 0);
+    bool editable = !busy && !pending && selected >= 0 && selected < s_sub_count;
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_NAME), editable);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_RENAME), editable && !s_sub_name_truncated);
+    EnableWindow(GetDlgItem(hwnd, IDC_SUB_DEFAULT_NAME), editable && s_sub_names[selected][0]);
+}
+
+/* Status refreshes must not discard a draft while the selected URL is unchanged. */
+static void subs_name_selection(HWND hwnd) {
+    int selected = (int)SendDlgItemMessageW(hwnd, IDC_SUB_LIST, LB_GETCURSEL, 0, 0);
+    const wchar_t *url = selected >= 0 && selected < s_sub_count ? s_sub_urls[selected] : L"";
+    if (wcscmp(url, s_sub_edit_url)) {
+        wcscpy(s_sub_edit_url, url);
+        s_sub_name_editing = true;
+        SetDlgItemTextW(hwnd, IDC_SUB_NAME, *url ? s_sub_names[selected] : L"");
+        s_sub_name_editing = false;
+        s_sub_name_truncated = false;
+        s_sub_show_full = false;
+    }
 }
 
 static void subs_list_extent(HWND hwnd) {
@@ -3357,17 +3462,48 @@ static void subs_refresh_list(HWND hwnd) {
     int selected = (int)SendMessageW(lb, LB_GETCURSEL, 0, 0);
     SendMessageW(lb, LB_RESETCONTENT, 0, 0);
     for (int i = 0; i < s_sub_count; i++) {
-        wchar_t row[1200];
+        wchar_t row[1200], title[SUBSCRIPTION_NAME_CAPACITY * 2];
+        subscription_display_name(s_sub_urls[i], s_sub_names[i], title, sizeof(title)/sizeof(title[0]));
         if (s_sub_status[i][0] != 0)
-            swprintf(row, 1200, L"%ls    —    %ls", s_sub_urls[i], s_sub_status[i]);
+            swprintf(row, 1200, L"%ls    —    %ls", title, s_sub_status[i]);
         else
-            swprintf(row, 1200, L"%ls    —    尚未更新", s_sub_urls[i]);
+            swprintf(row, 1200, L"%ls    —    尚未更新", title);
         SendMessageW(lb, LB_ADDSTRING, 0, (LPARAM) row);
     }
     if (selected >= s_sub_count) selected = s_sub_count - 1;
     if (selected >= 0) SendMessageW(lb, LB_SETCURSEL, selected, 0);
     subs_list_extent(hwnd);
+    subs_name_selection(hwnd);
     subs_controls_refresh(hwnd);
+}
+
+static void subs_rename(HWND hwnd, bool automatic) {
+    int selected = (int)SendDlgItemMessageW(hwnd, IDC_SUB_LIST, LB_GETCURSEL, 0, 0);
+    if (s_subs_running || s_sub_read_failed || s_sub_remove_index >= 0 || selected < 0 ||
+        selected >= s_sub_count || wcscmp(s_sub_edit_url, s_sub_urls[selected])) return;
+    wchar_t name[SUBSCRIPTION_NAME_CAPACITY] = L"", previous[SUBSCRIPTION_NAME_CAPACITY];
+    if (!automatic) {
+        if (s_sub_name_truncated || GetWindowTextLengthW(GetDlgItem(hwnd, IDC_SUB_NAME)) >= SUBSCRIPTION_NAME_CAPACITY) {
+            subs_feedback(hwnd, L"名称超过 95 字符上限，未保存；请缩短后重新输入。", true); return;
+        }
+        GetDlgItemTextW(hwnd, IDC_SUB_NAME, name, SUBSCRIPTION_NAME_CAPACITY);
+        if (!subscription_settings_name_valid(name)) {
+            subs_feedback(hwnd, L"名称包含无效字符，未保存；请删除换行或控制字符。", true); return;
+        }
+    }
+    wcscpy(previous, s_sub_names[selected]);
+    wcscpy(s_sub_names[selected], name);
+    if (!subs_save_urls((unsigned)s_sub_count)) {
+        wcscpy(s_sub_names[selected], previous);
+        subs_feedback(hwnd, L"名称保存失败，原名称与规则保留；输入已保留，可解除文件占用后重试。", true);
+        return;
+    }
+    s_sub_name_editing = true;
+    SetDlgItemTextW(hwnd, IDC_SUB_NAME, name);
+    s_sub_name_editing = false;
+    s_sub_name_truncated = false;
+    subs_refresh_list(hwnd);
+    subs_feedback(hwnd, *name ? L"本地名称已保存；下载地址与规则内容未变。" : L"已恢复自动名称；下载地址与规则内容未变。", false);
 }
 
 static void subs_cancel_remove(HWND hwnd) {
@@ -3386,12 +3522,14 @@ static void subs_confirm_remove(HWND hwnd) {
         subs_feedback(hwnd, L"待移除来源已变化，未执行删除；请重新选择。", true);
         return;
     }
-    wchar_t removed_url[SUBS_URL_MAX], removed_status[SUBSCRIPTION_STATUS_CAPACITY];
+    wchar_t removed_url[SUBS_URL_MAX], removed_status[SUBSCRIPTION_STATUS_CAPACITY], removed_name[SUBSCRIPTION_NAME_CAPACITY];
     memcpy(removed_url, s_sub_urls[sel], sizeof(removed_url));
     memcpy(removed_status, s_sub_status[sel], sizeof(removed_status));
+    memcpy(removed_name, s_sub_names[sel], sizeof(removed_name));
     for (int i = sel; i + 1 < s_sub_count; i++) {
         memcpy(s_sub_urls[i], s_sub_urls[i + 1], sizeof(s_sub_urls[i]));
         memcpy(s_sub_status[i], s_sub_status[i + 1], sizeof(s_sub_status[i]));
+        memcpy(s_sub_names[i], s_sub_names[i + 1], sizeof(s_sub_names[i]));
     }
     s_sub_count--;
     if (subs_save_urls((unsigned)s_sub_count)) {
@@ -3408,9 +3546,11 @@ static void subs_confirm_remove(HWND hwnd) {
         for (int i = s_sub_count; i > sel; i--) {
             memcpy(s_sub_urls[i], s_sub_urls[i - 1], sizeof(s_sub_urls[i]));
             memcpy(s_sub_status[i], s_sub_status[i - 1], sizeof(s_sub_status[i]));
+            memcpy(s_sub_names[i], s_sub_names[i - 1], sizeof(s_sub_names[i]));
         }
         memcpy(s_sub_urls[sel], removed_url, sizeof(removed_url));
         memcpy(s_sub_status[sel], removed_status, sizeof(removed_status));
+        memcpy(s_sub_names[sel], removed_name, sizeof(removed_name));
         s_sub_count++;
         subs_controls_refresh(hwnd);
         subs_feedback(hwnd, L"来源保存失败，移除未生效；原来源与规则均保留。解除文件占用后可重试“确认移除”，或取消。", true);
@@ -3429,6 +3569,10 @@ static void draw_subs_page(HDC hdc) {
     TextOutW(hdc, S(218), S(20), L"订阅源", 3);
     SelectObject(hdc, lf);
     SetTextColor(hdc, g_pal.muted);
+    const wchar_t *address_label = L"订阅地址（默认隐藏凭据与参数）";
+    const wchar_t *name_label = L"本地名称 · 留空使用自动名称";
+    TextOutW(hdc, S(218), S(348), address_label, (int)wcslen(address_label));
+    TextOutW(hdc, S(218), S(403), name_label, (int)wcslen(name_label));
     {
         static const wchar_t *H1 =
             L"粘贴订阅链接后点「添加」（hosts / 纯域名 / ||域名^ 三种格式都能解析），再点「立即更新全部」";
@@ -3438,14 +3582,17 @@ static void draw_subs_page(HDC hdc) {
     }
     {
         wchar_t sum[400];
-        if (s_sub_count == 0)
+        if (s_sub_read_failed)
+            swprintf(sum, 400, L"配置读取失败 · 已保护原文件，修复后请重新打开程序");
+        else if (s_sub_count == 0)
             swprintf(sum, 400, L"尚未配置来源 · 可添加订阅，或清空先前导入的订阅规则。");
         else if (s_subs_running)
             swprintf(sum, 400, L"正在验证 %d 个来源 · 完成前继续使用上一份有效规则", s_sub_count);
-        else
+        else if (s_sub_written_known)
             swprintf(sum, 400,
                      L"%d 个订阅源 · 本次会话最近保存 %d 条规则",
                      s_sub_count, s_sub_written);
+        else swprintf(sum, 400, L"%d 个订阅源 · 本次会话尚未更新；已有规则继续保留", s_sub_count);
         SetTextColor(hdc, g_pal.text);
         RECT summary_rect = {S(218), S(532), S(992), S(554)};
         DrawTextW(hdc, sum, -1, &summary_rect,
@@ -3461,7 +3608,7 @@ static void draw_subs_page(HDC hdc) {
     }
     {
         const wchar_t *feedback = s_sub_feedback[0] ? s_sub_feedback :
-            L"选中来源后可在下方链接框中查看完整地址，并用 Ctrl+C 复制。";
+            L"选中来源可改本地名称。地址默认隐藏凭据与参数；点“显示完整地址”后可复制。";
         SetTextColor(hdc, s_sub_feedback_error ? C_RED : g_pal.muted);
         RECT feedback_rect = {S(218), S(590), S(992), S(626)};
         DrawTextW(hdc, feedback, -1, &feedback_rect, DT_WORDBREAK | DT_NOPREFIX);
@@ -3497,6 +3644,7 @@ static void update_prompt_notify(HWND hwnd) {
 static void ui_navigate_to(HWND hwnd, int next_tab) {
     if (next_tab < 0 || next_tab >= 6 || next_tab == g_tab) return;
     if (s_sub_remove_index >= 0) subs_cancel_remove(hwnd);
+    s_sub_show_full = false;
     g_tab = next_tab;
     show_controls(hwnd, g_tab);
     if (g_tab == 4) {
@@ -3591,6 +3739,14 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
+        SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETLIMITTEXT, 191, 0);
+        g_log_list_original = (WNDPROC)SetWindowLongPtrW(GetDlgItem(hwnd, IDC_QLOG_LIST),
+            GWLP_WNDPROC, (LONG_PTR)log_list_proc);
+        SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETCUEBANNER, TRUE, (LPARAM)L"搜索本页域名（忽略大小写）");
+        const wchar_t *log_filters[] = {L"全部结果", L"拦截响应", L"本地豁免", L"转发已启动"};
+        for (size_t i = 0; i < sizeof(log_filters) / sizeof(log_filters[0]); ++i)
+            SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_ADDSTRING, 0, (LPARAM)log_filters[i]);
+        SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_SETCURSEL, 0, 0);
         s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"测试双栈转发与恢复",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
                 0,0,1,1,hwnd,(HMENU)(INT_PTR)IDC_TRANSPORT_PROBE,hinst,NULL);
         for (int i = 0; i < POLICY_COUNT; i++) {
@@ -3606,7 +3762,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         layout_controls(hwnd);
         SetDlgItemTextW(hwnd, IDC_PREVIEWUPD, update_include_preview() ? L"渠道：含预览版" : L"渠道：稳定版");
-        SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, update_portable_mode() ? L"更新：ZIP" : L"更新：自动");
+        SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, update_portable_mode() ? L"包：ZIP 覆盖" : L"包：安装器优先");
+        SetDlgItemTextW(hwnd, IDC_AUTOUPD, update_automatic() ? L"自动更新：开启" : L"自动更新：关闭");
         SetDlgItemTextA(hwnd, IDC_BIND_IP, g_bind_ip);
         SetDlgItemTextA(hwnd, IDC_BIND_IPV6, g_bind_ipv6);
         SendDlgItemMessageW(hwnd,IDC_AUTO_CREATE,BM_SETCHECK,g_auto_create ? BST_CHECKED : BST_UNCHECKED,0);
@@ -3617,8 +3774,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETCUEBANNER, TRUE,
                      (LPARAM)L"https://example.com/hosts.txt");
         SendMessageW(GetDlgItem(hwnd, IDC_SUB_URL), EM_SETLIMITTEXT, SUBS_URL_MAX - 1, 0);
+        SendDlgItemMessageW(hwnd, IDC_SUB_NAME, EM_SETLIMITTEXT, SUBSCRIPTION_NAME_CAPACITY - 1, 0);
+        SendDlgItemMessageW(hwnd, IDC_SUB_NAME, EM_SETCUEBANNER, TRUE, (LPARAM)L"留空使用自动名称");
         SendMessageW(GetDlgItem(hwnd, IDC_SUB_SELECTED), EM_SETCUEBANNER, TRUE,
-                     (LPARAM)L"选中来源查看完整链接（只读，可选中并复制）");
+                     (LPARAM)L"选中来源查看地址；默认隐藏凭据与参数");
         SendMessageW(GetDlgItem(hwnd, IDM_DARK), BM_SETCHECK,
                      g_dark ? BST_CHECKED : BST_UNCHECKED, 0);
         apply_control_theme(hwnd);
@@ -3648,6 +3807,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_poll_started = 1;
         else swprintf(g_status, 4096, L"无法启动后台统计读取，请重启应用；当前统计不可用");
         SetTimer(hwnd, 1, 2000, NULL);
+        /* Avoid startup contention, then check the selected channel every six
+           hours. Background checks share the updater's single busy gate. */
+        SetTimer(hwnd, 4, 60000, NULL);
         g_adguard_signal = adguard_process_probe();
         g_adguard_probe_tick = GetTickCount();
         /* Probe DLL APIs only, never create an adapter or route. */
@@ -3655,6 +3817,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_TIMER: {
+        if (wp == 4) {
+            SetTimer(hwnd, 4, 6u * 60u * 60u * 1000u, NULL);
+            if (update_automatic() && update_state() == 0) update_check_background_async(hwnd);
+            return 0;
+        }
         if (wp == 3) { KillTimer(hwnd, 3); listener_validate(hwnd, false); return 0; }
         DWORD probe_now = GetTickCount();
         if (probe_now - g_adguard_probe_tick >= 30000) {
@@ -3693,29 +3860,14 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (vis) InvalidateRect(hwnd, NULL, FALSE);   /* never paint while hidden */
         return 0;
     }
-    case WM_MOUSEWHEEL: {
-        /*
-         * Scroll the "最近请求" card. The server sends up to 400 newest entries
-         * (QLOG_RENDER_MAX) and the card shows 11, so without this everything
-         * older than the last few seconds was unreachable - the "保留量太少"
-         * report.
-         */
-        int delta = GET_WHEEL_DELTA_WPARAM(wp);
-        int total = (g_sn != NULL && g_sn->has_data) ? g_sn->qlog_count : 0;
-        int max_scroll = total > 9 ? total - 9 : 0;
-        if (delta < 0 && g_sn && g_sn->qlog_ready && !g_sn->qlog_error) {
-            pthread_mutex_lock(&g_snap_mutex);
-            bool frozen = qln_freeze(&g_log_nav, &g_sn->qlog_page, g_sn->qlog_revision);
-            pthread_mutex_unlock(&g_snap_mutex);
-            if (frozen && g_poll_wake) SetEvent(g_poll_wake);
-            log_controls_refresh(hwnd);
+    case WM_MOUSEWHEEL:
+        if (g_tab == 1) {
+            if (!g_log_apps) log_freeze_current(hwnd);
+            SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, WM_VSCROLL,
+                GET_WHEEL_DELTA_WPARAM(wp) > 0 ? SB_LINEUP : SB_LINEDOWN, 0);
+            return 0;
         }
-        g_qlog_scroll += (delta > 0) ? -3 : 3;
-        if (g_qlog_scroll < 0) g_qlog_scroll = 0;
-        if (g_qlog_scroll > max_scroll) g_qlog_scroll = max_scroll;
-        InvalidateRect(hwnd, NULL, FALSE);
-        return 0;
-    }
+        return DefWindowProcW(hwnd, msg, wp, lp);
     case WM_APP_STATS:
         if (g_sn) {
             pthread_mutex_lock(&g_snap_mutex);
@@ -3740,6 +3892,41 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_QLOG_SEARCH && HIWORD(wp) == EN_CHANGE) {
+            GetDlgItemTextW(hwnd, IDC_QLOG_SEARCH, g_log_search, 192);
+            log_freeze_current(hwnd);
+            log_list_refresh(hwnd, true);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_QLOG_FILTER && HIWORD(wp) == CBN_SELCHANGE) {
+            int choice = (int)SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_GETCURSEL, 0, 0);
+            g_log_filter = choice == 1 ? 1 : choice == 2 ? 2 : choice == 3 ? 0 : -1;
+            log_freeze_current(hwnd);
+            log_list_refresh(hwnd, true);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_QLOG_LIST && HIWORD(wp) == LBN_SELCHANGE && !g_log_rendering) {
+            if (!g_log_apps) log_freeze_current(hwnd);
+            log_details_refresh(hwnd);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_QLOG_APPS) {
+            SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, LB_SETCURSEL, (WPARAM)-1, 0);
+            g_log_apps = !g_log_apps;
+            log_controls_refresh(hwnd);
+            log_details_refresh(hwnd);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_QLOG_LIVE) {
+            if (g_log_nav.request.generation[0]) log_navigation(hwnd, IDC_QLOG_REFRESH);
+            else log_freeze_current(hwnd);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         if (LOWORD(wp) == IDC_QLOG_PREVIOUS || LOWORD(wp) == IDC_QLOG_NEXT || LOWORD(wp) == IDC_QLOG_REFRESH) {
             log_navigation(hwnd, LOWORD(wp)); return 0;
         }
@@ -3757,6 +3944,20 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
         }
         if (LOWORD(wp) == IDC_SUB_LIST && HIWORD(wp) == LBN_SELCHANGE) {
+            s_sub_show_full = false;
+            subs_name_selection(hwnd);
+            subs_controls_refresh(hwnd);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_SUB_NAME && HIWORD(wp) == EN_MAXTEXT) {
+            s_sub_name_truncated = true;
+            subs_feedback(hwnd, L"名称超过 95 字符上限；请缩短后重新输入。", true);
+            subs_controls_refresh(hwnd);
+            return 0;
+        }
+        if (LOWORD(wp) == IDC_SUB_NAME && HIWORD(wp) == EN_CHANGE && !s_sub_name_editing) {
+            if (GetWindowTextLengthW(GetDlgItem(hwnd, IDC_SUB_NAME)) < SUBSCRIPTION_NAME_CAPACITY - 1)
+                s_sub_name_truncated = false;
             subs_controls_refresh(hwnd);
             return 0;
         }
@@ -3842,21 +4043,36 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (update_set_include_preview(enabled)) {
                 SetDlgItemTextW(hwnd, IDC_PREVIEWUPD, enabled ? L"渠道：含预览版" : L"渠道：稳定版");
                 swprintf(g_status, 4096, enabled
-                    ? L"已允许预览版更新。点击“检查更新”获取较新的覆盖安装预览包；安装仍需确认。"
+                    ? L"已允许预览版更新。点击“检查更新”获取较新的覆盖安装预览包；自动更新开启时会直接下载、校验、覆盖安装并重启。"
                     : L"已切回稳定版渠道；不会降级当前预览版。点击“检查更新”刷新。");
             } else swprintf(g_status, 4096, L"渠道未保存：请等待更新结束，或检查配置写入权限。");
+            InvalidateRect(hwnd, NULL, FALSE);
+        } else if (id == IDC_AUTOUPD) {
+            int automatic = !update_automatic();
+            if (update_set_automatic(automatic)) {
+                if (automatic) SetTimer(hwnd, 4, 60000, NULL);
+                SetDlgItemTextW(hwnd, IDC_AUTOUPD, automatic ? L"自动更新：开启" : L"自动更新：关闭");
+                swprintf(g_status, 4096, automatic ?
+                    L"自动更新已开启：发现所选渠道的新版本后下载、校验、覆盖安装并重启；管理员授权仍由系统显示。" :
+                    L"自动更新已关闭：发现新版本后先询问，再下载和安装。");
+            } else swprintf(g_status, 4096, L"自动更新设置未保存：请等待更新结束，或检查配置写入权限。");
             InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_PORTABLEUPD) {
             int portable = !update_portable_mode();
             if (update_set_portable_mode(portable)) {
-                SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, portable ? L"更新：ZIP" : L"更新：自动");
+                SetDlgItemTextW(hwnd, IDC_PORTABLEUPD, portable ? L"包：ZIP 覆盖" : L"包：安装器优先");
                 swprintf(g_status, 4096, portable
                     ? L"已保存：下次更新直接下载 ZIP 并覆盖当前程序；版本、摘要校验和回滚仍然启用。点“检查更新”开始。再次点击可恢复自动。"
                     : L"已保存：优先使用安装器，无法启动时回退 ZIP。点“检查更新”开始。");
             } else swprintf(g_status, 4096, L"更新方式未保存：请等待正在进行的更新结束，或检查配置文件写入权限。");
             InvalidateRect(hwnd, NULL, FALSE);
+        } else if (id == IDC_SUB_RENAME || id == IDC_SUB_DEFAULT_NAME) {
+                subs_rename(hwnd, id == IDC_SUB_DEFAULT_NAME);
+        } else if (id == IDC_SUB_FULL_URL) {
+                s_sub_show_full = !s_sub_show_full;
+                subs_controls_refresh(hwnd);
         } else if (id == IDC_SUB_ADD) {
-                if (s_subs_running || s_sub_remove_index >= 0) return 0;
+                if (s_subs_running || s_sub_read_failed || s_sub_remove_index >= 0) return 0;
                 if (s_sub_input_truncated || GetWindowTextLengthW(GetDlgItem(hwnd, IDC_SUB_URL)) >= SUBS_URL_MAX) {
                     subs_feedback(hwnd, L"链接超过 1023 字符上限，未保存；请缩短后重新输入。", true);
                     return 0;
@@ -3888,9 +4104,13 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     wcsncpy(s_sub_urls[s_sub_count], s, SUBS_URL_MAX - 1);
                     s_sub_urls[s_sub_count][SUBS_URL_MAX - 1] = 0;
                     s_sub_status[s_sub_count][0] = 0;
+                    s_sub_names[s_sub_count][0] = 0;
                     if (subs_save_urls((unsigned)s_sub_count + 1)) {
                         s_sub_count++;
                         subs_refresh_list(hwnd);
+                        SendDlgItemMessageW(hwnd, IDC_SUB_LIST, LB_SETCURSEL, s_sub_count - 1, 0);
+                        subs_name_selection(hwnd);
+                        subs_controls_refresh(hwnd);
                         SetWindowTextW(GetDlgItem(hwnd, IDC_SUB_URL), L"");
                         wchar_t saved[160];
                         swprintf(saved, 160, L"已保存订阅源，共 %d 个；点“立即更新全部”下载规则", s_sub_count);
@@ -3902,7 +4122,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 InvalidateRect(hwnd, NULL, FALSE);
         } else if (id == IDC_SUB_DEL) {
-                if (s_subs_running || s_sub_remove_index >= 0) return 0;
+                if (s_subs_running || s_sub_read_failed || s_sub_remove_index >= 0) return 0;
                 subs_load();
                 int sel = (int) SendMessageW(GetDlgItem(hwnd, IDC_SUB_LIST), LB_GETCURSEL, 0, 0);
                 if (sel < 0 || sel >= s_sub_count) {
@@ -4267,12 +4487,17 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_UPDATE_FOUND: {
         struct update_info *info = (struct update_info *) lp;
         update_button_refresh(hwnd);
+        if (wp == 3) { update_info_free(info); return 0; }
         if (wp && info) {
             wchar_t msg[512];
             swprintf(msg, 512,
                      L"发现新版本 %ls（当前版本 v" ADBLOCK_APP_VERSION_W L"）。\n\n"
                      L"现在下载并自动更新吗？更新会关闭本窗口，替换文件后自动重启。",
                      info->tag);
+            if (update_automatic()) {
+                swprintf(g_status, 4096, L"发现 %ls，正在自动下载、校验并覆盖更新，完成后重启…", info->tag);
+                update_apply_async(hwnd, info);
+            } else {
             update_prompt_notify(hwnd);
             if (MessageBoxW(hwnd, msg, L"检查更新",
                             MB_YESNO | MB_ICONQUESTION | MB_TOPMOST) == IDYES) {
@@ -4280,6 +4505,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 update_apply_async(hwnd, info);
             } else {
                 swprintf(g_status, 4096, L"已忽略新版本 %ls", info->tag);
+            }
             }
         } else if (wp == 2) {
             /* A failed check used to be displayed as "已是最新版本" - exactly
@@ -4315,6 +4541,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!job) return 0;
         if (job->result.status == SUB_UPDATE_OK) {
             s_sub_written = (int)job->result.entries;
+            s_sub_written_known = true;
             for (unsigned i = 0; i < job->count; i++)
                 swprintf(s_sub_status[i], 160, L"已保存 %llu 条域规则", (unsigned long long)job->result.source_entries[i]);
             swprintf(g_status, 4096, L"已保存 %d 条域规则；跳过 %llu 条条件规则，已请求服务端重新加载（活动版本未确认）",
@@ -4353,6 +4580,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, 1);
+        KillTimer(hwnd, 4);
         if (g_poll_started) {
             g_poll_stop = 1;
             if (g_poll_wake) SetEvent(g_poll_wake);

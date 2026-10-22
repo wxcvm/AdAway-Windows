@@ -25,6 +25,13 @@ def prepare_logs(source):
                       "static void qlog_render(", "static void qlog_save(", "static void qlog_load("):
         start, end = hooks.function_span(source, signature)
         source = source[:start] + source[end:]
+    start, end = hooks.function_span(source,
+        "static void req_host_of(struct mg_http_message *hm, char *out, size_t cap) {")
+    source = source[:start] + '''#include "request_host.h"
+static void req_host_of(struct mg_http_message *hm, char *out, size_t cap) {
+    struct mg_str *host = mg_http_get_header(hm, "Host");
+    request_host_parse(host ? host->buf : NULL, host ? host->len : 0, out, cap);
+}''' + source[end:]
     replace('#define QLOG_MAGIC 0x514C4F47u   /* "QLOG" */', "")
     # Mongoose returns a negative value for an absent form variable. A boolean
     # check never reached the existing header fallback for header-only clients.

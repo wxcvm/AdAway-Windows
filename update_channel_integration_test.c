@@ -25,6 +25,9 @@ int main(void) {
     assert(ini_path(ini,MAX_PATH));
     /* Never overwrite a developer or installed application's settings. */
     assert(GetFileAttributesW(ini)==INVALID_FILE_ATTRIBUTES);
+    assert(update_automatic());
+    assert(update_set_automatic(0)); assert(!update_automatic());
+    assert(update_set_automatic(1)); assert(update_automatic());
     stable_body="{\"tag\":\"win11-webserver-v1.75\",\"version\":\"1.75\","
         "\"zip_url\":\"https://github.com/wxcvm/AdAway-Windows/releases/download/win11-webserver-v1.75/adblock-webserver-win64.zip\","
         "\"zip_sha256\":\"610d5bf14041fff0347fc9c3c08cccc4295a654d0b1bbb87c82f555d37b97796\"}";
@@ -42,7 +45,9 @@ int main(void) {
     assert(!strcmp(sha,pick.exe_sha));
     InterlockedExchange(&s_update_state,UPDATE_STATE_CHECKING);
     assert(!update_set_include_preview(0)); assert(update_include_preview());
+    assert(!update_set_automatic(0)); assert(update_automatic());
     InterlockedExchange(&s_update_state,UPDATE_STATE_IDLE);
+    assert(update_set_automatic(0)); assert(!update_automatic());
     char enabled_cache[MAX_PATH*3], disabled_cache[MAX_PATH*3];
     update_cache_path(enabled_cache,sizeof(enabled_cache));
     assert(update_set_include_preview(0));
