@@ -57,6 +57,9 @@ try {
         $arguments=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$script+'"'),'-Application',('"'+$app+'"'),'-Source',('"'+$source+'"'),'-Stage',('"'+$stage+'"'),'-PreviousPid',[string]$old.Id)
         $update=Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList $arguments -PassThru `
             -RedirectStandardOutput (Join-Path $base ($case+'.stdout.log')) -RedirectStandardError (Join-Path $base ($case+'.stderr.log'))
+        # Windows PowerShell 5.1 may otherwise lose ExitCode after redirected
+        # Start-Process exits. Acquire its native handle while it is alive.
+        $updateHandle=$update.Handle
         $deadline=[DateTime]::UtcNow.AddSeconds(15)
         while(!(Test-Path -LiteralPath ($stage+'.ready')) -and [DateTime]::UtcNow -lt $deadline -and !$update.HasExited) { Start-Sleep -Milliseconds 100; $update.Refresh() }
         if(!(Test-Path -LiteralPath ($stage+'.ready'))) { throw "Helper preparation failed: $case" }
@@ -82,6 +85,7 @@ try {
     $badArgs=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$helper+'"'),'-Application',('"'+$badApp+'"'),'-Source',('"'+$badApp+'"'),'-Stage',('"'+$badApp+'"'),'-PreviousPid',[string]$old.Id)
     $reject=Start-Process -WindowStyle Hidden -FilePath $powershell -ArgumentList $badArgs -PassThru `
         -RedirectStandardOutput (Join-Path $base 'reject.stdout.log') -RedirectStandardError (Join-Path $base 'reject.stderr.log')
+    $rejectHandle=$reject.Handle
     if(!$reject.WaitForExit(10000) -or $reject.ExitCode -eq 0) { throw 'Unsafe overlap not rejected' }
     $old.Refresh(); if($old.HasExited -or !(Test-Path -LiteralPath (Join-Path $badApp 'webserver.exe'))) { throw 'Rejected update changed previous installation' }
     Write-Output 'Portable helper: success, exact-process restart, failure rollback, future resource preservation, unrelated process survival, overlap rejection and Unicode/metacharacter paths passed'
