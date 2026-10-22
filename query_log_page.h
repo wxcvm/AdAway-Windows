@@ -33,6 +33,7 @@ struct qlp_row {
     int action;
     int type;
     int mode;
+    int family; /* Observed HTTP connection family: 0 unknown, 4 or 6. */
     char host[QLP_HOST_SIZE];
 };
 
@@ -323,6 +324,12 @@ static inline bool qlp_read_anchor(struct mg_str json,
     return true;
 }
 
+static inline bool qlp_json_family(struct mg_str row, int *family) {
+    if (mg_json_get_tok(row, "$.family").len == 0) { *family = 0; return true; }
+    return qlp_json_small_uint(row, "$.family", 6, family) &&
+        (*family == 0 || *family == 4 || *family == 6);
+}
+
 static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
     char host_stage[512];
     size_t host_length;
@@ -331,6 +338,7 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
     int type = 0;
     int mode = 0;
     int uid = -1;
+    int family = 0;
 
     if (out == NULL || row.buf == NULL || row.len == 0u ||
         !dashboard_json_object(row)) {
@@ -339,7 +347,8 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
     if (!qlp_json_uint(row, "$.ts", &timestamp) ||
         !qlp_json_small_uint(row, "$.action", 2u, &action) ||
         !qlp_json_type(row, &type) ||
-        !qlp_json_small_uint(row, "$.mode", 255u, &mode)) {
+        !qlp_json_small_uint(row, "$.mode", 255u, &mode) ||
+        !qlp_json_family(row, &family)) {
         return false;
     }
     struct mg_str uid_token = mg_json_get_tok(row, "$.uid");
@@ -367,6 +376,7 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
     out->action = action;
     out->type = type;
     out->mode = mode;
+    out->family = family;
     memcpy(out->host, host_stage, host_length);
     out->host[host_length] = '\0';
     return true;

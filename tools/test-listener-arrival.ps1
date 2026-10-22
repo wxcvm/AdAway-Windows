@@ -49,21 +49,24 @@ $hostsFile=Join-Path $env:SystemRoot 'System32/drivers/etc/hosts'
 $resources=Join-Path $env:RUNNER_TEMP ('arrival-dns-'+[Guid]::NewGuid().ToString('N'))
 $server=$null
 try {
-    $extra=[Text.Encoding]::ASCII.GetBytes("`r`n127.0.0.1 ads.arrival-fixture.invalid`r`n203.0.113.9 ads.arrival-mismatch.invalid`r`n")
+    $extra=[Text.Encoding]::ASCII.GetBytes("`r`n127.0.0.1 ads.arrival-fixture.invalid`r`n::1 ads.arrival6-fixture.invalid`r`n203.0.113.9 ads.arrival-mismatch.invalid`r`n")
     [IO.File]::WriteAllBytes($hostsFile,([byte[]]($original+$extra)))
-    $server=Start-Process -FilePath $exe -ArgumentList @('--resources',"`"$resources`"",'--bind-ip','127.0.0.1','--http-port','28080','--https-port','28443','--stats-port','28686','--no-gui') -PassThru -WindowStyle Hidden
+    $server=Start-Process -FilePath $exe -ArgumentList @('--resources',"`"$resources`"",'--listen-ipv4','127.0.0.1','--listen-ipv6','::1','--http-port','28080','--https-port','28443','--stats-port','28686','--no-gui') -PassThru -WindowStyle Hidden
     $deadline=(Get-Date).AddSeconds(20);$ready=$false
     do {
         try { $null=Invoke-WebRequest 'http://127.0.0.1:28686/adaway-listener-probe/0123456789abcdef0123456789abcdef' -NoProxy -TimeoutSec 1; $ready=$true }
         catch { Start-Sleep -Milliseconds 100 }
     } until ($ready -or (Get-Date) -gt $deadline)
     if (!$ready) { throw 'DNS fixture server did not become ready' }
-    foreach ($domain in @('ads.arrival-fixture.invalid','ads.arrival-mismatch.invalid')) {
+    foreach ($domain in @('ads.arrival-fixture.invalid','ads.arrival6-fixture.invalid','ads.arrival-mismatch.invalid')) {
         $output=Join-Path $resources ($domain+'.txt')
-        $probe=Start-Process -FilePath $client -ArgumentList @('--report','127.0.0.1','28080','28686',$domain) -PassThru -WindowStyle Hidden -RedirectStandardOutput $output
+        $target=if ($domain -eq 'ads.arrival6-fixture.invalid') { '::1' } else { '127.0.0.1' }
+        $probe=Start-Process -FilePath $client -ArgumentList @('--report',$target,'28080','28686',$domain) -PassThru -WindowStyle Hidden -RedirectStandardOutput $output
         if (!$probe.WaitForExit(15000) -or $probe.ExitCode -ne 0) { throw 'System DNS + native receipt report did not finish' }
         $text=Get-Content -LiteralPath $output -Raw -Encoding utf8
-        if ($domain -eq 'ads.arrival-fixture.invalid' -and $text -notmatch 'DNS 已指向；HTTP 请求已到达') { throw "DNS-local receipt chain failed: $text" }
+        if ($domain -eq 'ads.arrival-fixture.invalid' -and $text -notmatch 'DNS 已指向；HTTP/28080 请求已到达') { throw "DNS-local receipt chain failed: $text" }
+        if ($domain -eq 'ads.arrival6-fixture.invalid' -and $text -notmatch '::1：DNS 已指向；HTTP/28080 请求已到达') { throw "IPv6 DNS-local receipt chain failed: $text" }
+        if ($text -notmatch 'HTTP/28080 回执不证明默认 HTTP/80 可达') { throw "Custom HTTP receipt was presented as a default-port proof: $text" }
         if ($domain -eq 'ads.arrival-mismatch.invalid' -and $text -notmatch '203.0.113.9：未指向当前本机监听，未连接') { throw "Nonlocal DNS answer was not rejected: $text" }
     }
 } finally {

@@ -36,7 +36,7 @@ class Fixture:
         self.process = subprocess.Popen([
             str(self.exe), "--resources", str(self.resources), "--no-gui",
             "--http-port", str(self.http), "--https-port", str(self.https),
-            "--stats-port", str(self.stats), "--listen-ipv4", "127.0.0.1", "--listen-ipv6", "-"],
+            "--stats-port", str(self.stats), "--listen-ipv4", "127.0.0.1", "--listen-ipv6", "::1"],
             cwd=self.exe.parent, stdout=self.log, stderr=self.log,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         deadline = time.monotonic() + 25
@@ -72,7 +72,7 @@ class Fixture:
             self.log.close()
             self.log = None
 
-    def exchange(self, port, path, hostname="127.0.0.1", body=None, token=None):
+    def exchange(self, port, path, hostname="127.0.0.1", body=None, token=None, family=4):
         method = "POST" if body is not None else "GET"
         headers = f"{method} {path} HTTP/1.0\r\n"
         if hostname is not None:
@@ -82,7 +82,7 @@ class Fixture:
             headers += f"X-ADBlock-Token: {token}\r\n"
         if body is not None:
             headers += f"Content-Length: {len(body)}\r\nContent-Type: application/x-www-form-urlencoded\r\n"
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+        with socket.create_connection(("::1" if family == 6 else "127.0.0.1", port), timeout=5) as connection:
             connection.sendall(headers.encode("ascii") + b"\r\n" + (body or b""))
             chunks, length = [], 0
             while True:
@@ -128,6 +128,9 @@ class Fixture:
             return None
         assert client.returncode == 0, client.stderr.decode("utf-8", errors="replace")
         page = json.loads(body)
+        # Fresh fixture rows always carry their observed socket family. Legacy
+        # unknown-family migration is covered by the shared persistence tests.
+        assert all(entry.get("family") in (4, 6) for entry in page["entries"])
         lines = client.stdout.decode("utf-8").splitlines()
         expected = [str(page[key]) for key in ("offset", "returned", "nextOffset", "total")]
         expected += [str(int(page["hasMore"])), page["generation"], page["anchor"]]
@@ -151,6 +154,7 @@ class Fixture:
         document = json.loads(body)
         assert document["total_requests"] >= minimum_requests
         assert all(isinstance(document[name], list) for name in ("apps", "top_blocked", "query_log", "listeners"))
+        assert all(entry.get("family") in (4, 6) for entry in document["query_log"])
         client = subprocess.run([str(self.probe), "--stats"], input=raw, capture_output=True, timeout=10)
         assert client.returncode == 0 and client.stdout.strip() == b"valid-stats"
         return document
@@ -187,6 +191,7 @@ def run(exe, probe):
             fixture.batch(601, 625)
             rows, _ = fixture.all_pages(first)
             assert {entry["host"] for entry in rows} == {host(i) for i in range(1, 601)}
+            assert all(entry["family"] == 4 for entry in rows), "IPv4 requests must report observed socket family"
             fixture.batch(626, 4850)
             fixture.page(0, old_cursor, status=409)
             full, before_restart = fixture.all_pages()
@@ -210,12 +215,21 @@ def run(exe, probe):
             authority_page = fixture.page()
             assert authority_page["total"] == 2
             assert [entry["host"] for entry in authority_page["entries"]] == ["(unknown host)", "::1"]
+            assert [entry["family"] for entry in authority_page["entries"]] == [4, 4], "IPv6-looking Host must not relabel IPv4 transport"
+            assert fixture.exchange(fixture.http, "/family-fixture", hostname="127.0.0.1", family=6)[0] in (200, 204)
+            family_page = fixture.page()
+            assert family_page["entries"][0]["family"] == 6 and family_page["entries"][0]["host"] == "127.0.0.1"
+            assert fixture.validate_stats(4853)["query_log"][0]["family"] == 6
+            fixture.stop()
+            fixture.start()
+            assert fixture.page()["entries"] == family_page["entries"], "Restart lost actual dual-stack metadata"
             return dict(retention=4096, originalRows=600, concurrentWrites=25,
                         actualShortPage=first["returned"], overwriteExpired=True,
                         restartOrderAndMetadata=True, clearExpired=True,
                         productionClientParser=True, controlAuthentication=True,
                         longHostStatsComplete=True,
                         ipv6AuthorityAndMissingHostPrivacy=True,
+                        ipv4AndIpv6LogRecords=True, socketFamilyNotInferredFromHost=True,
                         hostNetworkChanges=False)
         finally:
             fixture.stop()

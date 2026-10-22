@@ -210,7 +210,8 @@ static void ac_domain(const struct arrival_config *config,const char *domain,wch
         if (!raw || !inet_ntop(row->ai_family,raw,ip,sizeof(ip))) continue;
         if (!ac_match(config,ip) || !arrival_local_address(ip)) ac_append(out,cap,L"%hs → %hs：未指向当前本机监听，未连接。\r\n",domain,ip);
         else {
-            ac_append(out,cap,L"%hs → %hs：DNS 已指向；%ls。\r\n",domain,ip,ac_receipt_host(ip,config->http,domain) ? L"HTTP 请求已到达 AdAway" : L"未收到 AdAway 回执");
+            ac_append(out,cap,L"%hs → %hs：DNS 已指向；HTTP/%d %ls。\r\n",domain,ip,config->http,
+                ac_receipt_host(ip,config->http,domain) ? L"请求已到达 AdAway" : L"未收到 AdAway 回执");
             ac_tls(ip,config->https,domain,out,cap);
         }
     }
@@ -223,10 +224,15 @@ void arrival_report(const struct arrival_config *config,const char *adblock,cons
     if ((*adblock && !arrival_domain_valid(adblock)) || (*hosts && !arrival_domain_valid(hosts))) {
         ac_append(out,cap,L"请输入完整 ASCII / xn-- 测试域名，不含 URL、路径、IP 或空白。"); return;
     }
+    ac_append(out,cap,L"本次检测 HTTP/%d、HTTPS/%d；DNS 只返回地址，不指定端口。\r\n",config->http,config->https);
+    if (config->http!=80)
+        ac_append(out,cap,L"HTTP/%d 回执不证明默认 HTTP/80 可达；默认端口需另行验证。\r\n",config->http);
+    if (config->https!=443)
+        ac_append(out,cap,L"HTTPS/%d 回执不证明默认 HTTPS/443 可达；默认端口需另行验证。\r\n",config->https);
     enum adguard_process_signal process=adguard_process_probe();
     ac_append(out,cap,L"AdGuard 进程：%ls。进程存在不等于正在接管流量。\r\n",process==ADGUARD_PROCESS_PRESENT ? L"检测到运行" : process==ADGUARD_PROCESS_ABSENT ? L"未发现" : L"未知");
     bool management=arrival_receipt("::1",config->stats) || arrival_receipt("127.0.0.1",config->stats);
-    ac_append(out,cap,L"管理端口：%ls。\r\n",management ? L"AdAway 回执已确认" : L"无回执；旧版本、服务未就绪或路径受影响");
+    ac_append(out,cap,L"管理端口 %d：%ls。\r\n",config->stats,management ? L"AdAway 回执已确认" : L"无回执；旧版本、服务未就绪或路径受影响");
     const char *targets[2]={config->pair ? (*config->ip ? config->ip : NULL) : *config->ip ? config->ip : "127.0.0.1",
         config->pair ? (*config->ipv6 ? config->ipv6 : NULL) : *config->ip ? NULL : "::1"};
     for (int i=0;i<2;i++) if (targets[i]) {

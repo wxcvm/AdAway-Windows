@@ -19,6 +19,15 @@ int main(int argc,char **argv) {
     assert(arrival_domain_valid("ad.doubleclick.net")); assert(arrival_domain_valid("ADS.example.com."));
     const char *invalid[]={"localhost","127.0.0.1","https://ads.example.com","ads.example.com/path","ads.example.com:80","ads.example.com\r\nHost: evil","-ads.example.com"};
     for (size_t i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++) assert(!arrival_domain_valid(invalid[i]));
+    /* No listener targets and invalid management port: report semantics can be
+       checked without opening sockets, changing DNS or importing a CA. */
+    struct arrival_config scope={0}; scope.pair=true; scope.http=28080; scope.https=28443;
+    wchar_t scope_report[6144]; arrival_report(&scope,"","",scope_report,6144);
+    assert(wcsstr(scope_report,L"HTTP/28080、HTTPS/28443"));
+    assert(wcsstr(scope_report,L"HTTP/28080 回执不证明默认 HTTP/80 可达"));
+    assert(wcsstr(scope_report,L"HTTPS/28443 回执不证明默认 HTTPS/443 可达"));
+    scope.http=80; scope.https=443; arrival_report(&scope,"","",scope_report,6144);
+    assert(!wcsstr(scope_report,L"回执不证明默认"));
     if (argc==5 && !strcmp(argv[1],"--tls")) {
         struct arrival_tls_result result=arrival_tls(argv[2],atoi(argv[3]),argv[4]);
         printf("tls_state=%d protocol=%s verify=%ld\n",result.state,result.protocol,result.verify_error);
