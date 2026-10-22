@@ -183,6 +183,20 @@ try {
     if (![UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1211))) { throw 'Empty local filter prevented browsing older history' }
     Save-Window 'logs-search-empty-history-accessible'
     Set-ControlText $logSearch ''
+    if ([UiReviewNative]::SendMessage($logFilter,0x146,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 18) {
+        throw 'Protocol and response-classification choices are missing from the actual selector'
+    }
+    foreach ($choice in @(4,5,6,8)) { # IPv4, IPv6, unknown family, scripts
+        Send-BoundedMessage $logFilter 0x14E ([IntPtr]$choice) ([IntPtr]::Zero)
+        Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
+        $count=[UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32()
+        # All fixture requests arrive over IPv4 and request a GIF. Native
+        # general-policy handling can vary, but none becomes a script request.
+        if (($choice -eq 4 -and $count -ne $rowCount) -or ($choice -ne 4 -and $count -ne 0)) {
+            throw "Actual family/type selection $choice returned $count rows; original=$rowCount"
+        }
+    }
+    Save-Window 'logs-protocol-classification-filter'
     Send-BoundedMessage $logFilter 0x14E ([IntPtr]2) ([IntPtr]::Zero) # CB_SETCURSEL local exemptions
     Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
     if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 0) { throw 'Action filtering did not exclude blocked fixture requests' }
