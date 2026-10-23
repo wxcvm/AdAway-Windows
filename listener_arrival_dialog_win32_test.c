@@ -119,7 +119,19 @@ int main(void) {
         SetEvent(s.begin); gui_show_arrival_dialog(s.owner,&config);
         CHECK(WaitForSingleObject(s.finished,2000)==WAIT_OBJECT_0); CHECK(IsWindowEnabled(s.owner));
     }
-    MSG message; CHECK(PeekMessageW(&message,NULL,WM_QUIT,WM_QUIT,PM_REMOVE) && message.wParam==42);
+    /* PostQuitMessage is a virtual, low-priority queue flag. Filtering for
+       WM_QUIT alone can return FALSE while unrelated posted UI messages
+       remain (common on the CI desktop). Pump those messages, then require
+       the exact reposted exit code; never turn a missing quit into success.
+       https://devblogs.microsoft.com/oldnewthing/20051104-33/?p=33453 */
+    CHECK(PostThreadMessageW(s.ui_thread,WM_APP+47,0,0));
+    MSG message; bool quit=false; ULONGLONG quit_deadline=GetTickCount64()+2000;
+    while (!quit && GetTickCount64()<quit_deadline) {
+        if (!PeekMessageW(&message,NULL,0,0,PM_REMOVE)) { Sleep(10); continue; }
+        if (message.message==WM_QUIT) { CHECK(message.wParam==42); quit=true; }
+        else { TranslateMessage(&message); DispatchMessageW(&message); }
+    }
+    CHECK(quit);
     CHECK(WaitForSingleObject(controller,2000)==WAIT_OBJECT_0);
     CloseHandle(controller); CloseHandle(s.begin); CloseHandle(s.finished); DestroyWindow(s.owner); closesocket(s.listener); WSACleanup();
     FILE *evidence=fopen("arrival-dialog-results.json","wb"); CHECK(evidence);
