@@ -7,6 +7,19 @@ Search and action filters apply to the **loaded page**, not all retained history
 Scrolling or inspecting requests freezes history; refresh/resume returns to the
 latest page. Failed reads and expired cursors preserve the previous visible data.
 
+Statistics and log endpoints are read and published independently by the same
+worker. Failed statistics retain old counters marked stale while a new log page
+can still publish. Log failures/expired cursors keep the previous page, and a
+navigation revision change rejects an in-flight old page.
+
+New records expose observed connection family (IPv4, IPv6, or unknown). The
+existing filter selector supports connection family and response classification
+as well as action; domain search combines with that selection over the loaded
+page. A Host that looks like IPv6 does not make an IPv4 socket an IPv6 request.
+Legacy QLOG rows load with unknown family; the pinned QLG2 contract persists new
+metadata without changing retention limits. Classification is the native
+response-policy hint, not a subscription rule or DNS question type.
+
 These are HTTP response-server observations. They do not count DNS/Hosts blocks
 that never reach this server, decrypted HTTPS content, or third-party AdGuard
 traffic. A local exemption returning no content is not successful origin access.

@@ -33,6 +33,15 @@ static void req_host_of(struct mg_http_message *hm, char *out, size_t cap) {
     request_host_parse(host ? host->buf : NULL, host ? host->len : 0, out, cap);
 }''' + source[end:]
     replace('#define QLOG_MAGIC 0x514C4F47u   /* "QLOG" */', "")
+    # The shared log records the real accepted connection family. These are
+    # the six call sites in the fixed Windows production core, checked by count
+    # (it has one more local exemption branch than current Android).
+    for old, expected in (("qlog_add(req_uid, QLOG_PROXY, hm);", 1),
+                          ("qlog_add(req_uid, QLOG_ALLOW, hm);", 3),
+                          ("qlog_add(conn_load_uid(c), QLOG_BLOCK, hm);", 2)):
+        if source.count(old) != expected:
+            raise ValueError("query log connection hook changed: " + old)
+        source = source.replace(old, old.replace(", hm);", ", hm, c);"))
     # Mongoose returns a negative value for an absent form variable. A boolean
     # check never reached the existing header fallback for header-only clients.
     replace('if (!mg_http_get_var(&hm->body, "token", token_buf, sizeof(token_buf))) {',

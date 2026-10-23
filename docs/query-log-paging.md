@@ -69,3 +69,8 @@ results remain pending until the exact submitted commit completes CI.
 No system routing, DNS takeover, certificate installation or user-device install
 is part of these tests. The executable fixture runs only on a disposable CI
 runner with loopback listeners and owned temporary files.
+# HTTP 连接协议与响应分类
+
+日志保留原有动作筛选，现有组合框还可选择 IPv4、IPv6、未知协议，或图片、脚本、样式等响应处理分类；一次选择一个维度，与当前页面域名搜索组合。协议来自实际 HTTP socket，不能通过 Host 名称、冒号或 DNS A/AAAA 推断。旧记录缺少协议时保留未知；分类描述响应处理策略，不是订阅规则来源。
+
+统计 JSON 和日志页面独立读取、独立发布。统计读取失败保留上一份统计并显示过期状态，同时继续更新可读取的日志；日志失败或翻页过期则保留已有记录。无有效统计时仍可浏览已成功取得的日志。

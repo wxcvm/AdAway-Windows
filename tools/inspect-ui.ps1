@@ -183,6 +183,20 @@ try {
     if (![UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1211))) { throw 'Empty local filter prevented browsing older history' }
     Save-Window 'logs-search-empty-history-accessible'
     Set-ControlText $logSearch ''
+    if ([UiReviewNative]::SendMessage($logFilter,0x146,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 18) {
+        throw 'Protocol and response-classification choices are missing from the actual selector'
+    }
+    foreach ($choice in @(4,5,6,8)) { # IPv4, IPv6, unknown family, scripts
+        Send-BoundedMessage $logFilter 0x14E ([IntPtr]$choice) ([IntPtr]::Zero)
+        Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
+        $count=[UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32()
+        # All fixture requests arrive over IPv4 and request a GIF. Native
+        # general-policy handling can vary, but none becomes a script request.
+        if (($choice -eq 4 -and $count -ne $rowCount) -or ($choice -ne 4 -and $count -ne 0)) {
+            throw "Actual family/type selection $choice returned $count rows; original=$rowCount"
+        }
+    }
+    Save-Window 'logs-protocol-classification-filter'
     Send-BoundedMessage $logFilter 0x14E ([IntPtr]2) ([IntPtr]::Zero) # CB_SETCURSEL local exemptions
     Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
     if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 0) { throw 'Action filtering did not exclude blocked fixture requests' }
@@ -273,6 +287,11 @@ if ($null -ne $beforeAddress -and [IO.File]::ReadAllText((Join-Path $ResourceDir
 }
 Write-Output 'Address creation/removal controls visible; confirmation cancelled before UAC; configuration preserved'
 $originalHttp=Read-ControlText ([UiReviewNative]::GetDlgItem($window,1101))
+$activeStats=Invoke-RestMethod -Uri "http://127.0.0.1:${originalHttp}/internal-stats" -NoProxy -TimeoutSec 3
+$activeStatsPort=[int]$activeStats.stats_port
+if ($activeStatsPort -lt 1 -or $activeStatsPort -gt 65535) { throw 'Actual server did not report its management port' }
+$managementLabel=[regex]::Escape("管理端口 ${activeStatsPort}：")
+$managementReceipt=[regex]::Escape("管理端口 ${activeStatsPort}：AdAway 回执已确认")
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Save/active-config fixture requires disposable GitHub runner' }
 $reservation=[Net.Sockets.TcpListener]::new([Net.IPAddress]::IPv6Any,0)
 $reservation.Server.DualMode=$true;$reservation.Start()
@@ -300,8 +319,8 @@ $arrivalDeadline=(Get-Date).AddSeconds(15)
 do {
     Start-Sleep -Milliseconds 100
     $arrivalText=Read-ControlText ([UiReviewNative]::GetDlgItem($arrival,2004))
-} until ($arrivalText -match '管理端口：' -or (Get-Date) -gt $arrivalDeadline)
-if ($arrivalText -notmatch '管理端口：AdAway 回执已确认' -or $arrivalText -notmatch 'HTTP 请求已到达 AdAway') { throw "GUI arrival client did not reach actual server: $arrivalText" }
+} until ($arrivalText -match $managementLabel -or (Get-Date) -gt $arrivalDeadline)
+if ($arrivalText -notmatch $managementReceipt -or $arrivalText -notmatch 'HTTP 请求已到达 AdAway') { throw "GUI arrival client did not reach actual server: $arrivalText" }
 if ($arrivalText -notmatch "\]:${originalHttp}：" -or $arrivalText -notmatch 'HTTPS' -or $arrivalText -notmatch 'QUIC / HTTP/3') { throw 'Saved but unapplied settings changed diagnostic targets or protocol report missing' }
 if (![UiReviewNative]::GetDlgItem($arrival,2005)) { throw 'Copy result action missing' }
 $dashboardWindow=$window

@@ -547,9 +547,30 @@ static void test_request_attribution(void) {
     }
 }
 
+static void test_connection_family(void) {
+    struct qlp_row row;
+    CHECK(qlp_parse_row(mg_str(ROW_ONE), &row));
+    CHECK(row.family==0); /* Legacy records remain unknown. */
+    const int accepted[]={0,4,6};
+    char json[256];
+    for (size_t i=0;i<sizeof(accepted)/sizeof(accepted[0]);i++) {
+        snprintf(json,sizeof(json),"{\"ts\":1,\"action\":1,\"type\":2,\"mode\":1,\"host\":\"a.test\",\"family\":%d}",accepted[i]);
+        CHECK(qlp_parse_row(mg_str(json), &row));
+        CHECK(row.family==accepted[i]);
+    }
+    const char *invalid[]={"1","5","7","-1","4.0","\"4\"","null","true"};
+    for (size_t i=0;i<sizeof(invalid)/sizeof(invalid[0]);i++) {
+        snprintf(json,sizeof(json),"{\"ts\":1,\"action\":1,\"type\":2,\"mode\":1,\"host\":\"::1\",\"family\":%s}",invalid[i]);
+        struct qlp_row before=row;
+        CHECK(!qlp_parse_row(mg_str(json), &row));
+        CHECK(!memcmp(&row,&before,sizeof(row)));
+    }
+}
+
 int main(void) {
     mg_log_set(MG_LL_NONE);
     test_request_attribution();
+    test_connection_family();
     test_empty_final_page();
     test_normal_page();
     test_short_page();

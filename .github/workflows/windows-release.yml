@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.83
+      TAG: win11-webserver-v1.84
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -384,19 +384,22 @@ jobs:
       - name: Test dashboard HTTP responses with actual Mongoose
         shell: msys2 {0}
         run: |
-          gcc -std=c11 -O2 -DMG_TLS=0 -Ijni -c jni/mongoose/mongoose.c -o dashboard_mongoose.o
-          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni dashboard_response_test.c dashboard_mongoose.o -o dashboard_response_test.exe -lws2_32 -lbcrypt
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Ijni -c jni/mongoose/mongoose.c -o dashboard_mongoose.o
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni dashboard_response_test.c dashboard_mongoose.o -o dashboard_response_test.exe -lws2_32 -lbcrypt
           ./dashboard_response_test.exe
           python3 tools/dashboard-apps-fixture.py .build-core/dashboard-apps-test.c
-          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni .build-core/dashboard-apps-test.c dashboard_mongoose.o -o dashboard-apps-test.exe -lws2_32 -lbcrypt
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni .build-core/dashboard-apps-test.c dashboard_mongoose.o -o dashboard-apps-test.exe -lws2_32 -lbcrypt
           ./dashboard-apps-test.exe
-          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni query_log_page_test.c dashboard_mongoose.o -o query_log_page_test.exe -lws2_32 -lbcrypt
+          python3 tools/dashboard-publication-fixture.py .build-core/dashboard-publication-test.c
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -I. -Ijni .build-core/dashboard-publication-test.c dashboard_mongoose.o -o dashboard-publication-test.exe -lws2_32 -lbcrypt
+          ./dashboard-publication-test.exe
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni query_log_page_test.c dashboard_mongoose.o -o query_log_page_test.exe -lws2_32 -lbcrypt
           ./query_log_page_test.exe
-          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni query_log_navigation_test.c dashboard_mongoose.o -o query_log_navigation_test.exe -lws2_32 -lbcrypt
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni query_log_navigation_test.c dashboard_mongoose.o -o query_log_navigation_test.exe -lws2_32 -lbcrypt
           ./query_log_navigation_test.exe
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_filter_test.c -o query_log_filter_test.exe
           ./query_log_filter_test.exe
-          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -I. -Ijni tools/query-log-client-probe.c dashboard_mongoose.o -o query-log-client-probe.exe -lws2_32 -lbcrypt
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -I. -Ijni tools/query-log-client-probe.c dashboard_mongoose.o -o query-log-client-probe.exe -lws2_32 -lbcrypt
 
       - name: Test pinned query log contract and atomic Windows persistence
         shell: msys2 {0}
@@ -406,11 +409,11 @@ jobs:
           ./request_host_test.exe
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_atomic_win32_test.c -o query_log_atomic_win32_test.exe
           ./query_log_atomic_win32_test.exe "$(cygpath -m "$RUNNER_TEMP")"
-          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni -Ilog-contract log-contract/query_log_store_test.c dashboard_mongoose.o -o query_log_store_test.exe -lws2_32 -lbcrypt
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni -Ilog-contract log-contract/query_log_store_test.c dashboard_mongoose.o -o query_log_store_test.exe -lws2_32 -lbcrypt
           ./query_log_store_test.exe "$(cygpath -m "$RUNNER_TEMP")"
           python3 tools/build-rule-core.py jni/webserver.c .build-core/stats-bounds-core.c
           python3 log-contract/stats-json-bounds-fixture.py .build-core/stats-bounds-core.c .build-core/stats-bounds-test.c
-          gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni .build-core/stats-bounds-test.c dashboard_mongoose.o -o stats-bounds-test.exe -lws2_32 -lbcrypt
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni .build-core/stats-bounds-test.c dashboard_mongoose.o -o stats-bounds-test.exe -lws2_32 -lbcrypt
           ./stats-bounds-test.exe
 
       - name: Prepare resources (convert block placeholder images to webp)
@@ -970,7 +973,7 @@ jobs:
             }
           }
           Copy-Item -LiteralPath docs/preview-installation.md -Destination dist/README.txt -Force
-          Get-Content -LiteralPath docs/m1-rule-loader-validation.md,docs/tcp-backend.md | Set-Content -LiteralPath dist/IMPLEMENTATION-STATUS.md -Encoding utf8
+          Get-Content -LiteralPath docs/activity-and-update-contract.md,docs/query-log-paging.md,docs/listener-arrival.md,docs/m1-rule-loader-validation.md,docs/tcp-backend.md | Set-Content -LiteralPath dist/IMPLEMENTATION-STATUS.md -Encoding utf8
 
       - name: Package zip
         shell: bash

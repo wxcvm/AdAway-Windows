@@ -181,6 +181,7 @@ struct qlog_row {
     int action;              /* 0 = proxied, 1 = blocked, 2 = allowed */
     int type;                /* blocked policy type index, -1 = unknown */
     int mode;                /* 0 = placeholder, 1 = 204, 2 = passthrough */
+    int family;              /* Observed HTTP socket, never inferred from Host. */
     wchar_t host[192]; /* Every supported 191-byte UTF-8 log host fits in UTF-16. */
 };
 
@@ -557,6 +558,8 @@ static void json_qlog_key(const char *body, struct snapshot *sn, const char *key
         if (il >= sizeof(item)) il = sizeof(item) - 1;
         memcpy(item, open, il);
         item[il] = '\0';
+        int family = 0;
+        if (!qlp_json_family(mg_str(item), &family)) { p = close + 1; continue; }
         r = &sn->qlog[sn->qlog_count];
         memset(r, 0, sizeof(*r));
         r->ts = json_num(item, "ts");
@@ -566,6 +569,7 @@ static void json_qlog_key(const char *body, struct snapshot *sn, const char *key
            "unknown", not as type 0 (图片). */
         r->type = strstr(item, "\"type\":") != NULL ? (int) json_num(item, "type") : -1;
         r->mode = (int) json_num(item, "mode");
+        r->family = family;
         q = strstr(item, "\"host\":\"");
         if (q != NULL) {
             q += 8;
@@ -883,11 +887,22 @@ static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *re
         request->generation[0] ? "&anchor=" : "", request->anchor);
     sn->qlog_error = 1;
     if (length < 0 || (size_t)length >= sizeof(path)) return;
-    if (http_get_status(g_active_port, path, buffer, sizeof(buffer), &status) != 0) {
-        if (status == 409) sn->qlog_error = 2;
-        return;
+    int ports[] = {g_stats_port, g_active_port, g_http_port};
+    bool received = false;
+    for (size_t attempt = 0; attempt < sizeof(ports) / sizeof(ports[0]); ++attempt) {
+        int port = ports[attempt];
+        bool duplicate = false;
+        for (size_t earlier = 0; earlier < attempt; ++earlier)
+            if (ports[earlier] == port) duplicate = true;
+        if (port <= 0 || duplicate) continue;
+        if (http_get_status(port, path, buffer, sizeof(buffer), &status) == 0 &&
+            qlp_parse(mg_str(buffer), request, &page)) {
+            received = true;
+            break;
+        }
+        if (status == 409) { sn->qlog_error = 2; return; }
     }
-    if (!qlp_parse(mg_str(buffer), request, &page)) return;
+    if (!received) return;
     sn->qlog_count = (int)page.returned;
     memset(sn->qlog, 0, sizeof(sn->qlog));
     for (int i = 0; i < sn->qlog_count; i++) {
@@ -896,6 +911,7 @@ static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *re
         sn->qlog[i].action = page.rows[i].action;
         sn->qlog[i].type = page.rows[i].type;
         sn->qlog[i].mode = page.rows[i].mode;
+        sn->qlog[i].family = page.rows[i].family;
         utf8_to_wide(page.rows[i].host, sn->qlog[i].host,
                      sizeof(sn->qlog[i].host) / sizeof(sn->qlog[i].host[0]));
     }
@@ -918,6 +934,44 @@ static void snapshot_copy_log(struct snapshot *to, const struct snapshot *from) 
     to->qlog_revision = from->qlog_revision;
 }
 
+/* Statistics and query history can fail independently. Keep their last good
+ * publications independently too, without allocating another full snapshot. */
+static bool snapshot_publish(struct snapshot *published, struct snapshot *incoming,
+                             uint64_t requested_revision, uint64_t current_revision) {
+    bool stale = requested_revision != current_revision;
+    int error = stale ? 3 : incoming->qlog_error;
+    if (!incoming->qlog_ready || stale) {
+        if (published->qlog_ready || ((!incoming->valid || stale) && published->qlog_count > 0))
+            snapshot_copy_log(incoming, published);
+        else if (stale) {
+            incoming->qlog_count = 0;
+            incoming->qlog_ready = 0;
+            incoming->qlog_revision = 0;
+            memset(&incoming->qlog_page, 0, sizeof(incoming->qlog_page));
+            memset(incoming->qlog, 0, sizeof(incoming->qlog));
+        }
+    }
+    incoming->qlog_error = error;
+    bool changed;
+    if (incoming->valid || !published->has_data) {
+        changed = memcmp((const char *)published + sizeof(incoming->uptime_seconds),
+                         (const char *)incoming + sizeof(incoming->uptime_seconds),
+                         sizeof(*incoming) - sizeof(incoming->uptime_seconds)) != 0;
+        *published = *incoming;
+    } else {
+        changed = published->valid != 0 || published->qlog_error != error ||
+            published->qlog_count != incoming->qlog_count ||
+            published->qlog_ready != incoming->qlog_ready ||
+            published->qlog_revision != incoming->qlog_revision ||
+            memcmp(&published->qlog_page, &incoming->qlog_page, sizeof(incoming->qlog_page)) != 0 ||
+            memcmp(published->qlog, incoming->qlog, sizeof(incoming->qlog)) != 0;
+        snapshot_copy_log(published, incoming);
+        published->valid = 0;
+        published->qlog_error = error;
+    }
+    return changed;
+}
+
 static void *stats_poll_thread(void *arg) {
     HWND hwnd = (HWND)arg;
     while (!g_poll_stop) {
@@ -929,24 +983,12 @@ static void *stats_poll_thread(void *arg) {
         revision = g_log_nav.revision;
         pthread_mutex_unlock(&g_snap_mutex);
         snapshot_fetch_any(&tmp);
-        if (tmp.valid) snapshot_read_page(&tmp, &request, revision);
+        snapshot_read_page(&tmp, &request, revision);
         pthread_mutex_lock(&g_snap_mutex);
-        if (!tmp.valid && g_snap_next.has_data) {
-            tmp = g_snap_next;
-            tmp.valid = 0;
-            tmp.qlog_error = 1;
-        } else if (!tmp.qlog_ready || revision != g_log_nav.revision) {
-            int error = revision != g_log_nav.revision ? 3 : tmp.qlog_error;
-            if (g_snap_next.qlog_ready) snapshot_copy_log(&tmp, &g_snap_next);
-            tmp.qlog_error = error;
-        }
         /* Compare every rendered field, excluding the uptime clock. A hand
          * picked arithmetic signature missed TLS failures and log changes and
          * could overflow signed counters. Both snapshots have zeroed padding. */
-        bool changed = memcmp((const char *)&g_snap_next + sizeof(tmp.uptime_seconds),
-                              (const char *)&tmp + sizeof(tmp.uptime_seconds),
-                              sizeof(tmp) - sizeof(tmp.uptime_seconds)) != 0;
-        g_snap_next = tmp;
+        bool changed = snapshot_publish(&g_snap_next, &tmp, revision, g_log_nav.revision);
         pthread_mutex_unlock(&g_snap_mutex);
         /* Wake the UI only when something it draws actually changed
          * (seconds-level uptime is ignored) - idle CPU drops to ~0; a
@@ -2685,6 +2727,10 @@ static const wchar_t *log_action_label(int action) {
     return action == 1 ? L"拦截响应" : action == 2 ? L"本地豁免" : L"转发已启动";
 }
 
+static const wchar_t *log_family_label(int family) {
+    return family == 4 ? L"IPv4" : family == 6 ? L"IPv6" : L"协议未知";
+}
+
 static void log_time(long long stamp, wchar_t *out, size_t capacity, bool date) {
     time_t value = (time_t)stamp;
     struct tm *local = stamp > 0 ? localtime(&value) : NULL;
@@ -2735,8 +2781,8 @@ static void log_details_refresh(HWND hwnd) {
         const wchar_t *meaning = row->action == 1 ? L"服务器返回了拦截响应。" : row->action == 2 ?
             L"服务器命中本地豁免并返回无内容响应；不代表原站可访问。" :
             L"已启动到上游的转发；这条记录不证明上游访问成功。";
-        swprintf(text, 1500, L"域名：%ls\r\n时间：%ls    PID：%ls\r\n结果：%ls    类型：%ls    响应策略：%ls\r\n%ls 规则／来源标识：当前记录未提供。",
-            row->host, time, pid, log_action_label(row->action), log_type_label(row->type),
+        swprintf(text, 1500, L"域名：%ls\r\n时间：%ls    PID：%ls\r\nHTTP 连接：%ls（不是 DNS A/AAAA 查询类型）\r\n结果：%ls    响应分类：%ls    响应策略：%ls\r\n%ls 规则／来源标识：当前记录未提供。",
+            row->host, time, pid, log_family_label(row->family), log_action_label(row->action), log_type_label(row->type),
             row->action == 1 ? log_mode_label(row->mode) : L"不适用", meaning);
     }
     SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, text);
@@ -2785,9 +2831,10 @@ static void log_list_refresh(HWND hwnd, bool force) {
                 app->name, app->connections, app->requests, app->blocked);
         } else {
             struct qlog_row *row = &g_sn->qlog[i];
-            if (!qlf_matches(row->host, row->action, g_log_search, g_log_filter)) continue;
+            if (!qlf_matches_entry(row->host, row->action, row->type, row->family, g_log_search, g_log_filter)) continue;
             wchar_t time[32]; log_time(row->ts, time, 32, false);
-            swprintf(line, 512, L"%ls    [%ls]    %ls", time, log_action_label(row->action), row->host);
+            swprintf(line, 512, L"%ls    [%ls · %ls · %ls]    %ls", time, log_family_label(row->family),
+                log_action_label(row->action), row->action == 1 ? log_type_label(row->type) : L"不适用", row->host);
         }
         LRESULT item = SendMessageW(list, LB_ADDSTRING, 0, (LPARAM)line);
         if (item == LB_ERR || item == LB_ERRSPACE) break;
@@ -3197,7 +3244,7 @@ static void draw_activity_page(HDC hdc) {
     wchar_t count[240];
     if (g_log_apps) {
         swprintf(count, 240, L"已观测 %d 个进程；未知 PID 不推断为系统或当前应用。", sn ? sn->app_count : 0);
-    } else if (!sn || !sn->has_data) {
+    } else if (!sn || (!sn->has_data && !sn->qlog_ready)) {
         swprintf(count, 240, L"统计不可用；请检查响应服务器是否正在运行。这里不会把未采集当作零拦截。");
     } else if (sn->qlog_error) {
         const wchar_t *status = sn->qlog_error == 2 ? L"历史已过期，请刷新" :
@@ -3743,7 +3790,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_log_list_original = (WNDPROC)SetWindowLongPtrW(GetDlgItem(hwnd, IDC_QLOG_LIST),
             GWLP_WNDPROC, (LONG_PTR)log_list_proc);
         SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETCUEBANNER, TRUE, (LPARAM)L"搜索本页域名（忽略大小写）");
-        const wchar_t *log_filters[] = {L"全部结果", L"拦截响应", L"本地豁免", L"转发已启动"};
+        const wchar_t *log_filters[] = {L"全部结果", L"拦截响应", L"本地豁免", L"转发已启动",
+            L"连接：IPv4", L"连接：IPv6", L"连接：未知", L"分类：图片", L"分类：脚本", L"分类：样式表",
+            L"分类：字体", L"分类：媒体", L"分类：页面结构", L"分类：API", L"分类：遥测", L"分类：配置",
+            L"分类：WebSocket", L"分类：未知"};
         for (size_t i = 0; i < sizeof(log_filters) / sizeof(log_filters[0]); ++i)
             SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_ADDSTRING, 0, (LPARAM)log_filters[i]);
         SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_SETCURSEL, 0, 0);
@@ -3901,7 +3951,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (LOWORD(wp) == IDC_QLOG_FILTER && HIWORD(wp) == CBN_SELCHANGE) {
             int choice = (int)SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_GETCURSEL, 0, 0);
-            g_log_filter = choice == 1 ? 1 : choice == 2 ? 2 : choice == 3 ? 0 : -1;
+            g_log_filter = qlf_filter_for_choice(choice);
             log_freeze_current(hwnd);
             log_list_refresh(hwnd, true);
             InvalidateRect(hwnd, NULL, FALSE);
