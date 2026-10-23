@@ -21,7 +21,7 @@ def prepare_restart(source):
             if (restart_error) {
                 wchar_t failure[256];
                 swprintf(failure, 256, L"设置已保存，但重新打开本安装失败（错误 %lu）。请手动打开 AdAway。", (unsigned long)restart_error);
-                LOG_ERROR("Restart launch failed: %lu", (unsigned long)restart_error);
+                LOG_WARN("Restart launch failed: %lu", (unsigned long)restart_error);
                 MessageBoxW(NULL, failure, L"AdAway 重新启动失败", MB_OK | MB_ICONERROR);
                 return EXIT_FAILURE;
             }

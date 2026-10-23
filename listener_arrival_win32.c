@@ -94,7 +94,8 @@ static bool ac_receipt_host(const char *ip,int port,const char *host,const struc
         if (!ac_wait(client,true,deadline,cancel)) goto done;
         int count=send(client,request+sent,length-sent,0);
         if (count==SOCKET_ERROR && WSAGetLastError()==WSAEWOULDBLOCK) continue;
-        if (count<=0) goto done; sent+=count;
+        if (count<=0) goto done;
+        sent+=count;
     }
     if (sent!=length) goto done;
     char response[4097]; size_t used=0;
