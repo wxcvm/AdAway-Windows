@@ -723,7 +723,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-save-restart
-          path: save-restart-results.json
+          path: |
+            save-restart-results.json
+            restart-diagnostics/**
+          if-no-files-found: warn
+
+      - name: Preserve exact production fixture executable on PR failure
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-failed-production-fixture
+          path: |
+            dist/*.exe
+            dist/*.dll
+            dist/resources/test.html
+            dist/resources/*.webp
+            dist/resources/*.png
           if-no-files-found: warn
 
       - name: Test actual managed listener creation and rollback on disposable runner
