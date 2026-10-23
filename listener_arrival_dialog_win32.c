@@ -5,23 +5,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include "listener_arrival_dialog_win32.h"
+#include "listener_arrival_task_win32.h"
 #define AC_RUN 2003
 #define AC_COPY 2005
-#define AC_DONE (WM_APP+94)
+#define AC_CANCEL 2006
+#define AC_TIMER 1
 struct ac_dialog {
     struct arrival_config config;
-    HWND window; HFONT font; bool running;
-    char adblock[256],hosts[256]; wchar_t result[6144];
+    HWND window; HFONT font;
+    struct arrival_task *task;
+    wchar_t completed[6144];
 };
-static DWORD WINAPI ac_work(void *opaque) {
-    struct ac_dialog *state=(struct ac_dialog *)opaque;
-    arrival_report(&state->config,state->adblock,state->hosts,state->result,6144);
-    PostMessageW(state->window,AC_DONE,0,0); return 0;
-}
 static void ac_controls(struct ac_dialog *state,bool enabled) {
     for (int id=2001;id<=2003;id++) EnableWindow(GetDlgItem(state->window,id),enabled);
-    EnableWindow(GetDlgItem(state->window,IDCANCEL),enabled);
+    EnableWindow(GetDlgItem(state->window,IDCANCEL),TRUE);
+    EnableWindow(GetDlgItem(state->window,AC_CANCEL),!enabled && !arrival_task_cancelled(state->task));
     EnableWindow(GetDlgItem(state->window,AC_COPY),enabled);
+    SetDlgItemTextW(state->window,AC_RUN,enabled ? L"检测 DNS 与请求到达" : L"正在检测…");
 }
 static void ac_copy(HWND window) {
     HWND report=GetDlgItem(window,2004); int count=GetWindowTextLengthW(report)+1;
@@ -46,9 +46,11 @@ static void ac_place(HWND window) {
     SetWindowPos(GetDlgItem(window,2012),NULL,pad,pad+5*line+2*gap,width-2*pad,line,SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window,2002),NULL,pad,pad+6*line+2*gap,width-2*pad,line,SWP_NOZORDER);
     int top=pad+7*line+3*gap;
-    SetWindowPos(GetDlgItem(window,2004),NULL,pad,top,width-2*pad,height-top-2*pad-line,SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(window,AC_RUN),NULL,pad,height-pad-line,MulDiv(240,dpi,96),line,SWP_NOZORDER);
-    SetWindowPos(GetDlgItem(window,AC_COPY),NULL,pad+MulDiv(250,dpi,96),height-pad-line,MulDiv(120,dpi,96),line,SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window,2013),NULL,pad,top,width-2*pad,line,SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window,2004),NULL,pad,top+line+gap,width-2*pad,height-top-2*pad-2*line-gap,SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window,AC_RUN),NULL,pad,height-pad-line,MulDiv(200,dpi,96),line,SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window,AC_CANCEL),NULL,pad+MulDiv(210,dpi,96),height-pad-line,MulDiv(100,dpi,96),line,SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(window,AC_COPY),NULL,pad+MulDiv(320,dpi,96),height-pad-line,MulDiv(100,dpi,96),line,SWP_NOZORDER);
     SetWindowPos(GetDlgItem(window,IDCANCEL),NULL,width-pad-MulDiv(100,dpi,96),height-pad-line,MulDiv(100,dpi,96),line,SWP_NOZORDER);
 }
 static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) {
@@ -62,9 +64,11 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
             {2011,L"STATIC",L"广告规则测试域名（ASCII / xn--，可修改或留空）",SS_LEFT},
             {2001,L"EDIT",L"ad.doubleclick.net",WS_BORDER|ES_AUTOHSCROLL|WS_TABSTOP},
             {2012,L"STATIC",L"Hosts 规则测试域名（可选，命中类别以 AdGuard 日志为准）",SS_LEFT},
+            {2013,L"STATIC",L"尚未运行检测",SS_LEFT|SS_ENDELLIPSIS},
             {2002,L"EDIT",L"",WS_BORDER|ES_AUTOHSCROLL|WS_TABSTOP},
             {2004,L"EDIT",L"点击检测后分别显示 DNS、HTTP、HTTPS 与 UDP 占用。只连接匹配监听的本机地址，不访问公网广告源站；HTTPS 会严格校验证书并检测加密回执；QUIC / HTTP/3 当前未实现。",WS_BORDER|ES_MULTILINE|ES_READONLY|WS_VSCROLL|ES_AUTOVSCROLL|WS_TABSTOP},
             {AC_RUN,L"BUTTON",L"检测 DNS 与请求到达",BS_DEFPUSHBUTTON|WS_TABSTOP},
+            {AC_CANCEL,L"BUTTON",L"取消检测",BS_PUSHBUTTON|WS_TABSTOP},
             {AC_COPY,L"BUTTON",L"复制结果",BS_PUSHBUTTON|WS_TABSTOP},
             {IDCANCEL,L"BUTTON",L"关闭",BS_PUSHBUTTON|WS_TABSTOP}
         };
@@ -73,7 +77,7 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
             SendMessageW(child,WM_SETFONT,(WPARAM)state->font,TRUE);
         }
         SendDlgItemMessageW(window,2001,EM_SETLIMITTEXT,253,0); SendDlgItemMessageW(window,2002,EM_SETLIMITTEXT,253,0);
-        ac_place(window); return 0;
+        ac_controls(state,true); ac_place(window); return 0;
     }
     if (!state) return DefWindowProcW(window,message,wp,lp);
     if (message==WM_GETMINMAXINFO) {
@@ -82,24 +86,69 @@ static LRESULT CALLBACK ac_window(HWND window,UINT message,WPARAM wp,LPARAM lp) 
         limits->ptMinTrackSize.y=MulDiv(560,(int)GetDpiForWindow(window),96); return 0;
     }
     if (message==WM_SIZE) { ac_place(window); return 0; }
-    if (message==WM_COMMAND && LOWORD(wp)==AC_RUN && !state->running) {
-        GetDlgItemTextA(window,2001,state->adblock,256); GetDlgItemTextA(window,2002,state->hosts,256);
-        if ((*state->adblock && !arrival_domain_valid(state->adblock)) || (*state->hosts && !arrival_domain_valid(state->hosts))) {
+    if (message==WM_COMMAND && LOWORD(wp)==AC_RUN && !state->task) {
+        char adblock[256],hosts[256];
+        GetDlgItemTextA(window,2001,adblock,256); GetDlgItemTextA(window,2002,hosts,256);
+        if ((*adblock && !arrival_domain_valid(adblock)) || (*hosts && !arrival_domain_valid(hosts))) {
             SetDlgItemTextW(window,2004,L"请输入完整 ASCII / xn-- 域名，不含 URL、路径、IP、端口或空白。尚未开始检测。"); return 0;
         }
-        state->running=true; ac_controls(state,false); SetDlgItemTextW(window,2004,L"正在检查本机回执与系统 DNS，请稍候…");
-        HANDLE thread=CreateThread(NULL,0,ac_work,state,0,NULL);
-        if (thread) CloseHandle(thread);
-        else { state->running=false; ac_controls(state,true); SetDlgItemTextW(window,2004,L"无法启动检测任务，配置未改变。"); }
+        enum arrival_task_status status;
+        state->task=arrival_task_start(&state->config,adblock,hosts,&status);
+        if (!state->task) {
+            SetDlgItemTextW(window,2004,status==ARRIVAL_TASK_BUSY ?
+                L"上次检测正在结束，请稍后重试。没有启动并行检测。" : L"无法启动检测任务，配置未改变。");
+            return 0;
+        }
+        ac_controls(state,false);
+        SetDlgItemTextW(window,2013,L"正在开始检测…");
+        if (!SetTimer(window,AC_TIMER,50,NULL)) {
+            arrival_task_cancel(state->task); arrival_task_release(state->task); state->task=NULL;
+            ac_controls(state,true); SetDlgItemTextW(window,2004,L"无法跟踪检测进度，任务已取消。可以重试。");
+        }
         return 0;
     }
-    if (message==AC_DONE) { state->running=false; ac_controls(state,true); SetDlgItemTextW(window,2004,state->result); return 0; }
-    if (message==WM_COMMAND && LOWORD(wp)==AC_COPY && !state->running) { ac_copy(window); return 0; }
+    if (message==WM_TIMER && wp==AC_TIMER && state->task) {
+        if (!arrival_task_done(state->task)) {
+            wchar_t progress[384]; arrival_task_progress(state->task,progress,384);
+            SetDlgItemTextW(window,2013,arrival_task_cancelled(state->task) ?
+                L"正在取消… 系统 DNS 可能仍需自行结束。" : *progress ? progress : L"正在开始检测…");
+            return 0;
+        }
+        KillTimer(window,AC_TIMER);
+        if (arrival_task_cancelled(state->task)) {
+            SetDlgItemTextW(window,2013,L"检测已取消，可以重试");
+            wchar_t report[6400];
+            swprintf(report,6400,L"检测已取消。未开始后续探测，可以重试。%ls%ls",
+                *state->completed ? L"\r\n\r\n上次完成的结果：\r\n" : L"",state->completed);
+            SetDlgItemTextW(window,2004,report);
+        } else {
+            SetDlgItemTextW(window,2013,L"检测完成；各项是否通过以报告为准");
+            const wchar_t *report=arrival_task_result(state->task);
+            if (report) {
+                wcsncpy(state->completed,report,6143); state->completed[6143]=0;
+                SetDlgItemTextW(window,2004,state->completed);
+            }
+        }
+        arrival_task_release(state->task); state->task=NULL; ac_controls(state,true);
+        SetDlgItemTextW(window,AC_CANCEL,L"取消检测");
+        return 0;
+    }
+    if (message==WM_COMMAND && LOWORD(wp)==AC_CANCEL && state->task) {
+        arrival_task_cancel(state->task); EnableWindow(GetDlgItem(window,AC_CANCEL),FALSE);
+        SetDlgItemTextW(window,2013,L"正在取消… 系统 DNS 可能仍需自行结束。");
+        SetDlgItemTextW(window,AC_RUN,L"正在取消…"); return 0;
+    }
+    if (message==WM_COMMAND && LOWORD(wp)==AC_COPY && !state->task) { ac_copy(window); return 0; }
     if (message==WM_CLOSE || (message==WM_COMMAND && LOWORD(wp)==IDCANCEL)) {
-        if (!state->running) DestroyWindow(window);
+        DestroyWindow(window);
         return 0;
     }
-    if (message==WM_DESTROY) { if (state->font) DeleteObject(state->font); return 0; }
+    if (message==WM_DESTROY) {
+        KillTimer(window,AC_TIMER);
+        if (state->task) { arrival_task_cancel(state->task); arrival_task_release(state->task); state->task=NULL; }
+        if (state->font) { DeleteObject(state->font); state->font=NULL; }
+        SetWindowLongPtrW(window,GWLP_USERDATA,0); return 0;
+    }
     return DefWindowProcW(window,message,wp,lp);
 }
 void gui_show_arrival_dialog(HWND owner,const struct arrival_config *config) {
@@ -116,6 +165,8 @@ void gui_show_arrival_dialog(HWND owner,const struct arrival_config *config) {
     while (IsWindow(window) && (result=GetMessageW(&message,NULL,0,0))>0) {
         if (!IsDialogMessageW(window,&message)) { TranslateMessage(&message); DispatchMessageW(&message); }
     }
-    EnableWindow(owner,TRUE); SetActiveWindow(owner);
+    /* WM_QUIT/GetMessage failure also cancels and detaches before stack exit. */
+    if (IsWindow(window)) DestroyWindow(window);
+    if (IsWindow(owner)) { EnableWindow(owner,TRUE); SetActiveWindow(owner); }
     if (result==0) PostQuitMessage((int)message.wParam);
 }

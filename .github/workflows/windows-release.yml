@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.84
+      TAG: win11-webserver-v1.85
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -508,6 +508,33 @@ jobs:
             .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
             -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -lcrypt32 -o listener-arrival-probe.exe
           ./listener-arrival-probe.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -I.openssl-build/install/include \
+            listener_arrival_win32.c listener_tls_win32.c listener_arrival_task_win32.c listener_arrival_cancel_test.c traffic_observer_win32.c \
+            .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
+            -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -lcrypt32 -o listener-arrival-cancel-test.exe
+          ./listener-arrival-cancel-test.exe
+          python3 tools/arrival-dns-cancel-fixture.py .build-core/arrival-dns-cancel-test.c
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -I. .build-core/arrival-dns-cancel-test.c -o arrival-dns-cancel-test.exe -lws2_32
+          ./arrival-dns-cancel-test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic -I.openssl-build/install/include \
+            listener_arrival_win32.c listener_tls_win32.c listener_arrival_task_win32.c listener_arrival_dialog_win32.c listener_arrival_dialog_win32_test.c traffic_observer_win32.c \
+            .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
+            -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -lcrypt32 -lgdi32 -luser32 -o listener-arrival-dialog-test.exe
+          ./listener-arrival-dialog-test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic restart_win32.c restart_win32_test.c -lshell32 -o restart-process-test.exe
+          ./restart-process-test.exe
+
+      - name: Preserve cancellation and restart lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-arrival-cancellation
+          path: |
+            arrival-cancel-results.json
+            arrival-dialog-results.json
+            restart-process-results.json
+            save-restart-results.json
+          if-no-files-found: warn
 
       # The build script used to rely on MinGW's defaults for the PE
       # mitigations, so nothing noticed if they were absent. Assert them (and
@@ -685,6 +712,34 @@ jobs:
       - name: Test actual custom listener startup and conflict checks
         shell: pwsh
         run: ./tools/test-listener.ps1
+
+      - name: Test production GUI save restart and failed save preservation
+        shell: pwsh
+        timeout-minutes: 3
+        run: ./tools/test-save-restart.ps1
+
+      - name: Preserve production GUI restart evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-save-restart
+          path: |
+            save-restart-results.json
+            restart-diagnostics/**
+          if-no-files-found: warn
+
+      - name: Preserve exact production fixture executable on PR failure
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-failed-production-fixture
+          path: |
+            dist/*.exe
+            dist/*.dll
+            dist/resources/test.html
+            dist/resources/*.webp
+            dist/resources/*.png
+          if-no-files-found: warn
 
       - name: Test actual managed listener creation and rollback on disposable runner
         shell: pwsh

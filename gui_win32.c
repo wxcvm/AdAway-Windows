@@ -35,6 +35,7 @@
 #include <openssl/pem.h>
 
 #include "gui_win32.h"
+#include "restart_win32.h"
 #include "gui_assist_dialogs_win32.h"
 #include "traffic_mode_policy.h"
 #include "traffic_observer_win32.h"
@@ -3005,10 +3006,12 @@ static void update_button_refresh(HWND hwnd) {
 
 static bool refresh_owned_autostart(void) {
     if (!win32_autostart_installed()) return true;
-    char exe[MAX_PATH], command[2048];
-    if (!get_module_path_utf8(exe,sizeof(exe))) return false;
-    snprintf(command,sizeof(command),"\"%s\" --resources \"%s\" --minimized",exe,g_res);
-    return win32_autostart_set(true,command)==0;
+    struct restart_command *prepared=NULL;
+    if (restart_prepare(g_res,true,&prepared)) return false;
+    char command[2048];
+    int length=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,prepared->command,-1,command,sizeof(command),NULL,NULL);
+    free(prepared);
+    return length>0 && win32_autostart_set(true,command)==0;
 }
 
 /* ── "应用日志" page ──────────────────────────────────────────────
@@ -3772,6 +3775,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
+        if (!g_owns_server) SetDlgItemTextW(hwnd,IDC_RESTART,L"保存并重新打开");
         for (int i = 0; i < CL_SUB; i++) {
             const struct ctl_desc *d = &g_sublayout[i];
             HWND w = CreateWindowExW(0, d->cls, d->text,
@@ -4275,13 +4279,14 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                         return 0;
                     }
                     g_http_port = hp; g_https_port = sp; g_bind_all = bind;
-                    if (!refresh_owned_autostart()) {
+                    bool autostart_ok=refresh_owned_autostart();
+                    if (!autostart_ok) {
                         SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"监听设置已保存，但开机启动项更新失败；请重新设置开机启动。");
-                        return 0;
+                        if (id == IDC_RESTART) MessageBoxW(hwnd,L"监听设置已保存；开机启动项更新失败，请稍后重新设置开机启动。现在继续重新打开本安装。",L"AdAway 开机启动提示",MB_OK|MB_ICONWARNING);
                     }
                     if (id == IDC_RESTART) {
                         win32_notify_restart(); PostMessageW(hwnd, WM_APP_EXIT, 0, 0);
-                    } else SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, L"已保存；点击“保存并重启”应用监听配置。");
+                    } else if (autostart_ok) SetDlgItemTextW(hwnd, IDC_LISTEN_STATUS, g_owns_server ? L"已保存；点击“保存并重启”应用监听配置。" : L"已保存；重新打开本安装后应用配置，附着的外部服务器不会被停止。");
                 }
             } else if (id == IDC_FLUSH) {
                 wchar_t st[128];
