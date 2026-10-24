@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.85
+      TAG: win11-webserver-v1.86
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -516,6 +516,10 @@ jobs:
           python3 tools/arrival-dns-cancel-fixture.py .build-core/arrival-dns-cancel-test.c
           gcc -std=c11 -Wall -Wextra -Werror -pedantic -I. .build-core/arrival-dns-cancel-test.c -o arrival-dns-cancel-test.exe -lws2_32
           ./arrival-dns-cancel-test.exe
+          gcc -std=c11 -Wall -Wextra -Werror -pedantic \
+            listener_arrival_answers_win32_test.c traffic_observer_win32.c \
+            -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -o arrival-answers-test.exe
+          ./arrival-answers-test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic -I.openssl-build/install/include \
             listener_arrival_win32.c listener_tls_win32.c listener_arrival_task_win32.c listener_arrival_dialog_win32.c listener_arrival_dialog_win32_test.c traffic_observer_win32.c \
             .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
@@ -531,6 +535,7 @@ jobs:
           name: windows-arrival-cancellation
           path: |
             arrival-cancel-results.json
+            arrival-answers-results.json
             arrival-dialog-results.json
             restart-process-results.json
             save-restart-results.json
