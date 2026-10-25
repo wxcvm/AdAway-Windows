@@ -2866,7 +2866,7 @@ static const wchar_t *log_mode_label(int m) {
 }
 
 static const wchar_t *log_action_label(int action) {
-    return action == 1 ? L"本地策略拦截" : action == 2 ? L"本地豁免" : action == 3 ? L"访问拒绝" : L"转发已启动";
+    return action == 1 ? L"本地策略拦截" : action == 2 ? L"本地处理／放行" : action == 3 ? L"访问拒绝" : L"转发已启动";
 }
 
 static const wchar_t *log_family_label(int family) {
@@ -2921,7 +2921,7 @@ static void log_details_refresh(HWND hwnd) {
         log_time(row->ts, time, 64, true);
         if (row->uid >= 0) swprintf(pid, 40, L"%d", row->uid); else wcscpy(pid, L"未知／未归属");
         const wchar_t *meaning = row->action == 1 ? L"服务器已排队本地拦截响应，不证明客户端收到。" : row->action == 3 ? L"服务器拒绝访问；不是广告规则拦截。" : row->action == 2 ?
-            L"服务器命中本地豁免并返回无内容响应；不代表原站可访问。" :
+            L"服务器已本地处理或放行；不证明用户豁免规则命中或原站可访问，请以实际状态为准。" :
             L"已启动到上游的转发；这条记录不证明上游访问成功。";
         wchar_t identity[100], status[40];
         if (row->sequence[0] && g_sn->qlog_page.generation[0]) swprintf(identity,100,L"%hs:%hs",g_sn->qlog_page.generation,row->sequence);
@@ -3325,7 +3325,7 @@ static void draw_ranking_page(HDC hdc) {
         const struct snapshot *tsn = g_sn;
         wchar_t tls_line[160];
         swprintf(tls_line, 160,
-                 L"证书被拒（握手失败）%lld 次 · 握手成功 %lld 次",
+                 L"TLS 握手失败 %lld 次（原因未确认）· 成功 %lld 次",
                  tsn ? tsn->tls_failures : 0LL,
                  tsn ? tsn->tls_handshakes : 0LL);
         TextOutW(hdc, S(430), S(384), tls_line, (int) wcslen(tls_line));
@@ -3402,12 +3402,12 @@ static void draw_activity_page(HDC hdc) {
     } else if (!sn->qlog_ready) {
         swprintf(count, 240, L"摘要 %d 条 · 全历史筛选尚未就绪；保留 %d 条旧记录。", sn->qlog_count, g_log_shown);
     } else if (!sn->qlog_count) {
-        swprintf(count, 240, L"全部保留历史中没有匹配记录；这里仅记录到达本机响应服务器的请求。");
+        swprintf(count, 240, L"全部保留的 %u 条 Web 历史中没有匹配记录（上限4096条）。", (unsigned)sn->qlog_page.retained_total);
     } else {
-        swprintf(count, 240, L"%ls · 匹配第 %u–%u / %u 条 · 本页 %d 条%ls",
+        swprintf(count, 240, L"%ls · 匹配第 %u–%u / %u 条 · 本页 %d · 保留 %u / 4096 条",
             g_log_nav.request.generation[0] ? L"历史已固定" : L"实时刷新",
             (unsigned)sn->qlog_page.offset + 1u, (unsigned)sn->qlog_page.offset + (unsigned)sn->qlog_count,
-            (unsigned)sn->qlog_page.total, g_log_shown, L"（Windows最多保留4096条）");
+            (unsigned)sn->qlog_page.total, g_log_shown, (unsigned)sn->qlog_page.retained_total);
     }
     if(InterlockedCompareExchange(&g_log_export_busy,0,0)||InterlockedCompareExchange(&g_log_export_pending,0,0))
         swprintf(count,240,L"正在导出固定历史：%u / %u 条 · 可取消，完成前不发布文件。",g_log_export_done,g_log_export_total);
@@ -3945,7 +3945,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_log_list_original = (WNDPROC)SetWindowLongPtrW(GetDlgItem(hwnd, IDC_QLOG_LIST),
             GWLP_WNDPROC, (LONG_PTR)log_list_proc);
         SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETCUEBANNER, TRUE, (LPARAM)L"搜索全部保留历史：域名／路径／HTTP状态");
-        const wchar_t *log_filters[] = {L"全部结果", L"拦截响应", L"本地豁免", L"转发已启动",
+        const wchar_t *log_filters[] = {L"全部结果", L"拦截响应", L"本地处理／放行", L"转发已启动",
             L"连接：IPv4", L"连接：IPv6", L"连接：未知", L"分类：图片", L"分类：脚本", L"分类：样式表",
             L"分类：字体", L"分类：媒体", L"分类：页面结构", L"分类：API", L"分类：遥测", L"分类：配置",
             L"分类：WebSocket", L"分类：未知", L"访问拒绝"};
@@ -4006,6 +4006,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
         tray_add(hwnd);
         cert_refresh(true);
+        SendMessageW(GetDlgItem(hwnd, IDC_QLOG_UID), EM_SETCUEBANNER, TRUE, (LPARAM)L"PID（-1 未知）");
         g_log_nav.request.filter.enabled = true;
         qln_refresh(&g_log_nav);
         g_poll_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -4609,9 +4610,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
            count right next to it. */
         long long blk = (sn && sn->has_data) ? sn->total_blocked : 0;
         fmt_num(val, 64, req);
-        draw_kpi(hdc, 210, 24, 120, 72, L"请求量", show_data ? val : L"—", C_BLUE);
+        draw_kpi(hdc, 210, 24, 120, 72, L"Web 请求", show_data ? val : L"—", C_BLUE);
         fmt_num(val, 64, blk);
-        draw_kpi(hdc, 348, 24, 120, 72, L"拦截量", show_data ? val : L"—", C_RED);
+        draw_kpi(hdc, 348, 24, 120, 72, L"本地拦截", show_data ? val : L"—", C_RED);
         /* block_rate is ALREADY a percentage (0-100) in the JSON; the old code
            multiplied it by 100 again, so a fully blocked device showed
            "10000%". Clamp it and print one decimal. */
@@ -4619,7 +4620,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (rate < 0.0) rate = 0.0;
         if (rate > 100.0) rate = 100.0;
         swprintf(val, 64, L"%.1f%%", rate);
-        draw_kpi(hdc, 486, 24, 120, 72, L"拦截率", show_data ? val : L"—", C_ACCENT);
+        draw_kpi(hdc, 486, 24, 120, 72, L"本地比例", show_data ? val : L"—", C_ACCENT);
         fmt_num(val, 64, sn && sn->has_data ? sn->total_connections : 0);
         draw_kpi(hdc, 624, 24, 120, 72, L"连接数", show_data ? val : L"—", C_GREEN);
         fmt_num(val, 64, sn && sn->has_data ? sn->sni_certs_issued : 0);
