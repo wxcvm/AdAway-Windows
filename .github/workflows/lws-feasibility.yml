@@ -1,0 +1,69 @@
+name: Isolated LWS Windows feasibility
+on:
+  pull_request:
+    branches: [main]
+    paths: ['tools/lws-spike/**', 'docs/lws-feasibility.md', '.github/workflows/lws-feasibility.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lws-windows-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Fixed shared LWS prototype on real Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: MINGW64
+          update: false
+          install: git perl make mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+      - uses: actions/cache@v4
+        with:
+          path: .openssl-build/install
+          key: lws-spike-windows-openssl-45e844fa2a14ec92d146bd8f5778ac130b6625fb-v1
+      - name: Fixed OpenSSL and per-job compiler path
+        shell: msys2 {0}
+        run: |
+          mkdir -p evidence
+          bash scripts/build-official-openssl.sh > evidence/openssl-build.log 2>&1
+          echo "MINGW_BIN=$(cygpath -m "$MINGW_PREFIX/bin")" >> "$GITHUB_ENV"
+      - name: Fetch verified prototype without changing portable production core
+        shell: pwsh
+        run: |
+          python tools/lws-spike/fetch_source.py .lws-spike/source > evidence/shared-source.json
+          if ($LASTEXITCODE) { throw 'Shared prototype fetch' }
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          python .lws-spike/source/build.py --directory .lws-spike/work --openssl .openssl-build/install --generator Ninja --define CMAKE_C_COMPILER=gcc > evidence/build.log 2>&1
+          if ($LASTEXITCODE) { throw 'Pinned Windows build' }
+          Copy-Item .lws-spike/work/build-evidence.json evidence/
+      - name: Run real process, response and lifetime tests
+        shell: pwsh
+        run: |
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          foreach ($backend in @('lws','mongoose')) {
+            python .lws-spike/source/tests/correctness.py --binary ".lws-spike/work/build/spike_$backend.exe" --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output "evidence/$backend"
+            if ($LASTEXITCODE) { throw "Actual $backend tests" }
+          }
+          python -m pip install -r .lws-spike/source/tests/requirements.txt
+          if ($LASTEXITCODE) { throw 'Metrics dependency' }
+      - name: Alternate paired performance rounds with normal log modes
+        shell: pwsh
+        run: |
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          python .lws-spike/source/tests/benchmark.py --build .lws-spike/work/build --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output evidence/performance > evidence/performance.log 2>&1
+          if ($LASTEXITCODE) { throw 'Paired performance failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lws-windows-evidence
+          path: |
+            evidence/**/*.json
+            evidence/**/*.log
+          if-no-files-found: warn
