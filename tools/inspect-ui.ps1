@@ -176,32 +176,52 @@ try {
     if ($details -notmatch 'gui-log-' -or $details -notmatch 'PID：' -or $details -notmatch '当前记录未提供') { throw "Actual request details incomplete: $details" }
     if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1218))) -ne '恢复实时') { throw 'Selecting request did not freeze history' }
     Wait-LogButtons $false $true
-    Set-ControlText $logSearch 'GUI-LOG-'
-    if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne $rowCount) { throw 'Case-insensitive host search changed matching row count' }
-    Set-ControlText $logSearch 'not-present-in-this-page.example'
-    if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 0) { throw 'Host search did not filter loaded page' }
-    if (![UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1211))) { throw 'Empty local filter prevented browsing older history' }
-    Save-Window 'logs-search-empty-history-accessible'
-    Set-ControlText $logSearch ''
-    if ([UiReviewNative]::SendMessage($logFilter,0x146,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 18) {
-        throw 'Protocol and response-classification choices are missing from the actual selector'
+    function Wait-FilteredPage([int]$ExpectedRows) {
+        $deadline=(Get-Date).AddSeconds(20)
+        do {
+            $count=[UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32()
+            $current=[UiReviewNative]::IsWindowEnabled([UiReviewNative]::GetDlgItem($window,1219))
+            if ($count -eq $ExpectedRows -and $current) { return }
+            Start-Sleep -Milliseconds 100
+        } while((Get-Date) -lt $deadline)
+        Save-Window 'logs-unexpected-server-filter'
+        throw "Server-filtered page expected $ExpectedRows rows and a current exportable snapshot; actual=$count current=$current"
     }
-    foreach ($choice in @(4,5,6,8)) { # IPv4, IPv6, unknown family, scripts
+    Set-ControlText $logSearch 'GUI-LOG-'
+    Wait-FilteredPage $rowCount
+    # Pick a known retained match outside the actual first-page byte budget.
+    $head=Invoke-RestMethod 'http://127.0.0.1:18083/internal-qlog?filterVersion=1&offset=0&limit=300' -NoProxy -TimeoutSec 3
+    $needle=1..650 | Where-Object { "gui-log-$_.$('a'*50).$('b'*50).$('c'*40).example.test" -notin $head.entries.host } | Select-Object -First 1
+    if (!$needle) { throw 'Fixture did not leave a matching record beyond the first page' }
+    Set-ControlText $logSearch "gui-log-$needle."
+    Wait-FilteredPage 1
+    Send-BoundedMessage $logList 0x186 ([IntPtr]::Zero) ([IntPtr]::Zero)
+    Send-BoundedMessage $window 0x111 ([IntPtr](1215 -bor (1 -shl 16))) $logList
+    if ((Read-ControlText $logDetails) -notmatch [regex]::Escape("gui-log-$needle.")) { throw 'Full-history search did not retrieve the older retained observation' }
+    Save-Window 'logs-search-beyond-first-page'
+    Set-ControlText $logSearch 'not-present-in-retained-history.example'
+    Wait-FilteredPage 0
+    Wait-LogButtons $false $false
+    Save-Window 'logs-search-empty-retained-history'
+    Set-ControlText $logSearch 'GUI-LOG-'
+    Wait-FilteredPage $rowCount
+    if ([UiReviewNative]::SendMessage($logFilter,0x146,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 19) {
+        throw 'Protocol, response classification and access-refusal choices are missing'
+    }
+    foreach ($choice in @(4,5,6,8,18)) { # IPv4, IPv6, unknown, scripts, access refusal
         Send-BoundedMessage $logFilter 0x14E ([IntPtr]$choice) ([IntPtr]::Zero)
         Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
-        $count=[UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32()
-        # All fixture requests arrive over IPv4 and request a GIF. Native
-        # general-policy handling can vary, but none becomes a script request.
-        if (($choice -eq 4 -and $count -ne $rowCount) -or ($choice -ne 4 -and $count -ne 0)) {
-            throw "Actual family/type selection $choice returned $count rows; original=$rowCount"
-        }
+        $expected=if($choice -eq 4){$rowCount}else{0}
+        Wait-FilteredPage $expected
     }
     Save-Window 'logs-protocol-classification-filter'
-    Send-BoundedMessage $logFilter 0x14E ([IntPtr]2) ([IntPtr]::Zero) # CB_SETCURSEL local exemptions
+    Send-BoundedMessage $logFilter 0x14E ([IntPtr]2) ([IntPtr]::Zero)
     Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
-    if ([UiReviewNative]::SendMessage($logList,0x18B,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -ne 0) { throw 'Action filtering did not exclude blocked fixture requests' }
+    Wait-FilteredPage 0
     Send-BoundedMessage $logFilter 0x14E ([IntPtr]::Zero) ([IntPtr]::Zero)
     Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
+    Set-ControlText $logSearch ''
+    Wait-FilteredPage $rowCount
     Send-BoundedMessage $window 0x111 ([IntPtr]1217) ([IntPtr]::Zero)
     if ([UiReviewNative]::IsWindowVisible($logSearch)) { throw 'Log filters overlap independent application view' }
     Save-Window 'logs-applications-view'

@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,14 @@
 #define QLP_GENERATION_SIZE 33
 #define QLP_ANCHOR_SIZE 21
 #define QLP_HOST_SIZE 192
+#define QLP_PATH_SIZE 160
+#define QLP_QUERY_KEY_SIZE 65
+
+struct qlp_filter {
+    bool enabled, has_action, has_family, has_type, has_uid;
+    int action, family, type, uid;
+    char query[192];
+};
 
 /*
  * Query-log cursor state. Both cursor strings empty means "fresh page". If
@@ -25,6 +34,8 @@ struct qlp_request {
     uint32_t offset;
     char generation[QLP_GENERATION_SIZE];
     char anchor[QLP_ANCHOR_SIZE];
+    struct qlp_filter filter;
+    char query_key[QLP_QUERY_KEY_SIZE];
 };
 
 struct qlp_row {
@@ -35,6 +46,10 @@ struct qlp_row {
     int mode;
     int family; /* Observed HTTP connection family: 0 unknown, 4 or 6. */
     char host[QLP_HOST_SIZE];
+    char path[QLP_PATH_SIZE];
+    int status;
+    bool path_truncated;
+    char sequence[QLP_ANCHOR_SIZE];
 };
 
 struct qlp_page {
@@ -46,6 +61,8 @@ struct qlp_page {
     char generation[QLP_GENERATION_SIZE];
     char anchor[QLP_ANCHOR_SIZE];
     struct qlp_row rows[QLP_PAGE_SIZE];
+    uint32_t retained_total;
+    char query_key[QLP_QUERY_KEY_SIZE];
 };
 
 static inline bool qlp_json_is_space(char c) {
@@ -239,6 +256,30 @@ static inline bool qlp_utf8_host(const unsigned char *text, size_t length) {
     return true;
 }
 
+/* Canonical filter identity is shared with the native server contract. */
+static inline bool qlp_filter_key(const struct qlp_filter *filter, char key[65]) {
+    if (!filter || !key || !filter->enabled ||
+        (filter->has_action && (filter->action < 0 || filter->action > 3)) ||
+        (filter->has_family && filter->family != 0 && filter->family != 4 && filter->family != 6) ||
+        (filter->has_type && (filter->type < -1 || filter->type > 65534)) ||
+        (filter->has_uid && filter->uid < -1)) return false;
+    size_t n = qlp_bounded_strlen(filter->query, sizeof(filter->query));
+    if (n >= sizeof(filter->query) || (n && !qlp_utf8_host((const unsigned char *)filter->query, n))) return false;
+    char action[24]="*", family[24]="*", type[24]="*", uid[24]="*", query[192];
+    if (filter->has_action) snprintf(action, sizeof(action), "%d", filter->action);
+    if (filter->has_family) snprintf(family, sizeof(family), "%d", filter->family);
+    if (filter->has_type) snprintf(type, sizeof(type), "%d", filter->type);
+    if (filter->has_uid) snprintf(uid, sizeof(uid), "%d", filter->uid);
+    for (size_t i=0; i<=n; ++i) query[i] = filter->query[i] >= 'A' && filter->query[i] <= 'Z' ? (char)(filter->query[i]+('a'-'A')) : filter->query[i];
+    char canonical[512];
+    int length=snprintf(canonical,sizeof(canonical),"qlog-filter-v1\naction=%s\nfamily=%s\ntype=%s\nuid=%s\nq=%s",action,family,type,uid,query);
+    if (length < 0 || (size_t)length >= sizeof(canonical)) return false;
+    unsigned char digest[32]; static const char hex[]="0123456789abcdef";
+    mg_sha256(digest,(uint8_t *)canonical,(size_t)length);
+    for(unsigned i=0;i<32;++i){key[2*i]=hex[digest[i]>>4];key[2*i+1]=hex[digest[i]&15];}key[64]=0;
+    return true;
+}
+
 static inline bool qlp_entries_empty(struct mg_str entries) {
     size_t i = 1;
     if (entries.buf == NULL || entries.len < 2u || entries.buf[0] != '[') {
@@ -345,7 +386,7 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
         return false;
     }
     if (!qlp_json_uint(row, "$.ts", &timestamp) ||
-        !qlp_json_small_uint(row, "$.action", 2u, &action) ||
+        !qlp_json_small_uint(row, "$.action", 3u, &action) ||
         !qlp_json_type(row, &type) ||
         !qlp_json_small_uint(row, "$.mode", 255u, &mode) ||
         !qlp_json_family(row, &family)) {
@@ -371,14 +412,38 @@ static inline bool qlp_parse_row(struct mg_str row, struct qlp_row *out) {
         return false;
     }
 
-    out->timestamp = timestamp;
-    out->uid = uid;
-    out->action = action;
-    out->type = type;
-    out->mode = mode;
-    out->family = family;
-    memcpy(out->host, host_stage, host_length);
-    out->host[host_length] = '\0';
+    struct qlp_row stage = {0};
+    if (mg_json_get_tok(row, "$.path").len) {
+        if (!qlp_string_escapes_supported(row, "$.path")) return false;
+        char path[512] = {0};
+        size_t n = mg_json_unescape(row, "$.path", path, sizeof(path));
+        if (n >= QLP_PATH_SIZE || (n && (path[0] != '/' || !qlp_utf8_host((const unsigned char *)path, n))) ||
+            memchr(path, '?', n) || memchr(path, '#', n)) return false;
+        memcpy(stage.path, path, n);
+    }
+    if (mg_json_get_tok(row, "$.status").len &&
+        (!qlp_json_small_uint(row, "$.status", 599, &stage.status) ||
+         (stage.status != 0 && stage.status < 100))) return false;
+    if (mg_json_get_tok(row, "$.pathTruncated").len &&
+        !qlp_json_bool(row, "$.pathTruncated", &stage.path_truncated)) return false;
+    if (stage.path_truncated && !stage.path[0]) return false;
+    if (mg_json_get_tok(row, "$.sequence").len) {
+        char sequence[32] = {0};
+        if (!qlp_string_escapes_supported(row, "$.sequence")) return false;
+        size_t n = mg_json_unescape(row, "$.sequence", sequence, sizeof(sequence));
+        uint64_t value;
+        if (n == 0 || n > 20 || !qlp_decimal_digits(sequence, n, &value) || !value) return false;
+        memcpy(stage.sequence, sequence, n);
+    }
+    stage.timestamp = timestamp;
+    stage.uid = uid;
+    stage.action = action;
+    stage.type = type;
+    stage.mode = mode;
+    stage.family = family;
+    memcpy(stage.host, host_stage, host_length);
+    stage.host[host_length] = '\0';
+    *out = stage;
     return true;
 }
 
@@ -483,6 +548,21 @@ static inline bool qlp_parse(struct mg_str json,
         if (!qlp_entries_end_object(entries)) return false;
     }
 
+    char query_key[QLP_QUERY_KEY_SIZE] = {0};
+    uint64_t retained_total = total_value;
+    if (request->filter.enabled) {
+        uint64_t version = 0;
+        if (!qlp_json_uint(json, "$.filterVersion", &version) || version != 1 ||
+            !qlp_json_uint(json, "$.retainedTotal", &retained_total) ||
+            retained_total > QLP_MAX_TOTAL || retained_total < total_value ||
+            !qlp_string_escapes_supported(json, "$.queryKey") ||
+            mg_json_unescape(json, "$.queryKey", query_key, sizeof(query_key)) != 64) return false;
+        for (unsigned i = 0; i < 64; ++i)
+            if (!((query_key[i] >= '0' && query_key[i] <= '9') || (query_key[i] >= 'a' && query_key[i] <= 'f'))) return false;
+        char expected[65];
+        if (!qlp_filter_key(&request->filter, expected) || strcmp(expected, query_key) ||
+            (have_cursor && strcmp(request->query_key, query_key))) return false;
+    }
     page = (struct qlp_page *) calloc(1u, sizeof *page);
     if (page == NULL) return false;
 
@@ -503,6 +583,18 @@ static inline bool qlp_parse(struct mg_str json,
         }
     }
 
+    if (request->filter.enabled) {
+        uint64_t prior = UINT64_MAX, max_sequence = 0;
+        if (!qlp_decimal_digits(anchor, strlen(anchor), &max_sequence)) { free(page); return false; }
+        for (unsigned i = 0; i < returned_value; ++i) {
+            uint64_t sequence = 0;
+            if (!qlp_decimal_digits(page->rows[i].sequence, strlen(page->rows[i].sequence), &sequence) ||
+                !sequence || sequence > max_sequence || (i && sequence >= prior)) { free(page); return false; }
+            prior = sequence;
+        }
+    }
+    page->retained_total = (uint32_t)retained_total;
+    memcpy(page->query_key, query_key, sizeof(query_key));
     page->offset = (uint32_t) offset_value;
     page->next_offset = (uint32_t) next_value;
     page->total = (uint32_t) total_value;

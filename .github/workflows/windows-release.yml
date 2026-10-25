@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.86
+      TAG: win11-webserver-v1.87
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -397,6 +397,8 @@ jobs:
           ./query_log_page_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni query_log_navigation_test.c dashboard_mongoose.o -o query_log_navigation_test.exe -lws2_32 -lbcrypt
           ./query_log_navigation_test.exe
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni query_log_evidence_test.c dashboard_mongoose.o -o query_log_evidence_test.exe -lws2_32 -lbcrypt
+          ./query_log_evidence_test.exe
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_filter_test.c -o query_log_filter_test.exe
           ./query_log_filter_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -I. -Ijni tools/query-log-client-probe.c dashboard_mongoose.o -o query-log-client-probe.exe -lws2_32 -lbcrypt
@@ -1464,7 +1466,7 @@ jobs:
         run: |
           bash fetch-upstream.sh
           cc -std=c11 -O1 -g -D_GNU_SOURCE -DMG_TLS=0 -fsanitize=address,undefined -fno-omit-frame-pointer -Ijni -c jni/mongoose/mongoose.c -o log-mongoose.o
-          for test in query_log_page query_log_navigation; do
+          for test in query_log_page query_log_navigation query_log_evidence; do
             cc -std=c11 -O1 -g -D_GNU_SOURCE -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer -Ijni "${test}_test.c" log-mongoose.o -pthread -o "$test"
             "./$test"
           done

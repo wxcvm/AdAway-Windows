@@ -10,6 +10,8 @@ import socket
 import subprocess
 import tempfile
 import time
+import hashlib
+from urllib.parse import urlencode
 
 
 def host(number):
@@ -138,6 +140,42 @@ class Fixture:
         assert lines[1:] == [entry["host"] for entry in page["entries"]]
         return page
 
+    def filtered_page(self, filters=None, offset=0, cursor=None):
+        filters = dict(filters or {})
+        if cursor:
+            filters.update(generation=cursor[0], anchor=cursor[1], queryKey=cursor[2])
+        path = "/internal-qlog?" + urlencode(dict(filterVersion=1, offset=offset, limit=300, **filters))
+        status, body, raw = self.exchange(self.stats, path)
+        assert status == 200, (status, body)
+        page = json.loads(body)
+        assert page["filterVersion"] == 1 and page["retainedTotal"] >= page["total"]
+        canonical = "qlog-filter-v1" + "".join("\n" + name + "=" + str(filters.get(name, "*")) for name in ("action", "family", "type", "uid"))
+        canonical += "\nq=" + str(filters.get("q", "")).translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+        assert page["queryKey"] == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        client = subprocess.run([str(self.probe), "--v1", str(offset), json.dumps(filters, ensure_ascii=False)], input=raw, capture_output=True, timeout=10)
+        assert client.returncode == 0, client.stderr
+        lines=client.stdout.decode("utf-8").splitlines()
+        assert lines[1] == f"v1,{page['retainedTotal']},{page['queryKey']}"
+        assert lines[2:] == [entry["host"] for entry in page["entries"]]
+        sequence=[int(entry["sequence"]) for entry in page["entries"]]
+        assert sequence == sorted(set(sequence), reverse=True)
+        assert all(entry["path"] == "/query-log-fixture.gif" and entry["status"] in (200,204) and not entry["pathTruncated"] for entry in page["entries"])
+        return page
+
+    def verify_filtered_history(self):
+        target=self.filtered_page(dict(q="Q-00001.",action=1,family=4,type=0))
+        assert target["total"]==1 and target["retainedTotal"]==600 and target["entries"][0]["host"]==host(1)
+        page=self.filtered_page(dict(q="query-log-fixture"));cursor=(page["generation"],page["anchor"],page["queryKey"])
+        rows=list(page["entries"])
+        while page["hasMore"]:
+            page=self.filtered_page(dict(q="query-log-fixture"),page["nextOffset"],cursor);rows.extend(page["entries"])
+        assert len(rows)==600 and len({entry["sequence"] for entry in rows})==600
+        bad=dict(filterVersion=1,offset=0,limit=300,generation=cursor[0],anchor=cursor[1],queryKey=cursor[2],q="different")
+        assert self.exchange(self.stats,"/internal-qlog?"+urlencode(bad))[0]==400
+        for query in ("filterVersion=1&action=1&action=1", "filterVersion=1&q=%FF", "filterVersion=1&q=%00", "filterVersion=1&q="+"x"*192):
+            assert self.exchange(self.stats,"/internal-qlog?"+query)[0]==400
+        return len(rows)
+
     def all_pages(self, first=None):
         page = first or self.page()
         cursor = (page["generation"], page["anchor"])
@@ -182,9 +220,11 @@ def run(exe, probe):
         try:
             fixture.start()
             fixture.verify_control_authentication()
+            fixture.control("clear_query_log")
             assert fixture.page()["total"] == 0
             fixture.batch(1, 600)
             fixture.validate_stats(600)
+            fixture.verify_filtered_history()
             first = fixture.page()
             assert first["total"] == 600 and 0 < first["returned"] < 300
             old_cursor = (first["generation"], first["anchor"])
@@ -223,7 +263,7 @@ def run(exe, probe):
             fixture.stop()
             fixture.start()
             assert fixture.page()["entries"] == family_page["entries"], "Restart lost actual dual-stack metadata"
-            return dict(retention=4096, originalRows=600, concurrentWrites=25,
+            return dict(fullRetainedHistoryFiltering=True, fixedQueryKeyAndSequences=True, retention=4096, originalRows=600, concurrentWrites=25,
                         actualShortPage=first["returned"], overwriteExpired=True,
                         restartOrderAndMetadata=True, clearExpired=True,
                         productionClientParser=True, controlAuthentication=True,

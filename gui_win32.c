@@ -20,6 +20,7 @@
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 
@@ -28,6 +29,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 #include <stdint.h>
 #include <wchar.h>
 
@@ -56,6 +58,7 @@
 #include "dashboard_response.h"
 #include "query_log_navigation.h"
 #include "query_log_filter.h"
+#include "query_log_export.h"
 #include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
@@ -179,11 +182,15 @@ struct app_row {
 struct qlog_row {
     long long ts;
     int uid;
-    int action;              /* 0 = proxied, 1 = blocked, 2 = allowed */
+    int action;              /* 0 forwarding started, 1 block, 2 local exemption, 3 access denied. */
     int type;                /* blocked policy type index, -1 = unknown */
     int mode;                /* 0 = placeholder, 1 = 204, 2 = passthrough */
     int family;              /* Observed HTTP socket, never inferred from Host. */
     wchar_t host[192]; /* Every supported 191-byte UTF-8 log host fits in UTF-16. */
+    wchar_t path[160];
+    int status;
+    bool path_truncated;
+    char sequence[21];
 };
 
 /* One entry of the server's "top_blocked" ranking (busiest first). */
@@ -266,6 +273,13 @@ static pthread_t g_poll_thread;
 static pthread_mutex_t g_snap_mutex;
 static struct qln_state g_log_nav;
 static HANDLE g_poll_wake;
+static bool g_log_query_pending;
+static bool g_log_pause_after_query;
+static volatile LONG g_log_export_pending, g_log_export_busy, g_log_export_cancel;
+static struct qlp_request g_log_export_request;
+static wchar_t g_log_export_target[MAX_PATH];
+static uint32_t g_log_export_done, g_log_export_total;
+static int g_log_export_result; /* 1 complete, -1 failed, -2 cancelled. */
 
 static struct snapshot g_snap_next;
 static struct snapshot *g_sn;
@@ -549,7 +563,7 @@ static void json_qlog_key(const char *body, struct snapshot *sn, const char *key
     while (sn->qlog_count < GUI_QLOG_MAX) {
         const char *open = strchr(p, '{');
         const char *close = open ? strchr(open, '}') : NULL;
-        char item[512];
+        char item[1200];
         size_t il;
         struct qlog_row *r;
         const char *q, *e;
@@ -571,6 +585,12 @@ static void json_qlog_key(const char *body, struct snapshot *sn, const char *key
         r->type = strstr(item, "\"type\":") != NULL ? (int) json_num(item, "type") : -1;
         r->mode = (int) json_num(item, "mode");
         r->family = family;
+        struct qlp_row parsed={0};
+        if(qlp_parse_row(mg_str(item),&parsed)) {
+            r->status=parsed.status;r->path_truncated=parsed.path_truncated;
+            memcpy(r->sequence,parsed.sequence,sizeof(r->sequence));
+            MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,parsed.path,-1,r->path,160);
+        } else if(mg_json_get_tok(mg_str(item),"$.path").len || mg_json_get_tok(mg_str(item),"$.status").len || mg_json_get_tok(mg_str(item),"$.sequence").len) { p=close+1;continue; }
         q = strstr(item, "\"host\":\"");
         if (q != NULL) {
             q += 8;
@@ -881,13 +901,10 @@ static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *re
                                uint64_t revision) {
     static char buffer[QLOG_PULL_BUF];
     static struct qlp_page page;
-    char path[200];
+    char path[1200];
     int status = 0;
-    int length = snprintf(path, sizeof(path), "/internal-qlog?offset=%d&limit=300%s%s%s%s",
-        (int)request->offset, request->generation[0] ? "&generation=" : "", request->generation,
-        request->generation[0] ? "&anchor=" : "", request->anchor);
     sn->qlog_error = 1;
-    if (length < 0 || (size_t)length >= sizeof(path)) return;
+    if (!qlp_request_path(request, path, sizeof(path))) { sn->qlog_error = 5; return; }
     int ports[] = {g_stats_port, g_active_port, g_http_port};
     bool received = false;
     for (size_t attempt = 0; attempt < sizeof(ports) / sizeof(ports[0]); ++attempt) {
@@ -902,6 +919,7 @@ static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *re
             break;
         }
         if (status == 409) { sn->qlog_error = 2; return; }
+        if (status == 200 && request->filter.enabled && mg_json_get_tok(mg_str(buffer), "$.filterVersion").len == 0) { sn->qlog_error = 4; return; }
     }
     if (!received) return;
     sn->qlog_count = (int)page.returned;
@@ -913,12 +931,18 @@ static void snapshot_read_page(struct snapshot *sn, const struct qlp_request *re
         sn->qlog[i].type = page.rows[i].type;
         sn->qlog[i].mode = page.rows[i].mode;
         sn->qlog[i].family = page.rows[i].family;
+        sn->qlog[i].status = page.rows[i].status;
+        sn->qlog[i].path_truncated = page.rows[i].path_truncated;
+        memcpy(sn->qlog[i].sequence, page.rows[i].sequence, sizeof(page.rows[i].sequence));
+        utf8_to_wide(page.rows[i].path, sn->qlog[i].path, 160);
         utf8_to_wide(page.rows[i].host, sn->qlog[i].host,
                      sizeof(sn->qlog[i].host) / sizeof(sn->qlog[i].host[0]));
     }
     sn->qlog_page.offset = (int)page.offset;
     sn->qlog_page.next_offset = (int)page.next_offset;
     sn->qlog_page.total = (int)page.total;
+    sn->qlog_page.retained_total = page.retained_total;
+    memcpy(sn->qlog_page.query_key, page.query_key, sizeof(page.query_key));
     sn->qlog_page.has_more = page.has_more;
     memcpy(sn->qlog_page.generation, page.generation, sizeof(page.generation));
     memcpy(sn->qlog_page.anchor, page.anchor, sizeof(page.anchor));
@@ -973,18 +997,74 @@ static bool snapshot_publish(struct snapshot *published, struct snapshot *incomi
     return changed;
 }
 
+struct log_export_context { FILE *file; HWND hwnd; };
+static bool log_export_cancelled(void *context) {
+    (void)context;return g_poll_stop||InterlockedCompareExchange(&g_log_export_cancel,0,0)!=0;
+}
+static bool log_export_write(void *context,const char *bytes,size_t length) {
+    struct log_export_context *export=context;
+    return !log_export_cancelled(context)&&fwrite(bytes,1,length,export->file)==length;
+}
+static bool log_export_read(void *context,const struct qlp_request *request,struct qlp_page *page) {
+    char path[1200];static char buffer[QLOG_PULL_BUF];int status=0;
+    if(log_export_cancelled(context)||!qlp_request_path(request,path,sizeof(path)))return false;
+    int ports[]={g_stats_port,g_active_port,g_http_port};
+    for(size_t attempt=0;attempt<sizeof(ports)/sizeof(ports[0]);++attempt){
+        bool duplicate=false;for(size_t earlier=0;earlier<attempt;++earlier)if(ports[earlier]==ports[attempt])duplicate=true;
+        if(ports[attempt]<=0||duplicate)continue;
+        if(log_export_cancelled(context))return false;
+        if(http_get_status(ports[attempt],path,buffer,sizeof(buffer),&status)==0&&qlp_parse(mg_str(buffer),request,page))return true;
+        if(status==409||status==400)return false;
+    }
+    return false;
+}
+static void log_export_progress(void *context,uint32_t done,uint32_t total) {
+    struct log_export_context *export=context;
+    pthread_mutex_lock(&g_snap_mutex);g_log_export_done=done;g_log_export_total=total;pthread_mutex_unlock(&g_snap_mutex);
+    if(!g_poll_stop)PostMessageW(export->hwnd,WM_APP_STATS,0,0);
+}
+/* Runs on the existing poll worker, never a second independent HTTP reader. */
+static void log_export_run(HWND hwnd) {
+    if(InterlockedCompareExchange(&g_log_export_pending,0,1)!=1)return;
+    InterlockedExchange(&g_log_export_busy,1);
+    struct qlp_request request;wchar_t target[MAX_PATH],directory[MAX_PATH],temp[MAX_PATH]={0};
+    pthread_mutex_lock(&g_snap_mutex);request=g_log_export_request;wcscpy(target,g_log_export_target);pthread_mutex_unlock(&g_snap_mutex);
+    wcscpy(directory,target);wchar_t *slash=wcsrchr(directory,L'\\');if(slash)slash[1]=0;else wcscpy(directory,L".");
+    bool ok=false;struct log_export_context context={NULL,hwnd};
+    if(!log_export_cancelled(&context)&&GetTempFileNameW(directory,L"qle",0,temp)){
+        context.file=_wfopen(temp,L"wb");
+        if(context.file){
+            ok=qlx_export(request,&context,log_export_read,log_export_write,log_export_cancelled,log_export_progress);
+            if(fflush(context.file)!=0)ok=false;
+            if(ok&&_commit(_fileno(context.file))!=0)ok=false;
+            if(fclose(context.file)!=0)ok=false;
+            context.file=NULL;
+            if(ok&&!log_export_cancelled(&context))ok=MoveFileExW(temp,target,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
+            else ok=false;
+        }
+    }
+    if(temp[0])DeleteFileW(temp);
+    pthread_mutex_lock(&g_snap_mutex);g_log_export_result=ok?1:log_export_cancelled(&context)?-2:-1;pthread_mutex_unlock(&g_snap_mutex);
+    InterlockedExchange(&g_log_export_busy,0);
+    if(!g_poll_stop)PostMessageW(hwnd,WM_APP_STATS,0,0);
+}
+
 static void *stats_poll_thread(void *arg) {
     HWND hwnd = (HWND)arg;
     while (!g_poll_stop) {
+        log_export_run(hwnd);
         struct snapshot tmp;
         struct qlp_request request;
         uint64_t revision;
+        bool query_pending;
         pthread_mutex_lock(&g_snap_mutex);
         request = g_log_nav.request;
         revision = g_log_nav.revision;
+        query_pending = g_log_query_pending;
         pthread_mutex_unlock(&g_snap_mutex);
         snapshot_fetch_any(&tmp);
-        snapshot_read_page(&tmp, &request, revision);
+        if (!query_pending) snapshot_read_page(&tmp, &request, revision);
+        else tmp.qlog_error = 3;
         pthread_mutex_lock(&g_snap_mutex);
         /* Compare every rendered field, excluding the uptime clock. A hand
          * picked arithmetic signature missed TLS failures and log changes and
@@ -1016,6 +1096,8 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_DETAILS 1216
 #define IDC_QLOG_APPS 1217
 #define IDC_QLOG_LIVE 1218
+#define IDC_QLOG_EXPORT 1219
+#define IDC_QLOG_UID 1220
 #define IDC_POL0      1110
 #define IDC_SUBRELOAD 1130
 #define IDC_POLDEF    1131   /* 恢复推荐默认 */
@@ -1779,8 +1861,9 @@ static bool g_log_apps = false;
 static bool g_log_rendering = false;
 static int g_log_shown = 0;
 static uint64_t g_log_render_hash;
-static wchar_t g_log_search[192];
+static wchar_t g_log_search[512];
 static int g_log_filter = -1;
+static wchar_t g_log_uid[24];
 
 /* ── resource accounting (shown in the dashboard + diagnose.txt) ────
  * "高消耗" was reported without numbers, so the app now measures itself:
@@ -2566,6 +2649,8 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_PREVIOUS, 218, 584, 122, 26, L"BUTTON", L"上一页", BS_PUSHBUTTON },
     { IDC_QLOG_NEXT,     350, 584, 148, 26, L"BUTTON", L"更早记录", BS_PUSHBUTTON },
     { IDC_QLOG_REFRESH,  508, 584, 166, 26, L"BUTTON", L"刷新到最新", BS_PUSHBUTTON },
+    { IDC_QLOG_EXPORT,  686, 584, 180, 26, L"BUTTON", L"导出全部匹配", BS_PUSHBUTTON },
+    { IDC_QLOG_UID, 878, 584, 124, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
     { IDC_QLOG_SEARCH, 218, 90, 480, 28, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
     { IDC_QLOG_FILTER, 710, 90, 158, 200, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
     { IDC_QLOG_LIST, 218, 132, 784, 290, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
@@ -2578,6 +2663,61 @@ static HWND s_ctrls[CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 1];
 
 static void log_list_refresh(HWND hwnd, bool force);
 static void log_details_refresh(HWND hwnd);
+static void log_controls_refresh(HWND hwnd);
+static void log_filter_schedule(HWND hwnd) {
+    pthread_mutex_lock(&g_snap_mutex);
+    g_log_query_pending=true;g_log_nav.revision++;
+    pthread_mutex_unlock(&g_snap_mutex);
+    if(g_sn)g_sn->qlog_error=3;
+    log_controls_refresh(hwnd);
+    SetTimer(hwnd,5,300,NULL);
+}
+
+static void log_filter_commit(HWND hwnd) {
+    struct qlp_filter filter={0};filter.enabled=true;
+    int count=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,g_log_search,-1,filter.query,sizeof(filter.query),NULL,NULL);
+    bool valid=count>0;
+    if(g_log_filter>=0&&g_log_filter<=3){filter.has_action=true;filter.action=g_log_filter;}
+    else if(g_log_filter==QLF_IPV4||g_log_filter==QLF_IPV6||g_log_filter==QLF_FAMILY_UNKNOWN){filter.has_family=true;filter.family=g_log_filter==QLF_IPV4?4:g_log_filter==QLF_IPV6?6:0;}
+    else if(g_log_filter>=QLF_TYPE_BASE&&g_log_filter<QLF_TYPE_BASE+10){filter.has_type=true;filter.type=g_log_filter-QLF_TYPE_BASE;}
+    else if(g_log_filter==QLF_TYPE_UNKNOWN){filter.has_type=true;filter.type=-1;}
+    if(g_log_uid[0]){
+        wchar_t *end=NULL;errno=0;long value=wcstol(g_log_uid,&end,10);
+        if(errno||!end||*end||value < -1 ||value>INT_MAX)valid=false;
+        else {filter.has_uid=true;filter.uid=(int)value;}
+    }
+    char key[65];if(valid)valid=qlp_filter_key(&filter,key);
+    pthread_mutex_lock(&g_snap_mutex);
+    if(valid){g_log_nav.request.filter=filter;qln_refresh(&g_log_nav);g_log_pause_after_query=true;g_log_query_pending=false;}
+    /* Invalid drafts keep reads paused; no truncated query is ever submitted. */
+    pthread_mutex_unlock(&g_snap_mutex);
+    if(g_sn)g_sn->qlog_error=valid?3:5;
+    if(valid&&g_poll_wake)SetEvent(g_poll_wake);
+    InvalidateRect(hwnd,NULL,FALSE);
+}
+
+static void log_export_start(HWND hwnd) {
+    if(InterlockedCompareExchange(&g_log_export_busy,0,0)||InterlockedCompareExchange(&g_log_export_pending,0,0)){
+        InterlockedExchange(&g_log_export_cancel,1);return;
+    }
+    if(!g_sn||!g_sn->qlog_ready||g_sn->qlog_error||g_sn->qlog_revision!=g_log_nav.revision)return;
+    wchar_t target[MAX_PATH]=L"AdAway-requests.csv";
+    OPENFILENAMEW save={0};save.lStructSize=sizeof(save);save.hwndOwner=hwnd;
+    save.lpstrFilter=L"CSV (*.csv)\0*.csv\0\0";save.lpstrFile=target;save.nMaxFile=MAX_PATH;save.lpstrDefExt=L"csv";
+    save.Flags=OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+    if(!GetSaveFileNameW(&save))return;
+    pthread_mutex_lock(&g_snap_mutex);
+    g_log_export_request=g_log_nav.request;g_log_export_request.offset=0;
+    memcpy(g_log_export_request.generation,g_sn->qlog_page.generation,sizeof(g_log_export_request.generation));
+    memcpy(g_log_export_request.anchor,g_sn->qlog_page.anchor,sizeof(g_log_export_request.anchor));
+    memcpy(g_log_export_request.query_key,g_sn->qlog_page.query_key,sizeof(g_log_export_request.query_key));
+    wcscpy(g_log_export_target,target);g_log_export_done=0;g_log_export_total=g_sn->qlog_page.total;g_log_export_result=0;
+    InterlockedExchange(&g_log_export_cancel,0);InterlockedExchange(&g_log_export_pending,1);
+    pthread_mutex_unlock(&g_snap_mutex);
+    if(g_poll_wake)SetEvent(g_poll_wake);
+    SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,L"取消导出");
+}
+
 static void log_controls_refresh(HWND hwnd) {
     bool current = g_sn && g_sn->qlog_ready && !g_sn->qlog_error &&
         g_sn->qlog_revision == g_log_nav.revision;
@@ -2593,6 +2733,9 @@ static void log_controls_refresh(HWND hwnd) {
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE), g_sn && g_sn->qlog_ready && !g_sn->qlog_error);
+    bool exporting=InterlockedCompareExchange(&g_log_export_busy,0,0)||InterlockedCompareExchange(&g_log_export_pending,0,0);
+    SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,exporting?L"取消导出":L"导出全部匹配");
+    EnableWindow(GetDlgItem(hwnd,IDC_QLOG_EXPORT),exporting||current);
     log_list_refresh(hwnd, false);
 }
 
@@ -2725,7 +2868,7 @@ static const wchar_t *log_mode_label(int m) {
 }
 
 static const wchar_t *log_action_label(int action) {
-    return action == 1 ? L"拦截响应" : action == 2 ? L"本地豁免" : L"转发已启动";
+    return action == 1 ? L"本地策略拦截" : action == 2 ? L"本地处理／放行" : action == 3 ? L"访问拒绝" : L"转发已启动";
 }
 
 static const wchar_t *log_family_label(int family) {
@@ -2762,7 +2905,7 @@ static void log_details_refresh(HWND hwnd) {
     HWND list = GetDlgItem(hwnd, IDC_QLOG_LIST);
     LRESULT selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
     LRESULT index = selected == LB_ERR ? LB_ERR : SendMessageW(list, LB_GETITEMDATA, (WPARAM)selected, 0);
-    wchar_t text[1500];
+    wchar_t text[2400];
     if (!g_sn || index == LB_ERR || index < 0 || index >= (g_log_apps ? g_sn->app_count : g_sn->qlog_count)) {
         SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, g_log_apps ? L"选中进程查看计数；仅统计到达响应服务器的连接。" :
             L"选中请求查看详情。这里记录响应服务器收到的 HTTP 请求，不代表全部 DNS／Hosts 拦截。键盘方向键可浏览，Ctrl+C 可复制详情。");
@@ -2779,12 +2922,16 @@ static void log_details_refresh(HWND hwnd) {
         wchar_t time[64], pid[40];
         log_time(row->ts, time, 64, true);
         if (row->uid >= 0) swprintf(pid, 40, L"%d", row->uid); else wcscpy(pid, L"未知／未归属");
-        const wchar_t *meaning = row->action == 1 ? L"服务器返回了拦截响应。" : row->action == 2 ?
-            L"服务器命中本地豁免并返回无内容响应；不代表原站可访问。" :
+        const wchar_t *meaning = row->action == 1 ? L"服务器已排队本地拦截响应，不证明客户端收到。" : row->action == 3 ? L"服务器拒绝访问；不是广告规则拦截。" : row->action == 2 ?
+            L"服务器已本地处理或放行；不证明用户豁免规则命中或原站可访问，请以实际状态为准。" :
             L"已启动到上游的转发；这条记录不证明上游访问成功。";
-        swprintf(text, 1500, L"域名：%ls\r\n时间：%ls    PID：%ls\r\nHTTP 连接：%ls（不是 DNS A/AAAA 查询类型）\r\n结果：%ls    响应分类：%ls    响应策略：%ls\r\n%ls 规则／来源标识：当前记录未提供。",
-            row->host, time, pid, log_family_label(row->family), log_action_label(row->action), log_type_label(row->type),
-            row->action == 1 ? log_mode_label(row->mode) : L"不适用", meaning);
+        wchar_t identity[100], status[40];
+        if (row->sequence[0] && g_sn->qlog_page.generation[0]) swprintf(identity,100,L"%hs:%hs",g_sn->qlog_page.generation,row->sequence);
+        else wcscpy(identity,L"旧记录未提供");
+        if(row->status)swprintf(status,40,L"%d（本地已排队，不证明客户端收到）",row->status);else wcscpy(status,L"未记录／尚未产生本地响应");
+        swprintf(text, 2400, L"域名：%ls\r\n路径：%ls%ls\r\n记录：%ls\r\n时间：%ls    PID：%ls\r\nHTTP 连接：%ls（不是 DNS A/AAAA 查询类型）    HTTP 状态：%ls\r\n结果：%ls    响应分类：%ls    响应策略：%ls\r\n%ls 规则／来源标识：当前记录未提供，不推断 AdGuard 来源。",
+            row->host,row->path[0]?row->path:L"未记录",row->path_truncated?L"（已截断）":L"",identity,time,pid,log_family_label(row->family),status,
+            log_action_label(row->action),log_type_label(row->type),row->action==1?log_mode_label(row->mode):L"不适用",meaning);
     }
     SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, text);
 }
@@ -2832,7 +2979,7 @@ static void log_list_refresh(HWND hwnd, bool force) {
                 app->name, app->connections, app->requests, app->blocked);
         } else {
             struct qlog_row *row = &g_sn->qlog[i];
-            if (!qlf_matches_entry(row->host, row->action, row->type, row->family, g_log_search, g_log_filter)) continue;
+            /* Versioned server query already filters the complete retained history. */
             wchar_t time[32]; log_time(row->ts, time, 32, false);
             swprintf(line, 512, L"%ls    [%ls · %ls · %ls]    %ls", time, log_family_label(row->family),
                 log_action_label(row->action), row->action == 1 ? log_type_label(row->type) : L"不适用", row->host);
@@ -3180,7 +3327,7 @@ static void draw_ranking_page(HDC hdc) {
         const struct snapshot *tsn = g_sn;
         wchar_t tls_line[160];
         swprintf(tls_line, 160,
-                 L"证书被拒（握手失败）%lld 次 · 握手成功 %lld 次",
+                 L"TLS 握手失败 %lld 次（原因未确认）· 成功 %lld 次",
                  tsn ? tsn->tls_failures : 0LL,
                  tsn ? tsn->tls_handshakes : 0LL);
         TextOutW(hdc, S(430), S(384), tls_line, (int) wcslen(tls_line));
@@ -3237,7 +3384,7 @@ static void draw_activity_page(HDC hdc) {
     SetTextColor(hdc, g_pal.muted);
     RECT hint = {S(218), S(60), S(1002), S(82)};
     DrawTextW(hdc, g_log_apps ? L"仅显示服务器观测到的进程；连接、HTTP 请求与拦截响应分别计数。" :
-        L"HTTP 响应服务器活动 · 搜索与筛选作用于本页，读取更早记录可继续查找。", -1, &hint,
+        L"Web 响应服务器活动 · 搜索与分类覆盖全部保留历史，不代表整机 DNS。", -1, &hint,
         DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     if (g_log_apps) {
         RECT app_scope = {S(218), S(90), S(1002), S(119)};
@@ -3251,19 +3398,23 @@ static void draw_activity_page(HDC hdc) {
         swprintf(count, 240, L"统计不可用；请检查响应服务器是否正在运行。这里不会把未采集当作零拦截。");
     } else if (sn->qlog_error) {
         const wchar_t *status = sn->qlog_error == 2 ? L"历史已过期，请刷新" :
-            sn->qlog_error == 3 ? L"正在读取历史" : L"历史读取失败，请刷新重试";
+            sn->qlog_error == 3 ? L"正在读取新条件；保留之前条件的记录" : sn->qlog_error == 4 ? L"服务不支持全历史筛选，请更新响应服务器" : sn->qlog_error == 5 ? L"查询无效或超过191个UTF-8字节，请缩短" : L"历史读取失败，请刷新重试";
         swprintf(count, 240, L"%ls · 保留当前 %d 条显示记录。", status, g_log_shown);
         SetTextColor(hdc, sn->qlog_error == 3 ? g_pal.muted : C_RED);
     } else if (!sn->qlog_ready) {
-        swprintf(count, 240, L"摘要 %d 条 · 完整历史尚未就绪；当前筛选匹配 %d 条。", sn->qlog_count, g_log_shown);
+        swprintf(count, 240, L"摘要 %d 条 · 全历史筛选尚未就绪；保留 %d 条旧记录。", sn->qlog_count, g_log_shown);
     } else if (!sn->qlog_count) {
-        swprintf(count, 240, L"当前历史为空 · 只有实际到达本机响应服务器的请求会出现在这里。");
+        swprintf(count, 240, L"全部保留的 %u 条 Web 历史中没有匹配记录（上限4096条）。", (unsigned)sn->qlog_page.retained_total);
     } else {
-        swprintf(count, 240, L"%ls · 本页第 %u–%u / %u 条 · 筛选匹配 %d 条%ls",
+        swprintf(count, 240, L"%ls · 匹配第 %u–%u / %u 条 · 本页 %d · 保留 %u / 4096 条",
             g_log_nav.request.generation[0] ? L"历史已固定" : L"实时刷新",
             (unsigned)sn->qlog_page.offset + 1u, (unsigned)sn->qlog_page.offset + (unsigned)sn->qlog_count,
-            (unsigned)sn->qlog_page.total, g_log_shown, !g_log_shown ? L"（可翻页继续查找）" : L"");
+            (unsigned)sn->qlog_page.total, g_log_shown, (unsigned)sn->qlog_page.retained_total);
     }
+    if(InterlockedCompareExchange(&g_log_export_busy,0,0)||InterlockedCompareExchange(&g_log_export_pending,0,0))
+        swprintf(count,240,L"正在导出固定历史：%u / %u 条 · 可取消，完成前不发布文件。",g_log_export_done,g_log_export_total);
+    else if(g_log_export_result)
+        swprintf(count,240,g_log_export_result==1?L"全部匹配历史导出完成（%u 条）；使用导出开始时的固定快照。":g_log_export_result==-2?L"导出已取消，未发布部分文件。":L"导出失败或历史过期，未发布部分文件；请刷新重试。",g_log_export_done);
     RECT count_rect = {S(218), S(430), S(1002), S(453)};
     DrawTextW(hdc, count, -1, &count_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, old);
@@ -3790,14 +3941,16 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 hwnd, (HMENU)(INT_PTR)d->id, hinst, NULL);
             s_ctrls[s_ctrl_count++] = w;
         }
-        SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETLIMITTEXT, 191, 0);
+        SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETLIMITTEXT, 511, 0);
+        SendDlgItemMessageW(hwnd, IDC_QLOG_UID, EM_SETLIMITTEXT, 23, 0);
+        SendDlgItemMessageW(hwnd, IDC_QLOG_UID, EM_SETCUEBANNER, TRUE, (LPARAM)L"PID，可选/-1未知");
         g_log_list_original = (WNDPROC)SetWindowLongPtrW(GetDlgItem(hwnd, IDC_QLOG_LIST),
             GWLP_WNDPROC, (LONG_PTR)log_list_proc);
-        SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETCUEBANNER, TRUE, (LPARAM)L"搜索本页域名（忽略大小写）");
-        const wchar_t *log_filters[] = {L"全部结果", L"拦截响应", L"本地豁免", L"转发已启动",
+        SendDlgItemMessageW(hwnd, IDC_QLOG_SEARCH, EM_SETCUEBANNER, TRUE, (LPARAM)L"搜索全部保留历史：域名／路径／HTTP状态");
+        const wchar_t *log_filters[] = {L"全部结果", L"拦截响应", L"本地处理／放行", L"转发已启动",
             L"连接：IPv4", L"连接：IPv6", L"连接：未知", L"分类：图片", L"分类：脚本", L"分类：样式表",
             L"分类：字体", L"分类：媒体", L"分类：页面结构", L"分类：API", L"分类：遥测", L"分类：配置",
-            L"分类：WebSocket", L"分类：未知"};
+            L"分类：WebSocket", L"分类：未知", L"访问拒绝"};
         for (size_t i = 0; i < sizeof(log_filters) / sizeof(log_filters[0]); ++i)
             SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_ADDSTRING, 0, (LPARAM)log_filters[i]);
         SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_SETCURSEL, 0, 0);
@@ -3855,6 +4008,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_taskbar_created = RegisterWindowMessageW(L"TaskbarCreated");
         tray_add(hwnd);
         cert_refresh(true);
+        SendMessageW(GetDlgItem(hwnd, IDC_QLOG_UID), EM_SETCUEBANNER, TRUE, (LPARAM)L"PID（-1 未知）");
+        g_log_nav.request.filter.enabled = true;
         qln_refresh(&g_log_nav);
         g_poll_wake = CreateEventW(NULL, FALSE, FALSE, NULL);
         if (pthread_create(&g_poll_thread, NULL, stats_poll_thread, hwnd) == 0)
@@ -3877,6 +4032,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (wp == 3) { KillTimer(hwnd, 3); listener_validate(hwnd, false); return 0; }
+        if (wp == 5) { KillTimer(hwnd, 5); log_filter_commit(hwnd); return 0; }
         DWORD probe_now = GetTickCount();
         if (probe_now - g_adguard_probe_tick >= 30000) {
             g_adguard_signal = adguard_process_probe();
@@ -3927,6 +4083,14 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             pthread_mutex_lock(&g_snap_mutex);
             *g_sn = g_snap_next;
             pthread_mutex_unlock(&g_snap_mutex);
+            if (g_log_pause_after_query && g_sn->qlog_ready && !g_sn->qlog_error && g_sn->qlog_revision==g_log_nav.revision) {
+                pthread_mutex_lock(&g_snap_mutex);
+                if(qln_freeze(&g_log_nav,&g_sn->qlog_page,g_sn->qlog_revision)) {
+                    g_sn->qlog_revision=g_log_nav.revision;g_snap_next.qlog_revision=g_log_nav.revision;
+                }
+                g_log_pause_after_query=false;
+                pthread_mutex_unlock(&g_snap_mutex);
+            }
             cert_refresh(false);
             log_controls_refresh(hwnd);
             if (g_ui_visible) InvalidateRect(hwnd, NULL, FALSE);
@@ -3946,18 +4110,18 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_COMMAND:
+        if(LOWORD(wp)==IDC_QLOG_EXPORT){log_export_start(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_UID&&HIWORD(wp)==EN_CHANGE){GetDlgItemTextW(hwnd,IDC_QLOG_UID,g_log_uid,24);log_filter_schedule(hwnd);return 0;}
         if (LOWORD(wp) == IDC_QLOG_SEARCH && HIWORD(wp) == EN_CHANGE) {
-            GetDlgItemTextW(hwnd, IDC_QLOG_SEARCH, g_log_search, 192);
-            log_freeze_current(hwnd);
-            log_list_refresh(hwnd, true);
+            GetDlgItemTextW(hwnd, IDC_QLOG_SEARCH, g_log_search, 512);
+            log_filter_schedule(hwnd);
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
         if (LOWORD(wp) == IDC_QLOG_FILTER && HIWORD(wp) == CBN_SELCHANGE) {
             int choice = (int)SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_GETCURSEL, 0, 0);
             g_log_filter = qlf_filter_for_choice(choice);
-            log_freeze_current(hwnd);
-            log_list_refresh(hwnd, true);
+            log_filter_schedule(hwnd);
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
@@ -4448,9 +4612,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
            count right next to it. */
         long long blk = (sn && sn->has_data) ? sn->total_blocked : 0;
         fmt_num(val, 64, req);
-        draw_kpi(hdc, 210, 24, 120, 72, L"请求量", show_data ? val : L"—", C_BLUE);
+        draw_kpi(hdc, 210, 24, 120, 72, L"Web 请求", show_data ? val : L"—", C_BLUE);
         fmt_num(val, 64, blk);
-        draw_kpi(hdc, 348, 24, 120, 72, L"拦截量", show_data ? val : L"—", C_RED);
+        draw_kpi(hdc, 348, 24, 120, 72, L"本地拦截", show_data ? val : L"—", C_RED);
         /* block_rate is ALREADY a percentage (0-100) in the JSON; the old code
            multiplied it by 100 again, so a fully blocked device showed
            "10000%". Clamp it and print one decimal. */
@@ -4458,7 +4622,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (rate < 0.0) rate = 0.0;
         if (rate > 100.0) rate = 100.0;
         swprintf(val, 64, L"%.1f%%", rate);
-        draw_kpi(hdc, 486, 24, 120, 72, L"拦截率", show_data ? val : L"—", C_ACCENT);
+        draw_kpi(hdc, 486, 24, 120, 72, L"本地比例", show_data ? val : L"—", C_ACCENT);
         fmt_num(val, 64, sn && sn->has_data ? sn->total_connections : 0);
         draw_kpi(hdc, 624, 24, 120, 72, L"连接数", show_data ? val : L"—", C_GREEN);
         fmt_num(val, 64, sn && sn->has_data ? sn->sni_certs_issued : 0);
@@ -4635,6 +4799,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, 1);
+        KillTimer(hwnd, 5);
+        InterlockedExchange(&g_log_export_cancel,1);
         KillTimer(hwnd, 4);
         if (g_poll_started) {
             g_poll_stop = 1;
