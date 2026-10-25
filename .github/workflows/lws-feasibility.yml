@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: lws-windows-${{ github.ref }}
+  group: lws-windows-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 jobs:
   verify:
@@ -53,7 +53,10 @@ jobs:
           }
           python -m pip install -r .lws-spike/source/tests/requirements.txt
           if ($LASTEXITCODE) { throw 'Metrics dependency' }
+          python -m unittest discover -s .lws-spike/source/tests -p 'test_*.py'
+          if ($LASTEXITCODE) { throw 'Input and measurement unit tests' }
       - name: Alternate paired performance rounds with normal log modes
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         run: |
           $env:PATH="$env:MINGW_BIN;$env:PATH"
