@@ -67,7 +67,13 @@ try {
         if ($domain -eq 'ads.arrival-fixture.invalid' -and $text -notmatch 'DNS 已指向；HTTP/28080 请求已到达') { throw "DNS-local receipt chain failed: $text" }
         if ($domain -eq 'ads.arrival6-fixture.invalid' -and $text -notmatch '::1：DNS 已指向；HTTP/28080 请求已到达') { throw "IPv6 DNS-local receipt chain failed: $text" }
         if ($text -notmatch 'HTTP/28080 回执不证明默认 HTTP/80 可达') { throw "Custom HTTP receipt was presented as a default-port proof: $text" }
-        if ($domain -eq 'ads.arrival-mismatch.invalid' -and $text -notmatch '203.0.113.9：未指向当前本机监听，未连接') { throw "Nonlocal DNS answer was not rejected: $text" }
+        if ($domain -eq 'ads.arrival-mismatch.invalid') {
+            if ($text -notmatch '203\.0\.113\.9：未匹配本次启动监听地址，未连接' -or
+                $text -notmatch '0 个匹配本机监听' -or
+                $text -match '203\.0\.113\.9：DNS 已指向；HTTP/28080 请求已到达') {
+                throw "Nonmatching DNS answer was not rejected: $text"
+            }
+        }
     }
 } finally {
     if ($server -and !$server.HasExited) { Stop-Process -Id $server.Id -Force; $server.WaitForExit() }

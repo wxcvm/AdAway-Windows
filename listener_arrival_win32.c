@@ -117,8 +117,17 @@ bool arrival_receipt_cancel(const char *ip,int port,const struct arrival_cancel 
 bool arrival_receipt(const char *ip,int port) { return arrival_receipt_cancel(ip,port,NULL); }
 
 static void ac_append(wchar_t *out,size_t cap,const wchar_t *format,...) {
-    size_t used=wcslen(out); if (used+1>=cap) return;
-    va_list args; va_start(args,format); vswprintf(out+used,cap-used,format,args); va_end(args); out[cap-1]=0;
+    static const wchar_t truncated[]=L"\r\n报告内容超出容量，结果已截断；不能据此判定全部探测。\r\n";
+    if (!cap || wcsstr(out,truncated)) return;
+    size_t used=wcslen(out);
+    va_list args; va_start(args,format); int needed=_vscwprintf(format,args); va_end(args);
+    if (needed<0 || (size_t)needed>=cap-used) {
+        size_t length=wcslen(truncated);
+        if (length>=cap) { wcsncpy(out,truncated,cap-1); out[cap-1]=0; return; }
+        if (used>cap-1-length) used=cap-1-length;
+        memcpy(out+used,truncated,(length+1)*sizeof(*out)); return;
+    }
+    va_start(args,format); vswprintf(out+used,cap-used,format,args); va_end(args); out[cap-1]=0;
 }
 
 static bool ac_match(const struct arrival_config *config,const char *ip) {
@@ -134,6 +143,11 @@ static bool ac_match(const struct arrival_config *config,const char *ip) {
     if (!strcmp(config->ip,"::")) return strchr(ip,':')!=NULL;
     SOCKADDR_INET left,right;
     return ac_parse(config->ip,&left) && ac_parse(ip,&right) && ma_equal(&left,&right);
+}
+
+static bool ac_family_enabled(const struct arrival_config *config,int family) {
+    if (config->pair) return family==AF_INET ? *config->ip!=0 : *config->ipv6!=0;
+    return !*config->ip || (strchr(config->ip,':') ? AF_INET6 : AF_INET)==family;
 }
 
 static void ac_tls(const char *ip,int port,const char *host,wchar_t *out,size_t cap,const struct arrival_cancel *cancel) {
@@ -239,18 +253,67 @@ static void ac_domain(const struct arrival_config *config,const char *domain,wch
     if (arrival_cancel_requested(cancel)) { if (answers) FreeAddrInfoW(answers); return; }
     if (status==WSAEINPROGRESS) { ac_append(out,cap,L"%hs：上次系统 DNS 查询尚未结束，请稍后重试；没有连接。\r\n",domain); return; }
     if (status) { ac_append(out,cap,L"%hs：系统 DNS 未完成或无 A/AAAA 应答（%d），没有连接。\r\n",domain,status); if (answers) FreeAddrInfoW(answers); return; }
-    ULONGLONG deadline=GetTickCount64()+5000; unsigned count=0;
-    for (ADDRINFOW *row=answers;row && count++<16 && !arrival_cancel_requested(cancel) && GetTickCount64()<deadline;row=row->ai_next) {
-        char ip[64]; void *raw=row->ai_family==AF_INET ? (void *)&((struct sockaddr_in *)row->ai_addr)->sin_addr
-                : row->ai_family==AF_INET6 ? (void *)&((struct sockaddr_in6 *)row->ai_addr)->sin6_addr : NULL;
-        if (!raw || !inet_ntop(row->ai_family,raw,ip,sizeof(ip))) continue;
-        if (!ac_match(config,ip) || !arrival_local_address(ip)) ac_append(out,cap,L"%hs → %hs：未指向当前本机监听，未连接。\r\n",domain,ip);
-        else {
-            arrival_progress(cancel,ARRIVAL_STAGE_HTTP,ip,config->http);
-            ac_append(out,cap,L"%hs → %hs：DNS 已指向；HTTP/%d %ls。\r\n",domain,ip,config->http,
-                ac_receipt_host(ip,config->http,domain,cancel) ? L"请求已到达 AdAway" : L"未收到 AdAway 回执");
-            ac_tls(ip,config->https,domain,out,cap,cancel);
+    ULONGLONG deadline=GetTickCount64()+5000;
+    unsigned count=0,scanned=0,duplicates=0,invalid=0,eligible=0,checked=0,mapped=0;
+    struct { char ip[64]; int family; bool enabled,matched,local; } candidates[128];
+    ADDRINFOW *row=answers;
+    /* Collection is separately bounded. Probe eligible local endpoints first,
+       alternating families so a run of A answers cannot hide a usable AAAA.
+       The existing 16-endpoint/five-second probe budget remains unchanged. */
+    for (;row && scanned<128 && !arrival_cancel_requested(cancel) && GetTickCount64()<deadline;row=row->ai_next) {
+        scanned++;
+        char ip[64]; void *raw=NULL; int family=row->ai_family;
+        if (row->ai_addr && row->ai_family==AF_INET && row->ai_addrlen>=sizeof(struct sockaddr_in))
+            raw=&((struct sockaddr_in *)row->ai_addr)->sin_addr;
+        else if (row->ai_addr && row->ai_family==AF_INET6 && row->ai_addrlen>=sizeof(struct sockaddr_in6))
+            raw=&((struct sockaddr_in6 *)row->ai_addr)->sin6_addr;
+        static const unsigned char mapped_prefix[12]={0,0,0,0,0,0,0,0,0,0,255,255};
+        if (raw && family==AF_INET6 && !memcmp(raw,mapped_prefix,sizeof(mapped_prefix))) {
+            raw=(unsigned char *)raw+12; family=AF_INET; mapped++;
         }
+        if (!raw || !inet_ntop(family,raw,ip,sizeof(ip))) { invalid++; continue; }
+        bool duplicate=false;
+        for (unsigned i=0;i<count;i++) if (!strcmp(candidates[i].ip,ip)) { duplicate=true; break; }
+        if (duplicate) { duplicates++; continue; }
+        snprintf(candidates[count].ip,sizeof(candidates[count].ip),"%s",ip);
+        candidates[count].family=family;
+        candidates[count].enabled=ac_family_enabled(config,family);
+        candidates[count].matched=ac_match(config,ip);
+        candidates[count].local=candidates[count].enabled && candidates[count].matched && arrival_local_address(ip);
+        count++;
+    }
+    for (int phase=0;phase<2 && checked<16 && !arrival_cancel_requested(cancel) && GetTickCount64()<deadline;phase++) {
+        unsigned next[2]={0,0}; bool selected=true;
+        while (selected && checked<16 && !arrival_cancel_requested(cancel) && GetTickCount64()<deadline) {
+            selected=false;
+            for (int family=0;family<2 && checked<16 && !arrival_cancel_requested(cancel) && GetTickCount64()<deadline;family++) {
+                while (next[family]<count) {
+                    unsigned i=next[family]++;
+                    if (candidates[i].family!=(family ? AF_INET6 : AF_INET) || candidates[i].local!=(phase==0)) continue;
+                    selected=true; checked++; const char *ip=candidates[i].ip;
+                    if (!candidates[i].enabled)
+                        ac_append(out,cap,L"%hs → %hs：本次启动配置未启用 IPv%d 监听，未连接。\r\n",domain,ip,family ? 6 : 4);
+                    else if (!candidates[i].matched)
+                        ac_append(out,cap,L"%hs → %hs：未匹配本次启动监听地址，未连接。\r\n",domain,ip);
+                    else if (!candidates[i].local)
+                        ac_append(out,cap,L"%hs → %hs：地址不属于本机，未连接。\r\n",domain,ip);
+                    else {
+                        eligible++;
+                        arrival_progress(cancel,ARRIVAL_STAGE_HTTP,ip,config->http);
+                        ac_append(out,cap,L"%hs → %hs：DNS 已指向；HTTP/%d %ls。\r\n",domain,ip,config->http,
+                            ac_receipt_host(ip,config->http,domain,cancel) ? L"请求已到达 AdAway" : L"未收到 AdAway 回执");
+                        ac_tls(ip,config->https,domain,out,cap,cancel);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    if (!arrival_cancel_requested(cancel)) {
+        if (mapped) ac_append(out,cap,L"%hs：%u 个 IPv4-mapped IPv6 记录已归一为 IPv4 路径；不代表 IPv6 验证。\r\n",domain,mapped);
+        ac_append(out,cap,L"%hs：已检查 %u 个不同地址，%u 个匹配本机监听；跳过 %u 个重复、%u 个无效记录。%ls\r\n",
+            domain,checked,eligible,duplicates,invalid,row || checked<count ? L"达到地址/遍历/时间预算，仍有结果未检查，不能据此判定全部地址。" : L"应答检查完成。");
+        if (!count) ac_append(out,cap,L"%hs：没有可用的 A/AAAA 地址，没有连接。\r\n",domain);
     }
     FreeAddrInfoW(answers);
 }
@@ -263,6 +326,12 @@ bool arrival_report_cancel(const struct arrival_config *config,const char *adblo
     if ((*adblock && !arrival_domain_valid(adblock)) || (*hosts && !arrival_domain_valid(hosts))) {
         ac_append(out,cap,L"请输入完整 ASCII / xn-- 测试域名，不含 URL、路径、IP 或空白。"); return true;
     }
+    SYSTEMTIME started; GetSystemTime(&started);
+    ac_append(out,cap,L"检测开始 UTC %04u-%02u-%02uT%02u:%02u:%02u.%03uZ。\r\n",
+        started.wYear,started.wMonth,started.wDay,started.wHour,started.wMinute,started.wSecond,started.wMilliseconds);
+    ac_append(out,cap,L"本次启动配置快照（非待重启设置；不等于服务就绪）：IPv4=%hs；IPv6=%hs；管理端口=%d。\r\n",
+        config->pair ? (*config->ip ? config->ip : "disabled") : !*config->ip ? (config->all ? "0.0.0.0" : "127.0.0.1") : strchr(config->ip,':') ? "disabled" : config->ip,
+        config->pair ? (*config->ipv6 ? config->ipv6 : "disabled") : !*config->ip ? (config->all ? "::" : "::1") : strchr(config->ip,':') ? config->ip : "disabled",config->stats);
     ac_append(out,cap,L"本次检测 HTTP/%d、HTTPS/%d；DNS 只返回地址，不指定端口。\r\n",config->http,config->https);
     if (config->http!=80)
         ac_append(out,cap,L"HTTP/%d 回执不证明默认 HTTP/80 可达；默认端口需另行验证。\r\n",config->http);
@@ -297,6 +366,7 @@ bool arrival_report_cancel(const struct arrival_config *config,const char *adblo
     if (config->https!=443 && config->https>0) ac_udp(config->https,out,cap,cancel);
     if (arrival_cancel_requested(cancel)) goto cancelled;
     ac_append(out,cap,L"\r\n系统 DNS 可能来自缓存或 Hosts；规则类别以 AdGuard 日志为准。HTTPS 使用 Windows ROOT 信任锚做离线链/名称校验，不下载吊销信息，不代表其他应用的证书固定/信任策略。未修改网络、AdGuard 或证书。");
+    ac_append(out,cap,L"\r\n本次检测完成；完成不代表全部探测通过。\r\n");
     arrival_progress(cancel,ARRIVAL_STAGE_DONE,"",0);
     return true;
 cancelled:
