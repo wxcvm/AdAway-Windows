@@ -429,7 +429,7 @@ static void test_invalid_scalars(void) {
         "\"host\":\"row.example.test\"}",
         "{\"ts\":1000,\"action\":1.0,\"type\":2,\"mode\":3,"
         "\"host\":\"row.example.test\"}",
-        "{\"ts\":1000,\"action\":3,\"type\":2,\"mode\":3,"
+        "{\"ts\":1000,\"action\":4,\"type\":2,\"mode\":3,"
         "\"host\":\"row.example.test\"}",
         "{\"ts\":1000,\"action\":-1,\"type\":2,\"mode\":3,"
         "\"host\":\"row.example.test\"}",

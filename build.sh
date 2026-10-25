@@ -80,7 +80,7 @@ gcc \
   "$HERE/app_res.o" \
   "$SSL_PREFIX/lib/libssl.a" "$SSL_PREFIX/lib/libcrypto.a" \
   -lws2_32 -lwinmm -lpthread \
-  -lgdi32 -luser32 -lshell32 -ladvapi32 -lcrypt32 -liphlpapi \
+  -lgdi32 -luser32 -lcomdlg32 -lshell32 -ladvapi32 -lcrypt32 -liphlpapi \
   -ldwmapi -luxtheme -lpsapi -lwinhttp -lbcrypt -lwintrust
 
 echo "==> Bundling runtime DLLs ..."

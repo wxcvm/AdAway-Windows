@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Independent fixed transport contract; production core pin stays unchanged.
 set -euo pipefail
-PIN="14126e9c4417a26ab29f41565e952c56ef3b4c30"
+PIN="83ff889802cb486ab9d3171e38934d9ee6695f4e"
 verify() {
   python3 - "$PIN" <<'PY'
 import hashlib,json,pathlib,sys
@@ -9,7 +9,7 @@ root=pathlib.Path('log-contract')
 assert root.is_dir() and not root.is_symlink()
 manifest=json.loads((root/'manifest.json').read_text())
 assert manifest['commit']==sys.argv[1]
-expected={'query_log_store.inc': '85ca2dd6b8e3d2a03c0b1a7a465db7b72b976b88e0d8a5d08ddb7c59c52c32fb', 'query_log_store_test.c': 'a04d498fc2e24ffb28ab8871bdce9b19c0ed914a5109a8927f287b4e153ea8ca', 'request_host.h': '5966a9627eeb4e8a96f244e2ac4665f119ec6bcb1d8f38e1831a6606048f1272', 'request_host_test.c': 'f15e2cb75d5f755dab6eec214c688d42866f715d381aa003a0916eedab7ee7d4', 'stats-json-bounds-fixture.py': '5e691c51417efe1b1413f0d7cab30646662484031d8da95a6d00e76f3db11a2a'}
+expected={'query_log_store.inc': 'f76bfc55887dff5c9ad89ecaeaa1601b50921f285556580ca309090b42a8b77b', 'query_log_store_test.c': 'c144f7d93432117452171f029ec9b7390c7b0d6d4fb33deade40d76312aab376', 'request_host.h': '5966a9627eeb4e8a96f244e2ac4665f119ec6bcb1d8f38e1831a6606048f1272', 'request_host_test.c': 'f15e2cb75d5f755dab6eec214c688d42866f715d381aa003a0916eedab7ee7d4', 'response_log.h': '45ecc80c655788f3d59bc71fc2a2f737c529d54cb7014341223baa6df19fce04', 'qlog_filter_contract.h': '681ff3dc7583f1c31ce75726f0034e8d1aac249b7fa97d2e7ee4434a185b2855', 'stats-json-bounds-fixture.py': '496be7765c0c039c21bb93f37efb9f5556a699daf7ae55ad45fc3496001c7195'}
 actual={}
 for p in root.rglob('*'):
     assert not p.is_symlink()
@@ -30,7 +30,7 @@ if [ ! -e log-contract ]; then
   git -C "$stage" fetch --depth 1 origin "$PIN"
   test "$(git -C "$stage" rev-parse 'FETCH_HEAD^{commit}')" = "$PIN"
   mkdir "$stage/contract"
-  for name in query_log_store.inc query_log_store_test.c request_host.h request_host_test.c; do
+  for name in query_log_store.inc query_log_store_test.c request_host.h request_host_test.c response_log.h qlog_filter_contract.h; do
     path="webserver/jni/$name"
     git -C "$stage" show "FETCH_HEAD:$path" > "$stage/contract/$name"
     test -s "$stage/contract/$name"

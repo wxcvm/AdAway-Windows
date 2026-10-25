@@ -17,10 +17,14 @@ struct qln_page {
     uint32_t offset, next_offset, total;
     bool has_more;
     char generation[33], anchor[21];
+    uint32_t retained_total;
+    char query_key[65];
 };
 
 static inline void qln_refresh(struct qln_state *state) {
+    struct qlp_filter filter = state->request.filter;
     memset(&state->request, 0, sizeof(state->request));
+    state->request.filter = filter;
     state->depth = 0;
     state->revision++;
 }
@@ -31,6 +35,7 @@ static inline bool qln_freeze(struct qln_state *state, const struct qln_page *pa
         state->request.generation[0]) return false;
     memcpy(state->request.generation, page->generation, sizeof(page->generation));
     memcpy(state->request.anchor, page->anchor, sizeof(page->anchor));
+    memcpy(state->request.query_key, page->query_key, sizeof(page->query_key));
     state->revision++;
     return true;
 }
@@ -44,6 +49,7 @@ static inline bool qln_next(struct qln_state *state, const struct qln_page *page
     state->request.offset = page->next_offset;
     memcpy(state->request.generation, page->generation, sizeof(page->generation));
     memcpy(state->request.anchor, page->anchor, sizeof(page->anchor));
+    memcpy(state->request.query_key, page->query_key, sizeof(page->query_key));
     state->revision++;
     return true;
 }

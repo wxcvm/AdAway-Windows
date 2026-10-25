@@ -7,7 +7,7 @@ int main(void) {
     struct qln_state state;
     memset(&state, 0, sizeof(state));
     qln_refresh(&state);
-    struct qln_page page = {0, 197, 600, true, "0123456789abcdef0123456789abcdef", "600"};
+    struct qln_page page = {0, 197, 600, true, "0123456789abcdef0123456789abcdef", "600", 600, ""};
     uint64_t revision = state.revision;
     CHECK(qln_freeze(&state, &page, revision));
     CHECK(!qln_next(&state, &page, revision)); /* Retired request cannot navigate. */

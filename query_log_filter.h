@@ -11,8 +11,8 @@
 #define QLF_TYPE_UNKNOWN 99
 #define QLF_TYPE_BASE 100
 
-/* Filtering is deliberately local to the loaded page, never advertised as a
- * search of retained history. It never changes the cursor or rule decisions. */
+/* Legacy in-memory matcher retained for compatibility tests only. Production
+ * GUI filtering uses versioned server history requests, not this matcher. */
 static inline bool qlf_matches(const wchar_t *host, int action,
                                const wchar_t *query, int filter) {
     if (!host || !query || (filter >= 0 && filter != action)) return false;
@@ -31,7 +31,7 @@ static inline bool qlf_matches(const wchar_t *host, int action,
  * Response classifications are not rule types and family is not DNS A/AAAA. */
 static inline int qlf_filter_for_choice(int choice) {
     static const int filters[] = {-1, 1, 2, 0, QLF_IPV4, QLF_IPV6, QLF_FAMILY_UNKNOWN,
-        100, 101, 102, 103, 104, 105, 106, 107, 108, 109, QLF_TYPE_UNKNOWN};
+        100, 101, 102, 103, 104, 105, 106, 107, 108, 109, QLF_TYPE_UNKNOWN, 3};
     return choice >= 0 && (size_t)choice < sizeof(filters) / sizeof(filters[0]) ? filters[choice] : -1;
 }
 

@@ -71,6 +71,16 @@ is part of these tests. The executable fixture runs only on a disposable CI
 runner with loopback listeners and owned temporary files.
 # HTTP 连接协议与响应分类
 
-日志保留原有动作筛选，现有组合框还可选择 IPv4、IPv6、未知协议，或图片、脚本、样式等响应处理分类；一次选择一个维度，与当前页面域名搜索组合。协议来自实际 HTTP socket，不能通过 Host 名称、冒号或 DNS A/AAAA 推断。旧记录缺少协议时保留未知；分类描述响应处理策略，不是订阅规则来源。
+日志保留原有动作筛选，现有组合框还可选择 IPv4、IPv6、未知协议，或图片、脚本、样式等响应处理分类；一次选择一个维度，与全部保留历史的服务器端域名／路径／状态搜索组合。协议来自实际 HTTP socket，不能通过 Host 名称、冒号或 DNS A/AAAA 推断。旧记录缺少协议时保留未知；分类描述响应处理策略，不是订阅规则来源。
 
 统计 JSON 和日志页面独立读取、独立发布。统计读取失败保留上一份统计并显示过期状态，同时继续更新可读取的日志；日志失败或翻页过期则保留已有记录。无有效统计时仍可浏览已成功取得的日志。
+
+## Versioned full retained-history evidence
+
+New clients request filterVersion=1. Server filtering includes optional action/family/type/uid/q; q is at most191 UTF-8 bytes, ASCII-folded for matching while other UTF-8 bytes remain exact. Each query is bound by SHA256 queryKey plus generation/anchor. total/offset/nextOffset count matching rows; retainedTotal explains the bounded retained history. An absent capability is an explicit service-upgrade error, never a fallback to filtering only the visible page. Existing clients retain their unversioned semantics.
+
+Rows preserve actual observed family, bounded path without query/fragment, queued local status, truncation and decimal sequence identity within one generation. QLG/QLG2 legacy rows keep unknown metadata; QLG3 is staged and validated before replacing current rows. Local access refusals are action3, separate from policy block1. A queued status does not prove client receipt, browser rendering, upstream completion or AdGuard provenance.
+
+The existing worker handles immutable filter revisions and full fixed-snapshot CSV export with progress/cancel. It writes a unique staging file and atomically publishes only a complete snapshot; failed, expired or cancelled exports do not become apparently complete outputs. New request counters are attributed before proxy/exemption returns and SNI excludes management polling. Connection counts mean connections carrying observed Web traffic, not all accepted sockets.
+
+Shared query-log source is pinned independently to83ff889802cb486ab9d3171e38934d9ee6695f4e with exact file hashes. Production portable core4470606366e614abdb308fdfe94734d28167439c remains unchanged; count-checked overlays add response metadata and filtered history. Windows memory/persistence4096, summary400 and page49152-byte limits are unchanged. No user host DNS/Hosts/trust/AdGuard changes.
