@@ -1,9 +1,9 @@
 {
   "repository": "wxcvm/AdAway",
-  "commit": "c57552953dfa38aaa9277cb3aaa46a047d863ff6",
-  "tree": "92815337067f32177d7219c6abb54f98803c6483",
+  "commit": "a5c9fd582f18993054ddf3bd2fe8b258968fe921",
+  "tree": "d96da4a53e5d28a1a68f1679c2cff00f959b4d78",
   "files": {
-    "CMakeLists.txt": "96be7c9838130573b4bf82035397f4e414b790bf8bee9c9563dcc3fb17911ce8",
+    "CMakeLists.txt": "0f2b51734e75a1f26b112c99ce9f04600addc787d095d1c11ec67a12563ff639",
     "build-openssl-host.sh": "46a1ada6e3e4552dbbf6894bc1c52504a9bc1c3c5920b03c7f001b7d5af0dee6",
     "build.py": "b49fc02ce7c6dfae86c5c8154a013374ca0f5002f1ba93f8a9d55ec807175c21",
     "dependencies.lock.json": "2fc59becf789d3104640268a685ad8f644251b1253a94537264adc3ff27d4651",
@@ -13,7 +13,7 @@
     "src/certificates.c": "03e52e042e69b908e26ac709c255c9eb2e6926a38b3fcee241e801158db809bf",
     "src/fixture.c": "4e7f20f055280ad2ebec93d9908f79418ed1962f6834a3ad357c087927fc519a",
     "src/main.c": "81c7109acac4102bbcd3ff99e7a1b2e9834f3f1a5dce67cc2494a3528104ed88",
-    "src/platform.h": "e0e8c2ece3a10f91791f52fb1f23a7ccec7ea68f03bd8f3459547296c650bbd3",
+    "src/platform.h": "475161514d4ad2f1c98137dd31232489c2ba9d0749e4f409c2e042444b55b3ed",
     "src/probe.c": "730df4ed5f502fed6c57d599702b3c56a30b28094dc9dc00892e81052e339a79",
     "src/spike.h": "6c42687f3c7581443d3ce168090ef0517a25403e77b74403174832f8e14d0c93",
     "tests/android-runtime.py": "329c5444412a013534bb601d2c8d707074288c6e701eaec55fe76404fa8d59a3",
