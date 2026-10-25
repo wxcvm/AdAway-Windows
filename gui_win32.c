@@ -2663,11 +2663,13 @@ static HWND s_ctrls[CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 1];
 
 static void log_list_refresh(HWND hwnd, bool force);
 static void log_details_refresh(HWND hwnd);
+static void log_controls_refresh(HWND hwnd);
 static void log_filter_schedule(HWND hwnd) {
     pthread_mutex_lock(&g_snap_mutex);
     g_log_query_pending=true;g_log_nav.revision++;
     pthread_mutex_unlock(&g_snap_mutex);
     if(g_sn)g_sn->qlog_error=3;
+    log_controls_refresh(hwnd);
     SetTimer(hwnd,5,300,NULL);
 }
 
