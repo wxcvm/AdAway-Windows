@@ -61,6 +61,7 @@ def wait(test, message, seconds=15):
 class Gui:
     def __init__(self, driver, root, resources, ports):
         self.root = root; self.root.mkdir()
+        self.confirm_controls = {}
         self.exe = root / driver.name
         shutil.copy2(driver, self.exe)
         for dll in driver.parent.glob('*.dll'):
@@ -212,19 +213,45 @@ class Gui:
         self.click(dialog,1)
 
     def confirmation(self, chooser):
-        matches = []
+        matches=[]; evidence=[]
         @CALLBACK
         def visit(hwnd, _):
-            pid = w.DWORD(); u.GetWindowThreadProcessId(hwnd, c.byref(pid))
-            cls = c.create_unicode_buffer(256); u.GetClassNameW(hwnd, cls, 256)
-            if (pid.value == self.process.pid and hwnd != chooser and
-                cls.value == '#32770' and u.GetAncestor(hwnd, 3) == self.main and
-                u.IsWindowVisible(hwnd) and u.GetDlgItem(hwnd, 6) and u.GetDlgItem(hwnd, 7)):
-                matches.append(hwnd)
+            pid=w.DWORD();u.GetWindowThreadProcessId(hwnd,c.byref(pid))
+            cls=c.create_unicode_buffer(256);u.GetClassNameW(hwnd,cls,256)
+            if (pid.value!=self.process.pid or hwnd==chooser or cls.value!='#32770' or
+                u.GetAncestor(hwnd,3)!=self.main or not u.IsWindowVisible(hwnd)):
+                return True
+            buttons={}
+            @CALLBACK
+            def control(child,_):
+                child_pid=w.DWORD();u.GetWindowThreadProcessId(child,c.byref(child_pid))
+                kind=c.create_unicode_buffer(256);u.GetClassNameW(child,kind,256)
+                if child_pid.value==self.process.pid and kind.value=='Button' and u.IsWindowVisible(child):
+                    label=self.text(child).replace('&','').strip().lower()
+                    evidence.append(dict(dialog=int(hwnd),id=u.GetDlgCtrlID(child),label=label))
+                    if label in ('yes','no'):
+                        assert label not in buttons,'ambiguous owned confirmation button'
+                        buttons[label]=child
+                return True
+            u.EnumChildWindows(hwnd,control,0)
+            # Captured English Windows runner prompt uses Yes/No, but its
+            # native control IDs need not be MessageBox IDYES/IDNO. Fail closed
+            # on other locales rather than guessing a button/window.
+            if set(buttons)=={'yes','no'}:
+                self.confirm_controls[hwnd]=buttons;matches.append(hwnd)
             return True
-        u.EnumWindows(visit, 0)
-        assert len(matches) <= 1, 'ambiguous owned overwrite confirmation'
+        u.EnumWindows(visit,0)
+        (self.root/'confirm-controls.json').write_text(json.dumps(evidence,indent=2),encoding='utf8')
+        assert len(matches)<=1,'ambiguous owned overwrite confirmation'
         return matches[0] if matches else None
+
+    def confirm_click(self, window, yes):
+        self.owned(window); self.activate(window)
+        label='yes' if yes else 'no'
+        button=self.owned(self.confirm_controls[window][label])
+        assert u.GetAncestor(button,2)==window and u.IsWindowEnabled(button)
+        assert self.text(button).replace('&','').strip().lower()==label
+        self.post(button,0xF5)
 
     def ready(self):
         wait(lambda: not self.find('#32770', self.main) and self.text(self.button) in ('导出全部匹配', '检查暂存清理') and u.IsWindowEnabled(self.button),
@@ -333,12 +360,12 @@ def run(driver, exe, probe, evidence):
             # Native overwrite rejection must retain the original bytes.
             dialog=gui.dialog(); gui.choose(dialog,target)
             confirm=wait(lambda:gui.confirmation(dialog),'owned overwrite prompt missing')
-            gui.click(confirm,7)
+            gui.confirm_click(confirm,False)
             wait(lambda:u.IsWindow(dialog),'save dialog vanished after refusing overwrite')
             gui.click(dialog,2); gui.ready(); assert target.read_bytes()==initial
             record('native-overwrite-rejected')
             dialog=gui.dialog(); gui.choose(dialog,target)
-            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.click(confirm,6)
+            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.confirm_click(confirm,True)
             wait(lambda:not u.IsWindow(dialog),'chooser did not finish'); gui.ready()
             assert exported(target,total)==initial
             record('native-overwrite-confirmed')
@@ -347,7 +374,7 @@ def run(driver, exe, probe, evidence):
             try:
                 dialog=gui.dialog(); gui.choose(dialog,target)
                 confirm=wait(lambda:gui.confirmation(dialog),'locked-target overwrite prompt missing')
-                gui.click(confirm,6)
+                gui.confirm_click(confirm,True)
                 wait(lambda:not u.IsWindow(dialog),'locked-target chooser still open'); gui.ready()
                 assert target.read_bytes()==initial and not gui.stages()
                 log=gui.root/'webserver.log'
@@ -367,7 +394,7 @@ def run(driver, exe, probe, evidence):
             target=gui.root/'cancelled.csv'; target.write_bytes(b'old bytes')
             controlled.hold=True
             dialog=gui.dialog(); gui.choose(dialog,target)
-            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.click(confirm,6)
+            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.confirm_click(confirm,True)
             assert controlled.entered.wait(8),'export never reached a held later page'
             gui.post(gui.button,0xF5)
             wait(lambda:gui.text(gui.button)=='正在取消并清理','cancel request not acknowledged')
@@ -379,7 +406,7 @@ def run(driver, exe, probe, evidence):
             # HTTP page is held. This is a real sharing violation, not a hook.
             controlled.entered.clear(); controlled.release.clear()
             dialog=gui.dialog(); gui.choose(dialog,target)
-            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.click(confirm,6)
+            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.confirm_click(confirm,True)
             assert controlled.entered.wait(8)
             stages=gui.stages(); assert len(stages)==1
             stage=stages[0]; assert stage.resolve().parent==gui.root.resolve()
