@@ -1,0 +1,302 @@
+"""Disposable Windows GUI acceptance: real production dashboard and Save dialog.
+No global input injection: every HWND is checked against the child PID and owner.
+No production hooks; HTTP pauses are implemented only in this local fixture.
+"""
+import argparse
+import csv
+import ctypes as c
+from ctypes import wintypes as w
+import hashlib
+import importlib.util
+import io
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+u = c.WinDLL('user32', use_last_error=True)
+k = c.WinDLL('kernel32', use_last_error=True)
+CALLBACK = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+for name, restype, args in [
+    ('EnumWindows', w.BOOL, [CALLBACK, w.LPARAM]),
+    ('EnumChildWindows', w.BOOL, [w.HWND, CALLBACK, w.LPARAM]),
+    ('GetWindowThreadProcessId', w.DWORD, [w.HWND, c.POINTER(w.DWORD)]),
+    ('GetClassNameW', c.c_int, [w.HWND, w.LPWSTR, c.c_int]),
+    ('GetWindowTextW', c.c_int, [w.HWND, w.LPWSTR, c.c_int]),
+    ('GetDlgItem', w.HWND, [w.HWND, c.c_int]),
+    ('GetAncestor', w.HWND, [w.HWND, w.UINT]),
+    ('GetWindow', w.HWND, [w.HWND, w.UINT]),
+    ('IsWindow', w.BOOL, [w.HWND]),
+    ('IsWindowEnabled', w.BOOL, [w.HWND]),
+    ('IsWindowVisible', w.BOOL, [w.HWND]),
+    ('GetDlgCtrlID', c.c_int, [w.HWND]),
+    ('PostMessageW', w.BOOL, [w.HWND, w.UINT, w.WPARAM, w.LPARAM]),
+    ('SendMessageTimeoutW', w.LPARAM, [w.HWND, w.UINT, w.WPARAM, w.LPARAM, w.UINT, w.UINT, c.POINTER(c.c_size_t)]),
+]:
+    fn = getattr(u, name); fn.restype = restype; fn.argtypes = args
+k.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p, w.DWORD, w.DWORD, w.HANDLE]
+k.CreateFileW.restype = w.HANDLE
+k.CloseHandle.argtypes = [w.HANDLE]; k.CloseHandle.restype = w.BOOL
+
+
+def wait(test, message, seconds=15):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        result = test()
+        if result:
+            return result
+        time.sleep(.025)
+    raise AssertionError(message)
+
+
+class Gui:
+    def __init__(self, driver, root, resources, ports):
+        self.root = root; self.root.mkdir()
+        self.exe = root / driver.name
+        shutil.copy2(driver, self.exe)
+        for dll in driver.parent.glob('*.dll'):
+            shutil.copy2(dll, root / dll.name)
+        (root / 'webserver.ini').write_text('[settings]\nautomatic_update=0\n', encoding='utf8')
+        self.output = (root / 'gui-output.log').open('wb')
+        self.process = subprocess.Popen([str(self.exe), str(resources), *map(str, ports)], cwd=root,
+                                        stdout=self.output, stderr=self.output,
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
+        self.main = wait(lambda: self.find('ADBlockDashWin11'), 'owned dashboard not found')
+        self.send(self.main, 0x111, 47001)  # Existing production navigation command.
+        self.button = self.child(self.main, 1219)
+        wait(lambda: u.IsWindowEnabled(self.button), 'server page did not enable export')
+
+    def owned(self, hwnd):
+        pid = w.DWORD()
+        assert hwnd and u.IsWindow(hwnd) and u.GetWindowThreadProcessId(hwnd, c.byref(pid))
+        assert pid.value == self.process.pid, 'refusing to operate another process window'
+        return hwnd
+
+    def text(self, hwnd):
+        self.owned(hwnd)
+        buf = c.create_unicode_buffer(4096)
+        # WM_GETTEXT supports child controls in another process without injecting input.
+        self.send(hwnd, 0xD, len(buf), c.addressof(buf))
+        return buf.value
+
+    def find(self, class_name, owner=None):
+        matches = []
+        @CALLBACK
+        def visit(hwnd, _):
+            pid = w.DWORD(); u.GetWindowThreadProcessId(hwnd, c.byref(pid))
+            cls = c.create_unicode_buffer(256); u.GetClassNameW(hwnd, cls, 256)
+            if pid.value == self.process.pid and cls.value == class_name and u.IsWindowVisible(hwnd):
+                if owner is None or u.GetAncestor(hwnd, 3) == owner:
+                    matches.append(hwnd)
+            return True
+        u.EnumWindows(visit, 0)
+        return matches[0] if matches else None
+
+    def child(self, parent, control):
+        self.owned(parent)
+        return self.owned(u.GetDlgItem(parent, control))
+
+    def send(self, hwnd, message, wp=0, lp=0):
+        self.owned(hwnd); result = c.c_size_t()
+        assert u.SendMessageTimeoutW(hwnd, message, wp, lp, 2, 3000, c.byref(result)), 'owned window stopped responding'
+        return result.value
+
+    def post(self, hwnd, message, wp=0):
+        self.owned(hwnd); assert u.PostMessageW(hwnd, message, wp, 0)
+
+    def dialog(self):
+        self.post(self.main, 0x111, 1219)
+        dialog = wait(lambda: self.find('#32770', self.main), 'owned Save dialog not shown')
+        assert u.GetAncestor(dialog, 3) == self.main
+        return dialog
+
+    def choose(self, dialog, path):
+        edit = u.GetDlgItem(dialog, 0x480)  # edt1 (older common dialog)
+        if not edit:
+            combo = u.GetDlgItem(dialog, 0x47C)  # cmb13 (Explorer file name)
+            if combo:
+                edit = combo
+        assert edit, 'native file name control missing; do not guess another window'
+        value = c.create_unicode_buffer(str(path))
+        self.send(edit, 0xC, 0, c.addressof(value))
+        self.post(dialog, 0x111, 1)
+
+    def ready(self):
+        wait(lambda: not self.find('#32770', self.main) and self.text(self.button) in ('导出全部匹配', '检查暂存清理') and u.IsWindowEnabled(self.button),
+             'export did not finish cleanup', 20)
+
+    def stages(self):
+        return list(self.root.glob('qle*.tmp'))
+
+    def close(self):
+        if self.process.poll() is None:
+            self.post(self.main, 0x402)  # Existing production WM_APP_EXIT, not WM_CLOSE-to-tray.
+            self.process.wait(timeout=12)
+        assert self.process.returncode == 0, self.process.returncode
+        self.output.close()
+
+
+class Controlled:
+    def __init__(self):
+        self.count = 601; self.expired = False; self.hold = False
+        self.entered = threading.Event(); self.release = threading.Event(); self.requests = []
+        owner = self
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+            def do_GET(self):
+                parsed = urlsplit(self.path); q = parse_qs(parsed.query, keep_blank_values=True)
+                code = 200
+                if parsed.path == '/internal-stats':
+                    body = dict(uptime_seconds=10, total_requests=owner.count, total_connections=owner.count,
+                                blocked_images=owner.count, top_blocked=[], apps=[], query_log=[])
+                elif parsed.path == '/internal-qlog':
+                    offset = int(q.get('offset', ['0'])[0]); frozen = 'generation' in q
+                    owner.requests.append(dict(offset=offset, frozen=frozen, query=q))
+                    if frozen and owner.expired:
+                        code, body = 409, {}
+                    else:
+                        if frozen and offset and owner.hold:
+                            owner.entered.set()
+                            assert owner.release.wait(10), 'controller did not release held export'
+                        canonical = 'qlog-filter-v1\n' + '\n'.join(f'{key}={q.get(key,["*"])[0]}' for key in ('action','family','type','uid'))
+                        canonical += '\nq=' + q.get('q', [''])[0].translate(str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'))
+                        key = hashlib.sha256(canonical.encode()).hexdigest()
+                        rows = [dict(ts=1000, uid=-1, action=1, type=0, mode=0, family=6,
+                                     host='same.example', path=f'/image-{i}.png', status=200,
+                                     pathTruncated=False, sequence=str(owner.count-i))
+                                for i in range(offset, min(offset+150, owner.count))]
+                        body = dict(offset=offset,limit=300,total=owner.count,retainedTotal=owner.count,
+                                    returned=len(rows),nextOffset=offset+len(rows),hasMore=offset+len(rows)<owner.count,
+                                    generation='0123456789abcdef0123456789abcdef',anchor=str(owner.count),
+                                    filterVersion=1,queryKey=key,entries=rows)
+                else:
+                    code, body = 404, {}
+                payload = json.dumps(body,separators=(',',':')).encode()
+                self.send_response(code); self.send_header('Content-Type','application/json')
+                self.send_header('Content-Length',str(len(payload))); self.send_header('Connection','close'); self.end_headers()
+                try:
+                    self.wfile.write(payload)
+                except (ConnectionError, OSError):
+                    pass  # A cancelled owned client may close its socket.
+        self.server = ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
+        self.port = self.server.server_address[1]
+    def close(self):
+        self.release.set(); self.server.shutdown(); self.server.server_close(); self.thread.join(3)
+
+
+def exported(path, expected):
+    raw = path.read_bytes()
+    rows = list(csv.DictReader(io.StringIO(raw.decode('utf8'))))
+    assert len(rows)==expected, (len(rows),expected)
+    assert len({(r['generation'],r['sequence']) for r in rows})==expected
+    return raw
+
+
+def run(driver, exe, probe, evidence):
+    spec = importlib.util.spec_from_file_location('real_server', Path(__file__).with_name('test-query-log-server.py'))
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    evidence.mkdir(parents=True,exist_ok=True)
+    results=[]
+    # Retained under the CI temp directory for failure logs; never a user's profile.
+    root=Path(tempfile.mkdtemp(prefix='AdAwayExportGui-'))
+    (evidence/'fixture-path.txt').write_text(str(root),encoding='utf8')
+    fixture=module.Fixture(exe,probe,root)
+    fixture.start()
+    try:
+        fixture.batch(1,601)
+        gui=Gui(driver,root/'production-gui',fixture.resources,(fixture.http,fixture.https,fixture.stats))
+        try:
+            before=fixture.exchange(fixture.stats,'/internal-qlog?filterVersion=1&offset=0&limit=300&q=')[1]
+            total=json.loads(before)['total']; assert total==601
+            # Cancel native chooser: no export request or staging file.
+            dialog=gui.dialog(); gui.post(dialog,0x111,2); gui.ready(); assert not gui.stages()
+            results.append('native-dialog-cancel')
+            target=gui.root/'完整 导出-IPv6.csv'
+            dialog=gui.dialog(); gui.choose(dialog,target)
+            wait(target.exists,'production export did not publish'); gui.ready()
+            initial=exported(target,total); assert not gui.stages()
+            results.append('real-production-multipage-unicode-save')
+            # Native overwrite rejection must retain the original bytes.
+            dialog=gui.dialog(); gui.choose(dialog,target)
+            confirm=wait(lambda: gui.find('#32770',gui.main),'overwrite confirmation missing')
+            # The chooser remains visible; locate the owned confirmation by IDYES.
+            def confirmation():
+                found=[]
+                @CALLBACK
+                def visit(h,_):
+                    pid=w.DWORD(); u.GetWindowThreadProcessId(h,c.byref(pid))
+                    if pid.value==gui.process.pid and u.GetAncestor(h,3)==gui.main and u.GetDlgItem(h,6): found.append(h)
+                    return True
+                u.EnumWindows(visit,0); return found[0] if found else None
+            confirm=wait(confirmation,'owned overwrite prompt missing')
+            gui.post(confirm,0x111,7)
+            wait(lambda:u.IsWindow(dialog),'save dialog vanished after refusing overwrite')
+            gui.post(dialog,0x111,2); gui.ready(); assert target.read_bytes()==initial
+            results.append('native-overwrite-rejected')
+            dialog=gui.dialog(); gui.choose(dialog,target)
+            confirm=wait(confirmation,'overwrite confirmation missing'); gui.post(confirm,0x111,6)
+            wait(lambda:not u.IsWindow(dialog),'chooser did not finish'); gui.ready()
+            assert exported(target,total)==initial
+            results.append('native-overwrite-confirmed')
+        finally:
+            gui.close()
+    finally:
+        fixture.stop()
+    controlled=Controlled()
+    try:
+        gui=Gui(driver,root/'controlled-gui',fixture.resources,(controlled.port,controlled.port,controlled.port))
+        try:
+            target=gui.root/'cancelled.csv'; target.write_bytes(b'old bytes')
+            controlled.hold=True
+            dialog=gui.dialog(); gui.choose(dialog,target)
+            # Native overwrite prompt, same PID and root owner only.
+            def yes_prompt():
+                h=gui.find('#32770',gui.main)
+                return h if h and u.GetDlgItem(h,6) else None
+            confirm=wait(yes_prompt,'overwrite confirmation missing'); gui.post(confirm,0x111,6)
+            assert controlled.entered.wait(8),'export never reached a held later page'
+            gui.post(gui.main,0x111,1219)
+            wait(lambda:gui.text(gui.button)=='正在取消并清理','cancel request not acknowledged')
+            assert not u.IsWindowEnabled(gui.button), 'second export enabled before cleanup'
+            controlled.release.set(); gui.ready()
+            assert target.read_bytes()==b'old bytes' and not gui.stages()
+            results.append('held-later-page-cancel-preserves-target')
+            controlled.hold=False
+            # Pin history BEFORE opening the actual file chooser, then expire it.
+            target=gui.root/'expired.csv'; dialog=gui.dialog(); controlled.expired=True
+            gui.choose(dialog,target); wait(lambda:not u.IsWindow(dialog),'chooser still open'); gui.ready()
+            assert not target.exists() and not gui.stages()
+            assert any(x['frozen'] for x in controlled.requests)
+            results.append('history-expires-during-file-selection')
+        finally:
+            gui.close()
+        # Reopen actual dashboard: no stale busy state is inherited.
+        controlled.expired=False; controlled.count=0
+        gui=Gui(driver,root/'reopened-gui',fixture.resources,(controlled.port,controlled.port,controlled.port))
+        try:
+            target=gui.root/'empty.csv'; dialog=gui.dialog(); gui.choose(dialog,target)
+            wait(target.exists,'zero-match export did not publish'); gui.ready()
+            exported(target,0); assert not gui.stages()
+            results.append('reopen-and-zero-match-header-only')
+        finally:
+            gui.close()
+    finally:
+        controlled.close()
+    (evidence/'results.json').write_text(json.dumps(dict(cases=results,ownerPidChecked=True,
+        nativeSaveDialog=True,productionGui=True,hostNetworkChanges=False,fixtureRoot=str(root)),indent=2),encoding='utf8')
+    print(json.dumps(results))
+
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('driver',type=Path);parser.add_argument('server',type=Path)
+    parser.add_argument('probe',type=Path);parser.add_argument('evidence',type=Path)
+    args=parser.parse_args()
+    run(args.driver.resolve(),args.server.resolve(),args.probe.resolve(),args.evidence.resolve())
