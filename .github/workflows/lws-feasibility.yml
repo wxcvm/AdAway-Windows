@@ -59,6 +59,20 @@ jobs:
           if ($LASTEXITCODE) { throw 'Metrics dependency' }
           python -m unittest discover -s .lws-spike/source/tests -p 'test_*.py'
           if ($LASTEXITCODE) { throw 'Input and measurement unit tests' }
+      - name: Preserve public-callback diagnostics after a correctness failure
+        if: failure()
+        shell: pwsh
+        run: |
+          if (!(Test-Path .lws-spike/work/build/CMakeCache.txt)) { exit 0 }
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          cmake -S .lws-spike/source -B .lws-spike/work/build -DSPIKE_VERBOSE_BUILD=ON > evidence/diagnostic-build.log 2>&1
+          if ($LASTEXITCODE) { exit 0 }
+          cmake --build .lws-spike/work/build --target spike_lws --parallel 4 >> evidence/diagnostic-build.log 2>&1
+          if ($LASTEXITCODE) { exit 0 }
+          $env:SPIKE_DIAGNOSTIC_LOGS='1'
+          python .lws-spike/source/tests/correctness.py --binary .lws-spike/work/build/spike_lws.exe --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output evidence/diagnostic-lws > evidence/diagnostic.log 2>&1
+          # This diagnostic does not turn the earlier correctness failure into success.
+          exit 0
       - name: Alternate paired performance rounds with normal log modes
         if: github.event_name == 'workflow_dispatch'
         shell: pwsh

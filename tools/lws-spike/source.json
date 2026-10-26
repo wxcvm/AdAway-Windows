@@ -1,7 +1,7 @@
 {
   "repository": "wxcvm/AdAway",
-  "commit": "89e467120e778fb866576b78758bb3dc1ceaeea0",
-  "tree": "3c3f82fce55a3683658ebd46a7757f58666c0f6f",
+  "commit": "20042a59204a700bbb3e014351e4216d9b2ccb34",
+  "tree": "561a602f21bf5f6ed633bb41e07687111757c567",
   "files": {
     "CMakeLists.txt": "feb455d8296122fe52dce0faabe697d082d959630195904faa1bec2a883a8bc9",
     "build-openssl-host.sh": "46a1ada6e3e4552dbbf6894bc1c52504a9bc1c3c5920b03c7f001b7d5af0dee6",
@@ -20,7 +20,7 @@
     "tests/benchmark.py": "3f96fa3ba1bcae7f1b15a3c81e6c6aa72a8193d3868d806c1af027c02e4a8510",
     "tests/compare.py": "75488e1c63764a380c4215a6fff5f8e2cec8e961d4a97ebd0394672be17b7dd6",
     "tests/compat/android/log.h": "ba4c35ea6e1ea4c23abfb0eda9d93cfef7766156e45f4c5eaca4d6a04c0e1bc9",
-    "tests/correctness.py": "e24f771d73c5c0b784d9688d83f6e675771945e189858fd69bd88196303507cd",
+    "tests/correctness.py": "cfee47f79573c804c1aee609dc1244ca30e23421d7f3addbe1c2330db7a2a12a",
     "tests/native_probe.py": "2efcf5d01c9912b8f9bafc1188fe179f8f387c3c69bdeddf399595ca693d626e",
     "tests/production_reference.py": "8616aab76a791ea3d6b53a7cf22539a1b1e2725d6df2f13721b967402f1d8092",
     "tests/requirements.txt": "b6c8d86768d07e1dae4fb734c2e93997445a318d43290b307bfc1c800a0b1e52",
