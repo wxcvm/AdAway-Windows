@@ -116,14 +116,37 @@ class Gui:
         return dialog
 
     def choose(self, dialog, path):
-        edit = u.GetDlgItem(dialog, 0x480)  # edt1 (older common dialog)
-        if not edit:
-            combo = u.GetDlgItem(dialog, 0x47C)  # cmb13 (Explorer file name)
-            if combo:
-                edit = combo
-        assert edit, 'native file name control missing; do not guess another window'
-        value = c.create_unicode_buffer(str(path))
-        self.send(edit, 0xC, 0, c.addressof(value))
+        self.owned(dialog)
+        assert u.GetAncestor(dialog, 3) == self.main
+        controls = []
+        @CALLBACK
+        def visit(hwnd, _):
+            pid = w.DWORD(); u.GetWindowThreadProcessId(hwnd, c.byref(pid))
+            if pid.value == self.process.pid:
+                cls = c.create_unicode_buffer(256); u.GetClassNameW(hwnd, cls, 256)
+                controls.append(dict(hwnd=int(hwnd), id=u.GetDlgCtrlID(hwnd), cls=cls.value))
+            return True
+        u.EnumChildWindows(dialog, visit, 0)
+        (self.root/'save-controls.json').write_text(json.dumps(controls,indent=2),encoding='utf8')
+        # Explorer hosts the compatibility controls in a child dialog on some
+        # Windows builds. Never assume GetDlgItem(top-level) is sufficient.
+        edits = [x for x in controls if x['id']==0x480 and x['cls']=='Edit']
+        combos = [x for x in controls if x['id']==0x47C and x['cls'] in ('ComboBox','ComboBoxEx32')]
+        candidates = edits or combos
+        assert len(candidates)<=1, 'ambiguous native file name controls'
+        if candidates:
+            edit = self.owned(candidates[0]['hwnd'])
+            value = c.create_unicode_buffer(str(path))
+            self.send(edit, 0xC, 0, c.addressof(value))
+            assert self.text(edit)==str(path), 'file name text was not applied'
+        else:
+            # Modern Common Item Dialog uses DirectUI; use its documented UIA
+            # value pattern, bounded to this exact same-PID dialog, no SendKeys.
+            script=Path(__file__).with_name('set-export-dialog-path.ps1')
+            subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-WindowStyle','Hidden',
+                '-File',str(script),'-ProcessId',str(self.process.pid),'-Dialog',str(int(dialog)),
+                '-MainWindow',str(int(self.main)),'-Path',str(path)],check=True,timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW)
         self.post(dialog, 0x111, 1)
 
     def confirmation(self, chooser):
@@ -294,7 +317,7 @@ def run(driver, exe, probe, evidence):
             assert controlled.entered.wait(8)
             stages=gui.stages(); assert len(stages)==1
             stage=stages[0]; assert stage.resolve().parent==gui.root.resolve()
-            handle=k.CreateFileW(str(stage),0x80000000,1,None,3,0,None)
+            handle=k.CreateFileW(str(stage),0x80000000,3,None,3,0,None)
             assert handle != c.c_void_p(-1).value
             try:
                 gui.post(gui.main,0x111,1219)

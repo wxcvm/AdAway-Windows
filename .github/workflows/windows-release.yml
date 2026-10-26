@@ -520,6 +520,7 @@ jobs:
             export-gui-evidence/**
             ${{ runner.temp }}/AdAwayExportGui-*/**/*.log
             ${{ runner.temp }}/AdAwayExportGui-*/**/*.csv
+            ${{ runner.temp }}/AdAwayExportGui-*/**/*.json
           if-no-files-found: warn
 
       - name: Preserve actual query log server results
