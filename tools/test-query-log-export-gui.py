@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -143,10 +144,14 @@ class Gui:
             # Modern Common Item Dialog uses DirectUI; use its documented UIA
             # value pattern, bounded to this exact same-PID dialog, no SendKeys.
             script=Path(__file__).with_name('set-export-dialog-path.ps1')
-            subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-WindowStyle','Hidden',
+            result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-WindowStyle','Hidden',
                 '-File',str(script),'-ProcessId',str(self.process.pid),'-Dialog',str(int(dialog)),
-                '-MainWindow',str(int(self.main)),'-Path',str(path)],check=True,timeout=10,
-                creationflags=subprocess.CREATE_NO_WINDOW)
+                '-MainWindow',str(int(self.main)),'-Path',str(path),
+                '-EvidencePath',str(self.root/'save-uia.json')],capture_output=True,text=True,
+                encoding='utf-8',errors='replace',timeout=12,creationflags=subprocess.CREATE_NO_WINDOW)
+            (self.root/'save-uia-output.json').write_text(json.dumps(dict(code=result.returncode,
+                stdout=result.stdout,stderr=result.stderr),indent=2),encoding='utf8')
+            assert result.returncode==0, result.stderr or result.stdout or 'UIA path setter failed; see owned fixture evidence'
         self.post(dialog, 0x111, 1)
 
     def confirmation(self, chooser):
@@ -246,7 +251,7 @@ def run(driver, exe, probe, evidence):
         results.append(value)
         (evidence/'completed-cases.json').write_text(json.dumps(results,indent=2),encoding='utf8')
     # Retained under the CI temp directory for failure logs; never a user's profile.
-    root=Path(tempfile.mkdtemp(prefix='AdAwayExportGui-'))
+    root=Path(tempfile.mkdtemp(prefix='AdAwayExportGui-',dir=os.environ.get('RUNNER_TEMP')))
     (evidence/'fixture-path.txt').write_text(str(root),encoding='utf8')
     fixture=module.Fixture(exe,probe,root)
     fixture.start()

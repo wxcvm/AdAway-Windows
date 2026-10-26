@@ -1,4 +1,4 @@
-param([int]$ProcessId,[long]$Dialog,[long]$MainWindow,[string]$Path)
+param([int]$ProcessId,[long]$Dialog,[long]$MainWindow,[string]$Path,[string]$EvidencePath)
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
@@ -24,14 +24,20 @@ $pidProperty=[System.Windows.Automation.AutomationElement]::ProcessIdProperty
 $fileNameHost=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
     [System.Windows.Automation.PropertyCondition]::new($ids,'FileNameControlHost'))
 $search=if($null -ne $fileNameHost){$fileNameHost}else{$root}
-$conditions=[System.Windows.Automation.Condition[]]@(
- [System.Windows.Automation.PropertyCondition]::new($ids,'1001'),
- [System.Windows.Automation.PropertyCondition]::new($types,[System.Windows.Automation.ControlType]::Edit),
- [System.Windows.Automation.PropertyCondition]::new($pidProperty,$ProcessId))
-$elements=$search.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-    [System.Windows.Automation.AndCondition]::new($conditions))
+$typeCondition=[System.Windows.Automation.PropertyCondition]::new($types,[System.Windows.Automation.ControlType]::Edit)
+$edits=$search.FindAll([System.Windows.Automation.TreeScope]::Descendants,$typeCondition)
+$details=@()
+$matches=@()
+foreach($item in $edits){
+ $current=$item.Current
+ $details+=@{id=$current.AutomationId;name=$current.Name;pid=$current.ProcessId;enabled=$current.IsEnabled;offscreen=$current.IsOffscreen}
+ if($current.ProcessId -eq $ProcessId -and $current.IsEnabled -and -not $current.IsOffscreen -and
+    ($null -ne $fileNameHost -or $current.AutomationId -eq '1001')){$matches+=,$item}
+}
+@{fileNameHostFound=($null -ne $fileNameHost);edits=$details} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $EvidencePath -Encoding UTF8
+$elements=$matches
 if($elements.Count -ne 1){throw "Expected one file-name Edit; found $($elements.Count)"}
-$edit=$elements.Item(0)
+$edit=$elements[0]
 if(-not $edit.Current.IsEnabled -or $edit.Current.IsOffscreen){throw 'File name Edit is unavailable'}
 $pattern=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
 if($pattern.Current.IsReadOnly){throw 'File name Edit is read-only'}
