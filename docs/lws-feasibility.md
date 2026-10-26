@@ -8,7 +8,7 @@ The standalone workflow builds real MinGW executables with the existing fixed Op
 
 Only JSON/logs are spike artifacts. No baseline Mongoose executable, CA private key, APK or installer is included. Working directories are under `.lws-spike/` and do not participate in the production build or packaging list. Existing unrelated production CI is not changed by this spike.
 
-Status is EVIDENCE INCOMPLETE until the pinned Windows build/runtime/performance data and Android/Linux evidence have been reviewed. A successful fixture handshake is not a proof of all production qlog/statistics/UI/Root behavior, nor a claim of Android17 device acceptance. Missing capability checks and noisy measurements remain INCONCLUSIVE; the performance thresholds are <=15% stable regression and <=10% paired variation. Passing a prototype PR never enables production migration.
+Status is **NO-GO for the current adaptation**: the independently collected full benchmark does not clear the reproduced forwarding failure. See [the final report](lws-feasibility-results-20261026.md) for exact source, CI and durable raw-data links. A successful fixture handshake is not a proof of all production qlog/statistics/UI/Root behavior, nor a claim of Android17 device acceptance. Missing capability checks and noisy measurements remain INCONCLUSIVE; the performance thresholds are <=15% stable regression and <=10% paired variation. Passing a prototype PR never enables production migration.
 
 ## Follow-up findings
 
