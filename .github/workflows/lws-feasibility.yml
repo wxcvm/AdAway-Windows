@@ -50,6 +50,8 @@ jobs:
           foreach ($backend in @('lws','mongoose')) {
             python .lws-spike/source/tests/correctness.py --binary ".lws-spike/work/build/spike_$backend.exe" --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output "evidence/$backend"
             if ($LASTEXITCODE) { throw "Actual $backend tests" }
+            python .lws-spike/source/tests/native_probe.py --binary ".lws-spike/work/build/spike_$backend.exe" --probe .lws-spike/work/build/spike_probe.exe --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output "evidence/native-$backend"
+            if ($LASTEXITCODE) { throw "Actual native $backend response checks" }
           }
           python .lws-spike/source/tests/compare.py evidence/lws/correctness.json evidence/mongoose/correctness.json evidence/http-comparison.json
           if ($LASTEXITCODE) { throw 'HTTP differential evidence' }
