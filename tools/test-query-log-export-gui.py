@@ -180,9 +180,19 @@ class Gui:
             # earlier SetWindowText was overwritten by native initialization.
             wait(lambda:self.text(edit) in ('AdAway-requests','AdAway-requests.csv'),
                  'native file name initialization did not complete')
-            value = c.create_unicode_buffer(str(path))
-            self.send(edit, 0xC, 0, c.addressof(value))
+            if candidates[0]['cls']=='Edit':
+                # WM_SETTEXT changed pixels but did not commit the DirectUI
+                # combo's edit model. Send ordinary character notifications to
+                # this owned Edit (UTF-16 units), never global keyboard input.
+                self.send(edit,0xB1,0,-1)  # EM_SETSEL: replace the default name.
+                units=str(path).encode('utf-16-le')
+                for at in range(0,len(units),2):
+                    self.send(edit,0x102,int.from_bytes(units[at:at+2],'little'),1)
+            else:
+                value=c.create_unicode_buffer(str(path))
+                self.send(edit,0xC,0,c.addressof(value))
             assert self.text(edit)==str(path), 'file name text was not applied'
+
         else:
             # Modern Common Item Dialog uses DirectUI; use its documented UIA
             # value pattern, bounded to this exact same-PID dialog, no SendKeys.
