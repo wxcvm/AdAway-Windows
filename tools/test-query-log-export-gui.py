@@ -253,6 +253,27 @@ class Gui:
         assert self.text(button).replace('&','').strip().lower()==label
         self.post(button,0xF5)
 
+    def click_text(self, parent, expected):
+        self.owned(parent);self.activate(parent)
+        matches=[];errors=[]
+        @CALLBACK
+        def visit(hwnd,_):
+            try:
+                pid=w.DWORD();u.GetWindowThreadProcessId(hwnd,c.byref(pid))
+                kind=c.create_unicode_buffer(256);u.GetClassNameW(hwnd,kind,256)
+                if (pid.value==self.process.pid and kind.value=='Button' and u.IsWindowVisible(hwnd)
+                    and u.GetAncestor(hwnd,2)==parent
+                    and self.text(hwnd).replace('&','').strip().lower()==expected):
+                    matches.append(hwnd)
+            except Exception as error:
+                errors.append(str(error));return False
+            return True
+        u.EnumChildWindows(parent,visit,0)
+        assert not errors and len(matches)==1, f'owned {expected} choice missing or ambiguous: {errors}'
+        button=self.owned(matches[0]);assert u.IsWindowEnabled(button)
+        assert u.GetAncestor(button,2)==parent
+        self.post(button,0xF5)
+
     def ready(self):
         wait(lambda: not self.find('#32770', self.main) and self.text(self.button) in ('导出全部匹配', '检查暂存清理') and u.IsWindowEnabled(self.button),
              'export did not finish cleanup', 20)
@@ -421,7 +442,7 @@ def run(driver, exe, probe, evidence):
                 gui.post(gui.button,0xF5)
                 warning=wait(lambda:gui.find('#32770',gui.main),'cleanup failure warning missing')
                 assert not u.GetDlgItem(warning,0x480) and not u.GetDlgItem(warning,0x47C)
-                gui.click(warning,1); gui.ready()
+                gui.click_text(warning,'ok'); gui.ready()
                 assert stage.exists() and gui.text(gui.button)=='检查暂存清理'
             finally:
                 assert k.CloseHandle(handle)
