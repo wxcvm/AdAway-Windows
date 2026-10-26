@@ -131,7 +131,9 @@ class Gui:
         (self.root/'save-controls.json').write_text(json.dumps(controls,indent=2),encoding='utf8')
         # Explorer hosts the compatibility controls in a child dialog on some
         # Windows builds. Never assume GetDlgItem(top-level) is sufficient.
-        edits = [x for x in controls if x['id']==0x480 and x['cls']=='Edit']
+        # Captured CI hierarchy: the DirectUI file name is native Edit 1001
+        # inside its combo, while the address bar's 1001 is ToolbarWindow32.
+        edits = [x for x in controls if x['id'] in (0x480,1001) and x['cls']=='Edit']
         combos = [x for x in controls if x['id']==0x47C and x['cls'] in ('ComboBox','ComboBoxEx32')]
         candidates = edits or combos
         assert len(candidates)<=1, 'ambiguous native file name controls'

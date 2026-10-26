@@ -25,7 +25,11 @@ $fileNameHost=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants
     [System.Windows.Automation.PropertyCondition]::new($ids,'FileNameControlHost'))
 $search=if($null -ne $fileNameHost){$fileNameHost}else{$root}
 $typeCondition=[System.Windows.Automation.PropertyCondition]::new($types,[System.Windows.Automation.ControlType]::Edit)
-$edits=$search.FindAll([System.Windows.Automation.TreeScope]::Descendants,$typeCondition)
+$edits=if($null -ne $fileNameHost -and $fileNameHost.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit){
+ @($fileNameHost)
+}else{
+ $search.FindAll([System.Windows.Automation.TreeScope]::Descendants,$typeCondition)
+}
 $details=@()
 $matches=@()
 foreach($item in $edits){
