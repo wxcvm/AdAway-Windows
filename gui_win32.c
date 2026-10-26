@@ -2757,6 +2757,11 @@ static void log_export_start(HWND hwnd) {
     g_log_export_done=0;g_log_export_total=g_sn->qlog_page.total;g_log_export_retained=g_sn->qlog_page.retained_total;
     g_log_export_error=0;g_log_export_cleanup_error=0;g_log_export_stage[0]=0;
     pthread_mutex_unlock(&g_snap_mutex);
+    /* Publish CHOOSING before entering the nested modal message loop. This
+     * also prevents an idle-looking button between dialog teardown and queueing. */
+    SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,L"正在选择文件");
+    EnableWindow(GetDlgItem(hwnd,IDC_QLOG_EXPORT),FALSE);
+    PostMessageW(hwnd,WM_APP_STATS,0,0);
     wchar_t target[MAX_PATH]=L"AdAway-requests.csv";
     OPENFILENAMEW save={0};save.lStructSize=sizeof(save);save.hwndOwner=hwnd;
     save.lpstrFilter=L"CSV (*.csv)\0*.csv\0\0";save.lpstrFile=target;save.nMaxFile=MAX_PATH;save.lpstrDefExt=L"csv";
