@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.87
+      TAG: win11-webserver-v1.88
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -418,6 +418,12 @@ jobs:
           gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni .build-core/stats-bounds-test.c dashboard_mongoose.o -o stats-bounds-test.exe -lws2_32 -lbcrypt
           ./stats-bounds-test.exe
 
+      - name: Test export cancellation phases with real Windows threads
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_export_state_test.c -o query_log_export_state_test.exe
+          ./query_log_export_state_test.exe
+
       - name: Prepare resources (convert block placeholder images to webp)
         shell: bash
         run: |
@@ -493,6 +499,30 @@ jobs:
           python tools/test-query-log-server.py dist/webserver.exe query-log-client-probe.exe > query-log-server-results.json
           if ($LASTEXITCODE -ne 0) { throw 'Actual query log server/client integration failed' }
           Get-Content query-log-server-results.json
+
+      - name: Build actual production dashboard export acceptance driver
+        shell: msys2 {0}
+        run: bash tools/build-query-log-gui-driver.sh
+
+      - name: Test native Save dialog and export lifecycle against actual services
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          python tools/test-query-log-export-gui.py .gui-test/query-log-gui-driver.exe dist/webserver.exe query-log-client-probe.exe export-gui-evidence
+          if ($LASTEXITCODE -ne 0) { throw 'Actual dashboard export interaction failed' }
+
+      - name: Preserve export interaction and owned fixture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-export-gui-evidence
+          path: |
+            export-gui-evidence/**
+            ${{ runner.temp }}/AdAwayExportGui-*/**/*.log
+            ${{ runner.temp }}/AdAwayExportGui-*/**/*.csv
+            ${{ runner.temp }}/AdAwayExportGui-*/**/*.json
+            ${{ runner.temp }}/AdAwayExportGui-*/**/*.png
+          if-no-files-found: warn
 
       - name: Preserve actual query log server results
         if: always()

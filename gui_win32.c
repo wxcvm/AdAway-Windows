@@ -59,6 +59,7 @@
 #include "query_log_navigation.h"
 #include "query_log_filter.h"
 #include "query_log_export.h"
+#include "query_log_export_state.h"
 #include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
@@ -170,7 +171,7 @@ struct app_row {
     long long blocked;
     /* 「请求风暴」与「证书被拒」的服务端字段（本分支 webserver.c 已产出）：
        tps = 两次统计快照之间的实测速率（字段缺失时为 0），
-       tls_fail = 该应用的 TLS 握手失败次数（证书固定/pinning 的信号）。 */
+       tls_fail = 该应用的 TLS 握手失败次数，不能仅凭此推断证书固定。 */
     long long tps;
     long long tls_fail;
     /* 「已改为廉价拒绝」：固定证书策略命中后，服务端对该应用只回 403、不再做中间人
@@ -275,11 +276,13 @@ static struct qln_state g_log_nav;
 static HANDLE g_poll_wake;
 static bool g_log_query_pending;
 static bool g_log_pause_after_query;
-static volatile LONG g_log_export_pending, g_log_export_busy, g_log_export_cancel;
+static volatile LONG g_log_export_pending, g_log_export_phase;
 static struct qlp_request g_log_export_request;
 static wchar_t g_log_export_target[MAX_PATH];
 static uint32_t g_log_export_done, g_log_export_total;
-static int g_log_export_result; /* 1 complete, -1 failed, -2 cancelled. */
+static uint32_t g_log_export_retained;
+static DWORD g_log_export_error, g_log_export_cleanup_error;
+static wchar_t g_log_export_stage[MAX_PATH];
 
 static struct snapshot g_snap_next;
 static struct snapshot *g_sn;
@@ -997,15 +1000,20 @@ static bool snapshot_publish(struct snapshot *published, struct snapshot *incomi
     return changed;
 }
 
-struct log_export_context { FILE *file; HWND hwnd; };
+struct log_export_context { FILE *file; HWND hwnd; DWORD error; bool first_page; };
 static bool log_export_cancelled(void *context) {
-    (void)context;return g_poll_stop||InterlockedCompareExchange(&g_log_export_cancel,0,0)!=0;
+    (void)context;
+    if(g_poll_stop)qlx_phase_cancel(&g_log_export_phase);
+    return qlx_phase_get(&g_log_export_phase)==QLX_CANCEL_REQUESTED;
 }
 static bool log_export_write(void *context,const char *bytes,size_t length) {
     struct log_export_context *export=context;
-    return !log_export_cancelled(context)&&fwrite(bytes,1,length,export->file)==length;
+    if(log_export_cancelled(context))return false;
+    if(fwrite(bytes,1,length,export->file)==length)return true;
+    export->error=ERROR_WRITE_FAULT;return false;
 }
 static bool log_export_read(void *context,const struct qlp_request *request,struct qlp_page *page) {
+    struct log_export_context *export=context;
     char path[1200];static char buffer[QLOG_PULL_BUF];int status=0;
     if(log_export_cancelled(context)||!qlp_request_path(request,path,sizeof(path)))return false;
     int ports[]={g_stats_port,g_active_port,g_http_port};
@@ -1013,10 +1021,15 @@ static bool log_export_read(void *context,const struct qlp_request *request,stru
         bool duplicate=false;for(size_t earlier=0;earlier<attempt;++earlier)if(ports[earlier]==ports[attempt])duplicate=true;
         if(ports[attempt]<=0||duplicate)continue;
         if(log_export_cancelled(context))return false;
-        if(http_get_status(ports[attempt],path,buffer,sizeof(buffer),&status)==0&&qlp_parse(mg_str(buffer),request,page))return true;
-        if(status==409||status==400)return false;
+        if(http_get_status(ports[attempt],path,buffer,sizeof(buffer),&status)==0&&qlp_parse(mg_str(buffer),request,page)) {
+            if(export->first_page&&(page->total!=g_log_export_total||page->retained_total!=g_log_export_retained)) {
+                export->error=ERROR_RETRY;return false;
+            }
+            export->first_page=false;return true;
+        }
+        if(status==409||status==400){export->error=status==409?ERROR_RETRY:ERROR_INVALID_DATA;return false;}
     }
-    return false;
+    export->error=ERROR_READ_FAULT;return false;
 }
 static void log_export_progress(void *context,uint32_t done,uint32_t total) {
     struct log_export_context *export=context;
@@ -1026,26 +1039,44 @@ static void log_export_progress(void *context,uint32_t done,uint32_t total) {
 /* Runs on the existing poll worker, never a second independent HTTP reader. */
 static void log_export_run(HWND hwnd) {
     if(InterlockedCompareExchange(&g_log_export_pending,0,1)!=1)return;
-    InterlockedExchange(&g_log_export_busy,1);
+    InterlockedCompareExchange(&g_log_export_phase,QLX_RUNNING,QLX_QUEUED);
     struct qlp_request request;wchar_t target[MAX_PATH],directory[MAX_PATH],temp[MAX_PATH]={0};
     pthread_mutex_lock(&g_snap_mutex);request=g_log_export_request;wcscpy(target,g_log_export_target);pthread_mutex_unlock(&g_snap_mutex);
     wcscpy(directory,target);wchar_t *slash=wcsrchr(directory,L'\\');if(slash)slash[1]=0;else wcscpy(directory,L".");
-    bool ok=false;struct log_export_context context={NULL,hwnd};
+    bool ok=false,owned=false;DWORD cleanup_error=0;
+    struct log_export_context context={NULL,hwnd,0,true};
     if(!log_export_cancelled(&context)&&GetTempFileNameW(directory,L"qle",0,temp)){
+        owned=true;
         context.file=_wfopen(temp,L"wb");
         if(context.file){
             ok=qlx_export(request,&context,log_export_read,log_export_write,log_export_cancelled,log_export_progress);
-            if(fflush(context.file)!=0)ok=false;
-            if(ok&&_commit(_fileno(context.file))!=0)ok=false;
-            if(fclose(context.file)!=0)ok=false;
+            if(fflush(context.file)!=0){ok=false;context.error=ERROR_WRITE_FAULT;}
+            if(ok&&_commit(_fileno(context.file))!=0){ok=false;context.error=ERROR_WRITE_FAULT;}
+            if(fclose(context.file)!=0){ok=false;context.error=ERROR_WRITE_FAULT;}
             context.file=NULL;
-            if(ok&&!log_export_cancelled(&context))ok=MoveFileExW(temp,target,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
-            else ok=false;
-        }
+            /* CAS is the single cancellation boundary, not a check followed
+             * by an unprotected replacement. COMMITTING cannot be cancelled. */
+            log_export_cancelled(&context);
+            if(ok&&qlx_phase_commit(&g_log_export_phase)) {
+                PostMessageW(hwnd,WM_APP_STATS,0,0);
+                ok=MoveFileExW(temp,target,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
+                if(ok)owned=false;else context.error=GetLastError();
+            }else ok=false;
+        }else context.error=ERROR_OPEN_FAILED;
+    }else if(!log_export_cancelled(&context))context.error=GetLastError();
+    if(owned&&!DeleteFileW(temp)) {
+        DWORD error=GetLastError();
+        if(error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND)cleanup_error=error;
     }
-    if(temp[0])DeleteFileW(temp);
-    pthread_mutex_lock(&g_snap_mutex);g_log_export_result=ok?1:log_export_cancelled(&context)?-2:-1;pthread_mutex_unlock(&g_snap_mutex);
-    InterlockedExchange(&g_log_export_busy,0);
+    enum qlx_phase result=cleanup_error?QLX_CLEANUP_FAILED:ok?QLX_SUCCEEDED:
+        qlx_phase_get(&g_log_export_phase)==QLX_CANCEL_REQUESTED?QLX_CANCELLED:QLX_FAILED;
+    pthread_mutex_lock(&g_snap_mutex);
+    g_log_export_error=context.error;g_log_export_cleanup_error=cleanup_error;
+    if(cleanup_error)wcscpy(g_log_export_stage,temp);else g_log_export_stage[0]=0;
+    pthread_mutex_unlock(&g_snap_mutex);
+    if(cleanup_error)win32_log_line("[export] staging cleanup failed (%lu), owned file: %ls",(unsigned long)cleanup_error,temp);
+    else if(result==QLX_FAILED)win32_log_line("[export] failed before publication (%lu)",(unsigned long)context.error);
+    InterlockedExchange(&g_log_export_phase,result);
     if(!g_poll_stop)PostMessageW(hwnd,WM_APP_STATS,0,0);
 }
 
@@ -2697,22 +2728,58 @@ static void log_filter_commit(HWND hwnd) {
 }
 
 static void log_export_start(HWND hwnd) {
-    if(InterlockedCompareExchange(&g_log_export_busy,0,0)||InterlockedCompareExchange(&g_log_export_pending,0,0)){
-        InterlockedExchange(&g_log_export_cancel,1);return;
+    if(qlx_phase_get(&g_log_export_phase)==QLX_CLEANUP_FAILED) {
+        wchar_t stage[MAX_PATH];
+        pthread_mutex_lock(&g_snap_mutex);wcscpy(stage,g_log_export_stage);pthread_mutex_unlock(&g_snap_mutex);
+        DWORD attributes=stage[0]?GetFileAttributesW(stage):INVALID_FILE_ATTRIBUTES;
+        DWORD error=stage[0]&&attributes==INVALID_FILE_ATTRIBUTES?GetLastError():ERROR_ACCESS_DENIED;
+        if(attributes!=INVALID_FILE_ATTRIBUTES ||
+            (error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND)) {
+            wchar_t message[MAX_PATH+160];
+            swprintf(message,MAX_PATH+160,L"上次导出的暂存文件尚未确认清理。为保留恢复线索，暂不能开始另一项导出。\n\n%ls\n\n请处理后点击“检查暂存清理”；程序不会自动删除此路径。",stage);
+            MessageBoxW(hwnd,message,L"暂存清理未完成",MB_OK|MB_ICONWARNING);
+            return;
+        }
+        qlx_phase_cleanup_resolved(&g_log_export_phase);
+    }
+    if(qlx_phase_busy(qlx_phase_get(&g_log_export_phase))){
+        qlx_phase_cancel(&g_log_export_phase);PostMessageW(hwnd,WM_APP_STATS,0,0);return;
     }
     if(!g_sn||!g_sn->qlog_ready||g_sn->qlog_error||g_sn->qlog_revision!=g_log_nav.revision)return;
-    wchar_t target[MAX_PATH]=L"AdAway-requests.csv";
-    OPENFILENAMEW save={0};save.lStructSize=sizeof(save);save.hwndOwner=hwnd;
-    save.lpstrFilter=L"CSV (*.csv)\0*.csv\0\0";save.lpstrFile=target;save.nMaxFile=MAX_PATH;save.lpstrDefExt=L"csv";
-    save.Flags=OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
-    if(!GetSaveFileNameW(&save))return;
+    if(!qlx_phase_begin(&g_log_export_phase))return;
+    /* File dialogs pump messages: capture the visible query and its immutable
+     * history identity before opening one, not after a later stats refresh. */
     pthread_mutex_lock(&g_snap_mutex);
     g_log_export_request=g_log_nav.request;g_log_export_request.offset=0;
     memcpy(g_log_export_request.generation,g_sn->qlog_page.generation,sizeof(g_log_export_request.generation));
     memcpy(g_log_export_request.anchor,g_sn->qlog_page.anchor,sizeof(g_log_export_request.anchor));
     memcpy(g_log_export_request.query_key,g_sn->qlog_page.query_key,sizeof(g_log_export_request.query_key));
-    wcscpy(g_log_export_target,target);g_log_export_done=0;g_log_export_total=g_sn->qlog_page.total;g_log_export_result=0;
-    InterlockedExchange(&g_log_export_cancel,0);InterlockedExchange(&g_log_export_pending,1);
+    g_log_export_done=0;g_log_export_total=g_sn->qlog_page.total;g_log_export_retained=g_sn->qlog_page.retained_total;
+    g_log_export_error=0;g_log_export_cleanup_error=0;g_log_export_stage[0]=0;
+    pthread_mutex_unlock(&g_snap_mutex);
+    /* Publish CHOOSING before entering the nested modal message loop. This
+     * also prevents an idle-looking button between dialog teardown and queueing. */
+    SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,L"正在选择文件");
+    EnableWindow(GetDlgItem(hwnd,IDC_QLOG_EXPORT),FALSE);
+    PostMessageW(hwnd,WM_APP_STATS,0,0);
+    wchar_t target[MAX_PATH]=L"AdAway-requests.csv";
+    OPENFILENAMEW save={0};save.lStructSize=sizeof(save);save.hwndOwner=hwnd;
+    save.lpstrFilter=L"CSV (*.csv)\0*.csv\0\0";save.lpstrFile=target;save.nMaxFile=MAX_PATH;save.lpstrDefExt=L"csv";
+    save.Flags=OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+    if(!GetSaveFileNameW(&save)) {
+        DWORD error=CommDlgExtendedError();
+        pthread_mutex_lock(&g_snap_mutex);g_log_export_error=error;pthread_mutex_unlock(&g_snap_mutex);
+        InterlockedExchange(&g_log_export_phase,error?QLX_DIALOG_FAILED:QLX_CANCELLED);
+        if(error)win32_log_line("[export] save dialog failed (0x%08lx)",(unsigned long)error);
+        PostMessageW(hwnd,WM_APP_STATS,0,0);return;
+    }
+    if(g_poll_stop) {
+        InterlockedExchange(&g_log_export_phase,QLX_CANCELLED);
+        return;
+    }
+    pthread_mutex_lock(&g_snap_mutex);
+    wcscpy(g_log_export_target,target);
+    InterlockedExchange(&g_log_export_phase,QLX_QUEUED);InterlockedExchange(&g_log_export_pending,1);
     pthread_mutex_unlock(&g_snap_mutex);
     if(g_poll_wake)SetEvent(g_poll_wake);
     SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,L"取消导出");
@@ -2733,9 +2800,12 @@ static void log_controls_refresh(HWND hwnd) {
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE), g_sn && g_sn->qlog_ready && !g_sn->qlog_error);
-    bool exporting=InterlockedCompareExchange(&g_log_export_busy,0,0)||InterlockedCompareExchange(&g_log_export_pending,0,0);
-    SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,exporting?L"取消导出":L"导出全部匹配");
-    EnableWindow(GetDlgItem(hwnd,IDC_QLOG_EXPORT),exporting||current);
+    enum qlx_phase phase=qlx_phase_get(&g_log_export_phase);
+    bool cancellable=phase==QLX_QUEUED||phase==QLX_RUNNING;
+    SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,phase==QLX_COMMITTING?L"正在完成保存":
+        phase==QLX_CANCEL_REQUESTED?L"正在取消并清理":phase==QLX_CHOOSING?L"正在选择文件":
+        phase==QLX_CLEANUP_FAILED?L"检查暂存清理":cancellable?L"取消导出":L"导出全部匹配");
+    EnableWindow(GetDlgItem(hwnd,IDC_QLOG_EXPORT),cancellable||phase==QLX_CLEANUP_FAILED||(!qlx_phase_busy(phase)&&current));
     log_list_refresh(hwnd, false);
 }
 
@@ -3411,10 +3481,21 @@ static void draw_activity_page(HDC hdc) {
             (unsigned)sn->qlog_page.offset + 1u, (unsigned)sn->qlog_page.offset + (unsigned)sn->qlog_count,
             (unsigned)sn->qlog_page.total, g_log_shown, (unsigned)sn->qlog_page.retained_total);
     }
-    if(InterlockedCompareExchange(&g_log_export_busy,0,0)||InterlockedCompareExchange(&g_log_export_pending,0,0))
-        swprintf(count,240,L"正在导出固定历史：%u / %u 条 · 可取消，完成前不发布文件。",g_log_export_done,g_log_export_total);
-    else if(g_log_export_result)
-        swprintf(count,240,g_log_export_result==1?L"全部匹配历史导出完成（%u 条）；使用导出开始时的固定快照。":g_log_export_result==-2?L"导出已取消，未发布部分文件。":L"导出失败或历史过期，未发布部分文件；请刷新重试。",g_log_export_done);
+    uint32_t export_done,export_total;DWORD export_error,cleanup_error;
+    pthread_mutex_lock(&g_snap_mutex);
+    export_done=g_log_export_done;export_total=g_log_export_total;
+    export_error=g_log_export_error;cleanup_error=g_log_export_cleanup_error;
+    enum qlx_phase phase=qlx_phase_get(&g_log_export_phase);
+    pthread_mutex_unlock(&g_snap_mutex);
+    if(phase==QLX_CHOOSING)swprintf(count,240,L"已固定 %u 条匹配历史，正在选择保存位置；取消选择不会读取或写入文件。",export_total);
+    else if(phase==QLX_COMMITTING)swprintf(count,240,L"正在完成保存：%u / %u 条 · 已进入原子替换阶段，不再接受取消。",export_done,export_total);
+    else if(phase==QLX_CANCEL_REQUESTED)swprintf(count,240,L"正在取消并清理本次暂存文件；清理结束前不能开始另一项导出。");
+    else if(phase==QLX_RUNNING||phase==QLX_QUEUED)swprintf(count,240,L"正在导出固定历史：%u / %u 条 · 可取消，完成前不发布文件。",export_done,export_total);
+    else if(phase==QLX_SUCCEEDED)swprintf(count,240,L"全部匹配历史导出完成（%u 条）；使用点击导出时的固定快照。",export_done);
+    else if(phase==QLX_CANCELLED)swprintf(count,240,L"导出已取消，原目标保持不变，本次暂存文件已清理。");
+    else if(phase==QLX_CLEANUP_FAILED)swprintf(count,240,L"导出未发布，但暂存清理失败（%lu）；文件位置见 webserver.log，请处理后重试。",(unsigned long)cleanup_error);
+    else if(phase==QLX_DIALOG_FAILED)swprintf(count,240,L"系统文件对话框失败（0x%08lx），未开始导出。",(unsigned long)export_error);
+    else if(phase==QLX_FAILED)swprintf(count,240,export_error==ERROR_RETRY?L"点击导出时的历史已过期，未改用新历史、未发布部分文件；请刷新后重试。":L"导出失败（%lu），原目标未替换、本次暂存文件已清理。",(unsigned long)export_error);
     RECT count_rect = {S(218), S(430), S(1002), S(453)};
     DrawTextW(hdc, count, -1, &count_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, old);
@@ -4800,7 +4881,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         KillTimer(hwnd, 1);
         KillTimer(hwnd, 5);
-        InterlockedExchange(&g_log_export_cancel,1);
+        qlx_phase_cancel(&g_log_export_phase);
         KillTimer(hwnd, 4);
         if (g_poll_started) {
             g_poll_stop = 1;
