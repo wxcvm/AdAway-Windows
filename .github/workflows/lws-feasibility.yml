@@ -51,6 +51,8 @@ jobs:
             python .lws-spike/source/tests/correctness.py --binary ".lws-spike/work/build/spike_$backend.exe" --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output "evidence/$backend"
             if ($LASTEXITCODE) { throw "Actual $backend tests" }
           }
+          python .lws-spike/source/tests/compare.py evidence/lws/correctness.json evidence/mongoose/correctness.json evidence/http-comparison.json
+          if ($LASTEXITCODE) { throw 'HTTP differential evidence' }
           python -m pip install -r .lws-spike/source/tests/requirements.txt
           if ($LASTEXITCODE) { throw 'Metrics dependency' }
           python -m unittest discover -s .lws-spike/source/tests -p 'test_*.py'
