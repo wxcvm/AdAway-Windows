@@ -521,6 +521,7 @@ jobs:
             ${{ runner.temp }}/AdAwayExportGui-*/**/*.log
             ${{ runner.temp }}/AdAwayExportGui-*/**/*.csv
             ${{ runner.temp }}/AdAwayExportGui-*/**/*.json
+            ${{ runner.temp }}/AdAwayExportGui-*/**/*.png
           if-no-files-found: warn
 
       - name: Preserve actual query log server results

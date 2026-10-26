@@ -32,6 +32,9 @@ for name, restype, args in [
     ('GetDlgItem', w.HWND, [w.HWND, c.c_int]),
     ('GetAncestor', w.HWND, [w.HWND, w.UINT]),
     ('GetWindow', w.HWND, [w.HWND, w.UINT]),
+    ('SetForegroundWindow', w.BOOL, [w.HWND]),
+    ('GetForegroundWindow', w.HWND, []),
+    ('GetWindowRect', w.BOOL, [w.HWND,c.POINTER(w.RECT)]),
     ('IsWindow', w.BOOL, [w.HWND]),
     ('IsWindowEnabled', w.BOOL, [w.HWND]),
     ('IsWindowVisible', w.BOOL, [w.HWND]),
@@ -114,7 +117,22 @@ class Gui:
             found=matches[0]
         return self.owned(found)
 
+    def activate(self, window):
+        self.owned(window)
+        u.SetForegroundWindow(window)
+        wait(lambda:u.GetForegroundWindow()==window,'owned dialog could not be activated',3)
+
+    def capture(self, name, window=None):
+        window=self.owned(window or self.main)
+        rect=w.RECT(); assert u.GetWindowRect(window,c.byref(rect))
+        assert 0 < rect.right-rect.left <= 4096 and 0 < rect.bottom-rect.top <= 4096
+        from PIL import ImageGrab
+        ImageGrab.grab(bbox=(rect.left,rect.top,rect.right,rect.bottom),all_screens=True).save(self.root/f'{name}.png')
+
     def click(self, parent, control):
+        # BM_CLICK on an inactive native dialog is not a reliable user action.
+        # Activate only this owned window and verify activation, no global keys.
+        self.activate(parent)
         button=self.child(parent,control)
         assert u.IsWindowEnabled(button), f'owned control {control} is disabled'
         self.post(button,0xF5)  # BM_CLICK includes the native button HWND notification.
@@ -131,6 +149,7 @@ class Gui:
         self.post(self.button,0xF5)
         dialog = wait(lambda: self.find('#32770', self.main), 'owned Save dialog not shown')
         assert u.GetAncestor(dialog, 3) == self.main
+        self.activate(dialog)
         return dialog
 
     def choose(self, dialog, path):
@@ -172,6 +191,7 @@ class Gui:
             (self.root/'save-uia-output.json').write_text(json.dumps(dict(code=result.returncode,
                 stdout=result.stdout,stderr=result.stderr),indent=2),encoding='utf8')
             assert result.returncode==0, result.stderr or result.stdout or 'UIA path setter failed; see owned fixture evidence'
+        self.capture('save-before-click',dialog)
         self.click(dialog,1)
 
     def confirmation(self, chooser):
@@ -198,6 +218,8 @@ class Gui:
 
     def close(self):
         if self.process.poll() is None:
+            # Preserve the last actual dialog/page, including a timeout failure.
+            self.capture('last-owned-window',self.find('#32770',self.main) or self.main)
             self.post(self.main, 0x402)  # Existing production WM_APP_EXIT, not WM_CLOSE-to-tray.
             self.process.wait(timeout=12)
         assert self.process.returncode == 0, self.process.returncode
@@ -263,6 +285,8 @@ def exported(path, expected):
 
 
 def run(driver, exe, probe, evidence):
+    if os.environ.get('GITHUB_ACTIONS')!='true':
+        raise RuntimeError('GUI activation is restricted to a disposable GitHub runner, never the daily host')
     spec = importlib.util.spec_from_file_location('real_server', Path(__file__).with_name('test-query-log-server.py'))
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     evidence.mkdir(parents=True,exist_ok=True)
