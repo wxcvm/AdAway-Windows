@@ -1,0 +1,102 @@
+name: Isolated LWS Windows feasibility
+on:
+  pull_request:
+    branches: [main]
+    paths: ['tools/lws-spike/**', 'docs/lws-feasibility.md', '.github/workflows/lws-feasibility.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lws-windows-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Fixed shared LWS prototype on real Windows
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: MINGW64
+          update: false
+          install: git perl make mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+      - uses: actions/cache@v4
+        with:
+          path: .openssl-build/install
+          key: lws-spike-windows-openssl-45e844fa2a14ec92d146bd8f5778ac130b6625fb-v1
+      - name: Fixed OpenSSL and per-job compiler path
+        shell: msys2 {0}
+        run: |
+          mkdir -p evidence
+          bash scripts/build-official-openssl.sh > evidence/openssl-build.log 2>&1
+          echo "MINGW_BIN=$(cygpath -m "$MINGW_PREFIX/bin")" >> "$GITHUB_ENV"
+      - name: Fetch verified prototype without changing portable production core
+        id: fixed_build
+        shell: pwsh
+        run: |
+          python tools/lws-spike/fetch_source.py .lws-spike/source > evidence/shared-source.json
+          if ($LASTEXITCODE) { throw 'Shared prototype fetch' }
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          python .lws-spike/source/build.py --directory .lws-spike/work --openssl .openssl-build/install --generator Ninja --define CMAKE_C_COMPILER=gcc > evidence/build.log 2>&1
+          if ($LASTEXITCODE) { throw 'Pinned Windows build' }
+          Copy-Item .lws-spike/work/build-evidence.json evidence/
+      - name: Run real process, response and lifetime tests
+        shell: pwsh
+        run: |
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          $failed=$false
+          foreach ($backend in @('lws','mongoose')) {
+            python .lws-spike/source/tests/correctness.py --binary ".lws-spike/work/build/spike_$backend.exe" --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output "evidence/$backend"
+            if ($LASTEXITCODE) { $failed=$true; Write-Warning "Actual $backend correctness failed; preserve individual evidence" }
+            python .lws-spike/source/tests/native_probe.py --binary ".lws-spike/work/build/spike_$backend.exe" --probe .lws-spike/work/build/spike_probe.exe --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output "evidence/native-$backend"
+            if ($LASTEXITCODE) { $failed=$true; Write-Warning "Actual native $backend response checks failed" }
+          }
+          $left=if(Test-Path evidence/lws/correctness.json){'evidence/lws/correctness.json'}else{'evidence/lws/partial-correctness.json'}
+          $right=if(Test-Path evidence/mongoose/correctness.json){'evidence/mongoose/correctness.json'}else{'evidence/mongoose/partial-correctness.json'}
+          python .lws-spike/source/tests/compare.py $left $right evidence/http-comparison.json
+          if ($LASTEXITCODE) { $failed=$true }
+          python -m pip install -r .lws-spike/source/tests/requirements.txt
+          if ($LASTEXITCODE) { throw 'Metrics dependency' }
+          python -m unittest discover -s .lws-spike/source/tests -p 'test_*.py'
+          if ($LASTEXITCODE) { throw 'Input and measurement unit tests' }
+          if ($failed) { throw 'Required prototype capability checks failed; partial evidence is not acceptance' }
+      - name: Preserve public-callback diagnostics after a correctness failure
+        if: failure()
+        shell: pwsh
+        run: |
+          if (!(Test-Path .lws-spike/work/build/CMakeCache.txt)) { exit 0 }
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          cmake -S .lws-spike/source -B .lws-spike/work/build -DSPIKE_VERBOSE_BUILD=ON > evidence/diagnostic-build.log 2>&1
+          if ($LASTEXITCODE) { exit 0 }
+          cmake --build .lws-spike/work/build --target spike_lws --parallel 4 >> evidence/diagnostic-build.log 2>&1
+          if ($LASTEXITCODE) { exit 0 }
+          $env:SPIKE_DIAGNOSTIC_LOGS='1'
+          python .lws-spike/source/tests/correctness.py --binary .lws-spike/work/build/spike_lws.exe --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output evidence/diagnostic-lws > evidence/diagnostic.log 2>&1
+          # This diagnostic does not turn the earlier correctness failure into success.
+          exit 0
+      - name: Alternate paired performance rounds with normal log modes
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && steps.fixed_build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $env:PATH="$env:MINGW_BIN;$env:PATH"
+          # Performance evidence is independent of a failed forwarding test.
+          # The workflow remains failed, and diagnostic builds are never measured.
+          python -m pip install -r .lws-spike/source/tests/requirements.txt
+          if ($LASTEXITCODE) { throw 'Metrics dependency' }
+          python .lws-spike/source/build.py --directory .lws-spike/work --openssl .openssl-build/install --generator Ninja --define CMAKE_C_COMPILER=gcc --define SPIKE_VERBOSE_BUILD=OFF > evidence/measurement-build.log 2>&1
+          if ($LASTEXITCODE) { throw 'Measured non-diagnostic build' }
+          Copy-Item .lws-spike/work/build-evidence.json evidence/performance-build-evidence.json
+          python .lws-spike/source/tests/benchmark.py --build .lws-spike/work/build --image .lws-spike/work/inputs/fixture/app/src/main/assets/img_01.webp --output evidence/performance > evidence/performance.log 2>&1
+          if ($LASTEXITCODE) { throw 'Paired performance failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lws-windows-evidence
+          path: |
+            evidence/**/*.json
+            evidence/**/*.log
+          if-no-files-found: warn

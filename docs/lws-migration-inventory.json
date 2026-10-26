@@ -1,0 +1,47 @@
+{
+  "source_commit": "51e77155ad267bd0c1001c15286e089836bb2a80",
+  "method": "lexical public mg_* call-site inventory of Windows-owned source; fetched production core remains independently pinned",
+  "files": {
+    "dashboard_response.h": {
+      "mg_http_get_header": 1,
+      "mg_http_parse": 1,
+      "mg_json_get": 1,
+      "mg_json_get_tok": 2,
+      "mg_str": 4,
+      "mg_str_n": 1,
+      "mg_strcasecmp": 1,
+      "mg_strcmp": 3
+    },
+    "gui_win32.c": {
+      "mg_http_get_header": 1,
+      "mg_http_parse": 1,
+      "mg_json_get_tok": 5,
+      "mg_json_next": 1,
+      "mg_str": 10
+    },
+    "listener_arrival_probe.h": {
+      "mg_http_reply": 3,
+      "mg_str": 1,
+      "mg_strcmp": 1
+    },
+    "query_log_page.h": {
+      "mg_json_get_tok": 11,
+      "mg_json_next": 1,
+      "mg_json_unescape": 6,
+      "mg_sha256": 1
+    },
+    "tools/query-log-client-probe.c": {
+      "mg_json_get_tok": 4,
+      "mg_json_unescape": 2,
+      "mg_log_set": 1,
+      "mg_str": 1
+    },
+    "update_feed.c": {
+      "mg_json_get": 1,
+      "mg_json_get_bool": 2,
+      "mg_json_get_str": 1,
+      "mg_str": 2,
+      "mg_str_n": 1
+    }
+  }
+}
