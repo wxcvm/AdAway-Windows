@@ -126,6 +126,21 @@ class Gui:
         self.send(edit, 0xC, 0, c.addressof(value))
         self.post(dialog, 0x111, 1)
 
+    def confirmation(self, chooser):
+        matches = []
+        @CALLBACK
+        def visit(hwnd, _):
+            pid = w.DWORD(); u.GetWindowThreadProcessId(hwnd, c.byref(pid))
+            cls = c.create_unicode_buffer(256); u.GetClassNameW(hwnd, cls, 256)
+            if (pid.value == self.process.pid and hwnd != chooser and
+                cls.value == '#32770' and u.GetAncestor(hwnd, 3) == self.main and
+                u.IsWindowVisible(hwnd) and u.GetDlgItem(hwnd, 6) and u.GetDlgItem(hwnd, 7)):
+                matches.append(hwnd)
+            return True
+        u.EnumWindows(visit, 0)
+        assert len(matches) <= 1, 'ambiguous owned overwrite confirmation'
+        return matches[0] if matches else None
+
     def ready(self):
         wait(lambda: not self.find('#32770', self.main) and self.text(self.button) in ('导出全部匹配', '检查暂存清理') and u.IsWindowEnabled(self.button),
              'export did not finish cleanup', 20)
@@ -204,6 +219,9 @@ def run(driver, exe, probe, evidence):
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
     evidence.mkdir(parents=True,exist_ok=True)
     results=[]
+    def record(value):
+        results.append(value)
+        (evidence/'completed-cases.json').write_text(json.dumps(results,indent=2),encoding='utf8')
     # Retained under the CI temp directory for failure logs; never a user's profile.
     root=Path(tempfile.mkdtemp(prefix='AdAwayExportGui-'))
     (evidence/'fixture-path.txt').write_text(str(root),encoding='utf8')
@@ -217,34 +235,38 @@ def run(driver, exe, probe, evidence):
             total=json.loads(before)['total']; assert total==601
             # Cancel native chooser: no export request or staging file.
             dialog=gui.dialog(); gui.post(dialog,0x111,2); gui.ready(); assert not gui.stages()
-            results.append('native-dialog-cancel')
+            record('native-dialog-cancel')
             target=gui.root/'完整 导出-IPv6.csv'
             dialog=gui.dialog(); gui.choose(dialog,target)
             wait(target.exists,'production export did not publish'); gui.ready()
             initial=exported(target,total); assert not gui.stages()
-            results.append('real-production-multipage-unicode-save')
+            record('real-production-multipage-unicode-save')
             # Native overwrite rejection must retain the original bytes.
             dialog=gui.dialog(); gui.choose(dialog,target)
-            confirm=wait(lambda: gui.find('#32770',gui.main),'overwrite confirmation missing')
-            # The chooser remains visible; locate the owned confirmation by IDYES.
-            def confirmation():
-                found=[]
-                @CALLBACK
-                def visit(h,_):
-                    pid=w.DWORD(); u.GetWindowThreadProcessId(h,c.byref(pid))
-                    if pid.value==gui.process.pid and u.GetAncestor(h,3)==gui.main and u.GetDlgItem(h,6): found.append(h)
-                    return True
-                u.EnumWindows(visit,0); return found[0] if found else None
-            confirm=wait(confirmation,'owned overwrite prompt missing')
+            confirm=wait(lambda:gui.confirmation(dialog),'owned overwrite prompt missing')
             gui.post(confirm,0x111,7)
             wait(lambda:u.IsWindow(dialog),'save dialog vanished after refusing overwrite')
             gui.post(dialog,0x111,2); gui.ready(); assert target.read_bytes()==initial
-            results.append('native-overwrite-rejected')
+            record('native-overwrite-rejected')
             dialog=gui.dialog(); gui.choose(dialog,target)
-            confirm=wait(confirmation,'overwrite confirmation missing'); gui.post(confirm,0x111,6)
+            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.post(confirm,0x111,6)
             wait(lambda:not u.IsWindow(dialog),'chooser did not finish'); gui.ready()
             assert exported(target,total)==initial
-            results.append('native-overwrite-confirmed')
+            record('native-overwrite-confirmed')
+            handle=k.CreateFileW(str(target),0x80000000,1,None,3,0,None)
+            assert handle != c.c_void_p(-1).value
+            try:
+                dialog=gui.dialog(); gui.choose(dialog,target)
+                confirm=wait(lambda:gui.confirmation(dialog),'locked-target overwrite prompt missing')
+                gui.post(confirm,0x111,6)
+                wait(lambda:not u.IsWindow(dialog),'locked-target chooser still open'); gui.ready()
+                assert target.read_bytes()==initial and not gui.stages()
+                log=gui.root/'webserver.log'
+                assert '[export] failed before publication' in log.read_text(encoding='utf8')
+                record('locked-destination-preserves-original-and-cleans-stage')
+            finally:
+                assert k.CloseHandle(handle)
+
         finally:
             gui.close()
     finally:
@@ -256,25 +278,48 @@ def run(driver, exe, probe, evidence):
             target=gui.root/'cancelled.csv'; target.write_bytes(b'old bytes')
             controlled.hold=True
             dialog=gui.dialog(); gui.choose(dialog,target)
-            # Native overwrite prompt, same PID and root owner only.
-            def yes_prompt():
-                h=gui.find('#32770',gui.main)
-                return h if h and u.GetDlgItem(h,6) else None
-            confirm=wait(yes_prompt,'overwrite confirmation missing'); gui.post(confirm,0x111,6)
+            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.post(confirm,0x111,6)
             assert controlled.entered.wait(8),'export never reached a held later page'
             gui.post(gui.main,0x111,1219)
             wait(lambda:gui.text(gui.button)=='正在取消并清理','cancel request not acknowledged')
             assert not u.IsWindowEnabled(gui.button), 'second export enabled before cleanup'
             controlled.release.set(); gui.ready()
             assert target.read_bytes()==b'old bytes' and not gui.stages()
-            results.append('held-later-page-cancel-preserves-target')
+            record('held-later-page-cancel-preserves-target')
+            # Prevent deletion of this task's own staging file while a later
+            # HTTP page is held. This is a real sharing violation, not a hook.
+            controlled.entered.clear(); controlled.release.clear()
+            dialog=gui.dialog(); gui.choose(dialog,target)
+            confirm=wait(lambda:gui.confirmation(dialog),'overwrite confirmation missing'); gui.post(confirm,0x111,6)
+            assert controlled.entered.wait(8)
+            stages=gui.stages(); assert len(stages)==1
+            stage=stages[0]; assert stage.resolve().parent==gui.root.resolve()
+            handle=k.CreateFileW(str(stage),0x80000000,1,None,3,0,None)
+            assert handle != c.c_void_p(-1).value
+            try:
+                gui.post(gui.main,0x111,1219)
+                wait(lambda:gui.text(gui.button)=='正在取消并清理','cancel not acknowledged')
+                controlled.release.set(); gui.ready()
+                assert gui.text(gui.button)=='检查暂存清理'
+                assert target.read_bytes()==b'old bytes' and stage.exists()
+                gui.post(gui.main,0x111,1219)
+                warning=wait(lambda:gui.find('#32770',gui.main),'cleanup failure warning missing')
+                assert not u.GetDlgItem(warning,0x480) and not u.GetDlgItem(warning,0x47C)
+                gui.post(warning,0x111,1); gui.ready()
+                assert stage.exists() and gui.text(gui.button)=='检查暂存清理'
+            finally:
+                assert k.CloseHandle(handle)
+            stage.unlink()  # Only this job's known path inside its unique temp directory.
             controlled.hold=False
+            dialog=gui.dialog(); gui.post(dialog,0x111,2); gui.ready()
+            assert gui.text(gui.button)=='导出全部匹配' and not gui.stages()
+            record('cleanup-failure-blocks-second-export-until-owned-stage-is-gone')
             # Pin history BEFORE opening the actual file chooser, then expire it.
             target=gui.root/'expired.csv'; dialog=gui.dialog(); controlled.expired=True
             gui.choose(dialog,target); wait(lambda:not u.IsWindow(dialog),'chooser still open'); gui.ready()
             assert not target.exists() and not gui.stages()
             assert any(x['frozen'] for x in controlled.requests)
-            results.append('history-expires-during-file-selection')
+            record('history-expires-during-file-selection')
         finally:
             gui.close()
         # Reopen actual dashboard: no stale busy state is inherited.
@@ -284,7 +329,7 @@ def run(driver, exe, probe, evidence):
             target=gui.root/'empty.csv'; dialog=gui.dialog(); gui.choose(dialog,target)
             wait(target.exists,'zero-match export did not publish'); gui.ready()
             exported(target,0); assert not gui.stages()
-            results.append('reopen-and-zero-match-header-only')
+            record('reopen-and-zero-match-header-only')
         finally:
             gui.close()
     finally:

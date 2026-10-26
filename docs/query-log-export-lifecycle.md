@@ -23,12 +23,12 @@ controller checks PID and root owner before operating every dialog/control. It
 uses a real production loopback service for Unicode, complete multi-page CSV,
 native chooser cancellation and overwrite confirmation/refusal. A separate
 controlled loopback HTTP peer holds a later page deterministically for cancellation
-and expires history while the chooser is open. Reopen and zero-match cases are
-also executed. No adapter, route, certificate store, autostart or updater action
+and expires history while the chooser is open. Locked destinations and an actual staging cleanup sharing violation verify
+rollback and the second-export gate. Reopen and zero-match cases are also executed. No adapter, route, certificate store, autostart or updater action
 is triggered; automatic update is disabled in the driver's own temporary INI.
 
 A passing state-machine test is not GUI acceptance. Actual driver execution is
-required in Windows CI. Locked destination, write/cleanup fault injection and the
+required in Windows CI. Additional write/flush failure injection and the
 commit boundary at the actual filesystem still require separate evidence; do not
 claim them from phase tests. The portable core and independent contract pins are
 unchanged; no application version or stable feed is advanced by this branch.
