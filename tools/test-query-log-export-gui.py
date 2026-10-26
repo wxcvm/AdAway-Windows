@@ -71,9 +71,9 @@ class Gui:
                                         stdout=self.output, stderr=self.output,
                                         creationflags=subprocess.CREATE_NO_WINDOW)
         self.main = wait(lambda: self.find('ADBlockDashWin11'), 'owned dashboard not found')
-        self.send(self.main, 0x111, 47001)  # Existing production navigation command.
+        self.send(self.main, 0x111, (1 << 16) | 47001)  # Existing production navigation command.
         self.button = self.child(self.main, 1219)
-        wait(lambda: u.IsWindowEnabled(self.button), 'server page did not enable export')
+        wait(lambda: u.IsWindowVisible(self.button) and u.IsWindowEnabled(self.button), 'actual log page did not enable visible export')
 
     def owned(self, hwnd):
         pid = w.DWORD()
@@ -175,6 +175,11 @@ class Gui:
         assert len(candidates)<=1, 'ambiguous native file name controls'
         if candidates:
             edit = self.owned(candidates[0]['hwnd'])
+            # The common dialog becomes visible before it binds lpstrFile.
+            # Wait for that observable default, not an arbitrary sleep; an
+            # earlier SetWindowText was overwritten by native initialization.
+            wait(lambda:self.text(edit) in ('AdAway-requests','AdAway-requests.csv'),
+                 'native file name initialization did not complete')
             value = c.create_unicode_buffer(str(path))
             self.send(edit, 0xC, 0, c.addressof(value))
             assert self.text(edit)==str(path), 'file name text was not applied'
@@ -192,6 +197,8 @@ class Gui:
                 stdout=result.stdout,stderr=result.stderr),indent=2),encoding='utf8')
             assert result.returncode==0, result.stderr or result.stdout or 'UIA path setter failed; see owned fixture evidence'
         self.capture('save-before-click',dialog)
+        if candidates:
+            assert self.text(edit)==str(path), 'native initialization replaced the requested file name; no Save click sent'
         self.click(dialog,1)
 
     def confirmation(self, chooser):
