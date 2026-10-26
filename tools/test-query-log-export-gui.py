@@ -145,6 +145,7 @@ class Gui:
             # value pattern, bounded to this exact same-PID dialog, no SendKeys.
             script=Path(__file__).with_name('set-export-dialog-path.ps1')
             result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-WindowStyle','Hidden',
+                '-ExecutionPolicy','Bypass',
                 '-File',str(script),'-ProcessId',str(self.process.pid),'-Dialog',str(int(dialog)),
                 '-MainWindow',str(int(self.main)),'-Path',str(path),
                 '-EvidencePath',str(self.root/'save-uia.json')],capture_output=True,text=True,
