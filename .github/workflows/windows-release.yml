@@ -17,7 +17,7 @@ permissions:
 jobs:
   build:
     concurrency:
-      group: windows-${{ (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && 'preview-publication' || github.run_id }}
+      group: windows-${{ (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && 'preview-publication' || github.event.pull_request.number || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: windows-latest
     timeout-minutes: 30
