@@ -60,6 +60,7 @@
 #include "query_log_filter.h"
 #include "query_log_export.h"
 #include "query_log_export_state.h"
+#include "query_log_export_task.h"
 #include "query_log_export_file_win32.h"
 #include <io.h>
 
@@ -278,12 +279,9 @@ static HANDLE g_poll_wake;
 static bool g_log_query_pending;
 static bool g_log_pause_after_query;
 static volatile LONG g_log_export_pending, g_log_export_phase;
-static struct qlp_request g_log_export_request;
-static wchar_t g_log_export_target[MAX_PATH];
-static uint32_t g_log_export_done, g_log_export_total;
-static uint32_t g_log_export_retained;
-static DWORD g_log_export_error, g_log_export_cleanup_error;
-static wchar_t g_log_export_stage[MAX_PATH];
+static struct qlx_export_task g_log_export_task;
+static struct qlx_export_progress g_log_export_progress;
+static uint64_t g_log_export_next_id;
 
 static struct snapshot g_snap_next;
 static struct snapshot *g_sn;
@@ -1001,7 +999,7 @@ static bool snapshot_publish(struct snapshot *published, struct snapshot *incomi
     return changed;
 }
 
-struct log_export_context { struct qlx_file_transaction output; HWND hwnd; DWORD error; bool first_page; };
+struct log_export_context { struct qlx_file_transaction output; struct qlx_export_task task; HWND hwnd; DWORD error; bool first_page; };
 static bool log_export_cancelled(void *context) {
     (void)context;
     if(g_poll_stop)qlx_phase_cancel(&g_log_export_phase);
@@ -1022,7 +1020,7 @@ static bool log_export_read(void *context,const struct qlp_request *request,stru
         if(ports[attempt]<=0||duplicate)continue;
         if(log_export_cancelled(context))return false;
         if(http_get_status(ports[attempt],path,buffer,sizeof(buffer),&status)==0&&qlp_parse(mg_str(buffer),request,page)) {
-            if(export->first_page&&(page->total!=g_log_export_total||page->retained_total!=g_log_export_retained)) {
+            if(export->first_page&&(page->total!=export->task.query.total||page->retained_total!=export->task.query.retained)) {
                 export->error=ERROR_RETRY;return false;
             }
             export->first_page=false;return true;
@@ -1033,8 +1031,10 @@ static bool log_export_read(void *context,const struct qlp_request *request,stru
 }
 static void log_export_progress(void *context,uint32_t done,uint32_t total) {
     struct log_export_context *export=context;
-    pthread_mutex_lock(&g_snap_mutex);g_log_export_done=done;g_log_export_total=total;pthread_mutex_unlock(&g_snap_mutex);
-    if(!g_poll_stop)PostMessageW(export->hwnd,WM_APP_STATS,0,0);
+    pthread_mutex_lock(&g_snap_mutex);
+    bool current=qlx_progress_update(&g_log_export_progress,export->task.id,done,total);
+    pthread_mutex_unlock(&g_snap_mutex);
+    if(current&&!g_poll_stop)PostMessageW(export->hwnd,WM_APP_STATS,0,0);
 }
 static void log_export_committing(void *opaque) {
     struct log_export_context *context=opaque;
@@ -1044,24 +1044,24 @@ static void log_export_committing(void *opaque) {
 static void log_export_run(HWND hwnd) {
     if(InterlockedCompareExchange(&g_log_export_pending,0,1)!=1)return;
     InterlockedCompareExchange(&g_log_export_phase,QLX_RUNNING,QLX_QUEUED);
-    struct qlp_request request;wchar_t target[MAX_PATH];
-    pthread_mutex_lock(&g_snap_mutex);request=g_log_export_request;wcscpy(target,g_log_export_target);pthread_mutex_unlock(&g_snap_mutex);
     struct log_export_context context={0};context.hwnd=hwnd;context.first_page=true;
+    pthread_mutex_lock(&g_snap_mutex);context.task=g_log_export_task;pthread_mutex_unlock(&g_snap_mutex);
+    const wchar_t *target=context.task.target;
     qlx_file_init(&context.output,NULL,NULL);
     bool ok=false;
     if(!log_export_cancelled(&context)&&qlx_file_open(&context.output,target))
-        ok=qlx_export(request,&context,log_export_read,log_export_write,log_export_cancelled,log_export_progress);
+        ok=qlx_export(context.task.query.request,&context,log_export_read,log_export_write,log_export_cancelled,log_export_progress);
     enum qlx_phase result=qlx_file_finish(&context.output,target,ok,&g_log_export_phase,
         log_export_cancelled,log_export_committing,&context);
     if(!context.error)context.error=context.output.error;
     DWORD cleanup_error=context.output.cleanup_error;
     pthread_mutex_lock(&g_snap_mutex);
-    g_log_export_error=context.error;g_log_export_cleanup_error=cleanup_error;
-    if(cleanup_error)wcscpy(g_log_export_stage,context.output.stage);else g_log_export_stage[0]=0;
+    bool current=qlx_progress_finish(&g_log_export_progress,context.task.id,
+        context.error,cleanup_error,context.output.stage);
     pthread_mutex_unlock(&g_snap_mutex);
     if(cleanup_error)win32_log_line("[export] staging cleanup failed (%lu), owned file: %ls",(unsigned long)cleanup_error,context.output.stage);
     else if(result==QLX_FAILED)win32_log_line("[export] failed before publication (%lu), file stage %d",(unsigned long)context.error,(int)context.output.failed_at);
-    InterlockedExchange(&g_log_export_phase,result);
+    if(current)InterlockedExchange(&g_log_export_phase,result);
     if(!g_poll_stop)PostMessageW(hwnd,WM_APP_STATS,0,0);
 }
 
@@ -2715,7 +2715,7 @@ static void log_filter_commit(HWND hwnd) {
 static void log_export_start(HWND hwnd) {
     if(qlx_phase_get(&g_log_export_phase)==QLX_CLEANUP_FAILED) {
         wchar_t stage[MAX_PATH];
-        pthread_mutex_lock(&g_snap_mutex);wcscpy(stage,g_log_export_stage);pthread_mutex_unlock(&g_snap_mutex);
+        pthread_mutex_lock(&g_snap_mutex);wcscpy(stage,g_log_export_progress.stage);pthread_mutex_unlock(&g_snap_mutex);
         DWORD attributes=stage[0]?GetFileAttributesW(stage):INVALID_FILE_ATTRIBUTES;
         DWORD error=stage[0]&&attributes==INVALID_FILE_ATTRIBUTES?GetLastError():ERROR_ACCESS_DENIED;
         if(attributes!=INVALID_FILE_ATTRIBUTES ||
@@ -2734,14 +2734,18 @@ static void log_export_start(HWND hwnd) {
     if(!qlx_phase_begin(&g_log_export_phase))return;
     /* File dialogs pump messages: capture the visible query and its immutable
      * history identity before opening one, not after a later stats refresh. */
+    struct qlx_query_snapshot frozen;
+    uint64_t id=++g_log_export_next_id;
+    if(!id)id=++g_log_export_next_id;
     pthread_mutex_lock(&g_snap_mutex);
-    g_log_export_request=g_log_nav.request;g_log_export_request.offset=0;
-    memcpy(g_log_export_request.generation,g_sn->qlog_page.generation,sizeof(g_log_export_request.generation));
-    memcpy(g_log_export_request.anchor,g_sn->qlog_page.anchor,sizeof(g_log_export_request.anchor));
-    memcpy(g_log_export_request.query_key,g_sn->qlog_page.query_key,sizeof(g_log_export_request.query_key));
-    g_log_export_done=0;g_log_export_total=g_sn->qlog_page.total;g_log_export_retained=g_sn->qlog_page.retained_total;
-    g_log_export_error=0;g_log_export_cleanup_error=0;g_log_export_stage[0]=0;
+    bool captured=qlx_query_capture(&frozen,&g_log_nav.request,&g_sn->qlog_page);
+    qlx_progress_begin(&g_log_export_progress,id,captured?frozen.total:0);
+    if(!captured)g_log_export_progress.error=ERROR_INVALID_DATA;
     pthread_mutex_unlock(&g_snap_mutex);
+    if(!captured) {
+        InterlockedExchange(&g_log_export_phase,QLX_FAILED);
+        PostMessageW(hwnd,WM_APP_STATS,0,0);return;
+    }
     /* Publish CHOOSING before entering the nested modal message loop. This
      * also prevents an idle-looking button between dialog teardown and queueing. */
     SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,L"正在选择文件");
@@ -2753,7 +2757,7 @@ static void log_export_start(HWND hwnd) {
     save.Flags=OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
     if(!GetSaveFileNameW(&save)) {
         DWORD error=CommDlgExtendedError();
-        pthread_mutex_lock(&g_snap_mutex);g_log_export_error=error;pthread_mutex_unlock(&g_snap_mutex);
+        pthread_mutex_lock(&g_snap_mutex);g_log_export_progress.error=error;pthread_mutex_unlock(&g_snap_mutex);
         InterlockedExchange(&g_log_export_phase,error?QLX_DIALOG_FAILED:QLX_CANCELLED);
         if(error)win32_log_line("[export] save dialog failed (0x%08lx)",(unsigned long)error);
         PostMessageW(hwnd,WM_APP_STATS,0,0);return;
@@ -2762,8 +2766,13 @@ static void log_export_start(HWND hwnd) {
         InterlockedExchange(&g_log_export_phase,QLX_CANCELLED);
         return;
     }
+    struct qlx_export_task task;
+    if(!qlx_task_confirm(&task,id,&frozen,target)) {
+        pthread_mutex_lock(&g_snap_mutex);g_log_export_progress.error=ERROR_INVALID_NAME;pthread_mutex_unlock(&g_snap_mutex);
+        InterlockedExchange(&g_log_export_phase,QLX_FAILED);PostMessageW(hwnd,WM_APP_STATS,0,0);return;
+    }
     pthread_mutex_lock(&g_snap_mutex);
-    wcscpy(g_log_export_target,target);
+    g_log_export_task=task;
     InterlockedExchange(&g_log_export_phase,QLX_QUEUED);InterlockedExchange(&g_log_export_pending,1);
     pthread_mutex_unlock(&g_snap_mutex);
     if(g_poll_wake)SetEvent(g_poll_wake);
@@ -3468,8 +3477,8 @@ static void draw_activity_page(HDC hdc) {
     }
     uint32_t export_done,export_total;DWORD export_error,cleanup_error;
     pthread_mutex_lock(&g_snap_mutex);
-    export_done=g_log_export_done;export_total=g_log_export_total;
-    export_error=g_log_export_error;cleanup_error=g_log_export_cleanup_error;
+    export_done=g_log_export_progress.done;export_total=g_log_export_progress.total;
+    export_error=g_log_export_progress.error;cleanup_error=g_log_export_progress.cleanup_error;
     enum qlx_phase phase=qlx_phase_get(&g_log_export_phase);
     pthread_mutex_unlock(&g_snap_mutex);
     if(phase==QLX_CHOOSING)swprintf(count,240,L"已固定 %u 条匹配历史，正在选择保存位置；取消选择不会读取或写入文件。",export_total);
