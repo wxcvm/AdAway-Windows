@@ -60,6 +60,7 @@
 #include "query_log_filter.h"
 #include "query_log_export.h"
 #include "query_log_export_state.h"
+#include "query_log_export_file_win32.h"
 #include <io.h>
 
 /* GetModuleFileNameA() returns the ANSI code page path (GBK on a Chinese
@@ -1000,7 +1001,7 @@ static bool snapshot_publish(struct snapshot *published, struct snapshot *incomi
     return changed;
 }
 
-struct log_export_context { FILE *file; HWND hwnd; DWORD error; bool first_page; };
+struct log_export_context { struct qlx_file_transaction output; HWND hwnd; DWORD error; bool first_page; };
 static bool log_export_cancelled(void *context) {
     (void)context;
     if(g_poll_stop)qlx_phase_cancel(&g_log_export_phase);
@@ -1009,8 +1010,7 @@ static bool log_export_cancelled(void *context) {
 static bool log_export_write(void *context,const char *bytes,size_t length) {
     struct log_export_context *export=context;
     if(log_export_cancelled(context))return false;
-    if(fwrite(bytes,1,length,export->file)==length)return true;
-    export->error=ERROR_WRITE_FAULT;return false;
+    return qlx_file_write(&export->output,bytes,length);
 }
 static bool log_export_read(void *context,const struct qlp_request *request,struct qlp_page *page) {
     struct log_export_context *export=context;
@@ -1036,46 +1036,31 @@ static void log_export_progress(void *context,uint32_t done,uint32_t total) {
     pthread_mutex_lock(&g_snap_mutex);g_log_export_done=done;g_log_export_total=total;pthread_mutex_unlock(&g_snap_mutex);
     if(!g_poll_stop)PostMessageW(export->hwnd,WM_APP_STATS,0,0);
 }
+static void log_export_committing(void *opaque) {
+    struct log_export_context *context=opaque;
+    if(!g_poll_stop)PostMessageW(context->hwnd,WM_APP_STATS,0,0);
+}
 /* Runs on the existing poll worker, never a second independent HTTP reader. */
 static void log_export_run(HWND hwnd) {
     if(InterlockedCompareExchange(&g_log_export_pending,0,1)!=1)return;
     InterlockedCompareExchange(&g_log_export_phase,QLX_RUNNING,QLX_QUEUED);
-    struct qlp_request request;wchar_t target[MAX_PATH],directory[MAX_PATH],temp[MAX_PATH]={0};
+    struct qlp_request request;wchar_t target[MAX_PATH];
     pthread_mutex_lock(&g_snap_mutex);request=g_log_export_request;wcscpy(target,g_log_export_target);pthread_mutex_unlock(&g_snap_mutex);
-    wcscpy(directory,target);wchar_t *slash=wcsrchr(directory,L'\\');if(slash)slash[1]=0;else wcscpy(directory,L".");
-    bool ok=false,owned=false;DWORD cleanup_error=0;
-    struct log_export_context context={NULL,hwnd,0,true};
-    if(!log_export_cancelled(&context)&&GetTempFileNameW(directory,L"qle",0,temp)){
-        owned=true;
-        context.file=_wfopen(temp,L"wb");
-        if(context.file){
-            ok=qlx_export(request,&context,log_export_read,log_export_write,log_export_cancelled,log_export_progress);
-            if(fflush(context.file)!=0){ok=false;context.error=ERROR_WRITE_FAULT;}
-            if(ok&&_commit(_fileno(context.file))!=0){ok=false;context.error=ERROR_WRITE_FAULT;}
-            if(fclose(context.file)!=0){ok=false;context.error=ERROR_WRITE_FAULT;}
-            context.file=NULL;
-            /* CAS is the single cancellation boundary, not a check followed
-             * by an unprotected replacement. COMMITTING cannot be cancelled. */
-            log_export_cancelled(&context);
-            if(ok&&qlx_phase_commit(&g_log_export_phase)) {
-                PostMessageW(hwnd,WM_APP_STATS,0,0);
-                ok=MoveFileExW(temp,target,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
-                if(ok)owned=false;else context.error=GetLastError();
-            }else ok=false;
-        }else context.error=ERROR_OPEN_FAILED;
-    }else if(!log_export_cancelled(&context))context.error=GetLastError();
-    if(owned&&!DeleteFileW(temp)) {
-        DWORD error=GetLastError();
-        if(error!=ERROR_FILE_NOT_FOUND&&error!=ERROR_PATH_NOT_FOUND)cleanup_error=error;
-    }
-    enum qlx_phase result=cleanup_error?QLX_CLEANUP_FAILED:ok?QLX_SUCCEEDED:
-        qlx_phase_get(&g_log_export_phase)==QLX_CANCEL_REQUESTED?QLX_CANCELLED:QLX_FAILED;
+    struct log_export_context context={0};context.hwnd=hwnd;context.first_page=true;
+    qlx_file_init(&context.output,NULL,NULL);
+    bool ok=false;
+    if(!log_export_cancelled(&context)&&qlx_file_open(&context.output,target))
+        ok=qlx_export(request,&context,log_export_read,log_export_write,log_export_cancelled,log_export_progress);
+    enum qlx_phase result=qlx_file_finish(&context.output,target,ok,&g_log_export_phase,
+        log_export_cancelled,log_export_committing,&context);
+    if(!context.error)context.error=context.output.error;
+    DWORD cleanup_error=context.output.cleanup_error;
     pthread_mutex_lock(&g_snap_mutex);
     g_log_export_error=context.error;g_log_export_cleanup_error=cleanup_error;
-    if(cleanup_error)wcscpy(g_log_export_stage,temp);else g_log_export_stage[0]=0;
+    if(cleanup_error)wcscpy(g_log_export_stage,context.output.stage);else g_log_export_stage[0]=0;
     pthread_mutex_unlock(&g_snap_mutex);
-    if(cleanup_error)win32_log_line("[export] staging cleanup failed (%lu), owned file: %ls",(unsigned long)cleanup_error,temp);
-    else if(result==QLX_FAILED)win32_log_line("[export] failed before publication (%lu)",(unsigned long)context.error);
+    if(cleanup_error)win32_log_line("[export] staging cleanup failed (%lu), owned file: %ls",(unsigned long)cleanup_error,context.output.stage);
+    else if(result==QLX_FAILED)win32_log_line("[export] failed before publication (%lu), file stage %d",(unsigned long)context.error,(int)context.output.failed_at);
     InterlockedExchange(&g_log_export_phase,result);
     if(!g_poll_stop)PostMessageW(hwnd,WM_APP_STATS,0,0);
 }

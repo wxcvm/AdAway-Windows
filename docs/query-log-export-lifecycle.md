@@ -28,7 +28,10 @@ rollback and the second-export gate. Reopen and zero-match cases are also execut
 is triggered; automatic update is disabled in the driver's own temporary INI.
 
 A passing state-machine test is not GUI acceptance. Actual driver execution is
-required in Windows CI. Additional write/flush failure injection and the
-commit boundary at the actual filesystem still require separate evidence; do not
-claim them from phase tests. The portable core and independent contract pins are
-unchanged; no application version or stable feed is advanced by this branch.
+required in Windows CI. The production file transaction is now isolated in query_log_export_file_win32.
+Its separate real-file test injects create/open/short-write/flush/sync/close/replace
+and cleanup failures, checks original bytes and a foreign staging sentinel, and
+uses event gates around the real filesystem commit boundary. The two gated races
+verify cancellation before CAS and rejection after COMMITTING. These tests are
+additional evidence, not a replacement for the actual GUI suite. The portable core and independent contract pins are
+unchanged; the in-place preview is 1.89; the stable feed is not advanced.

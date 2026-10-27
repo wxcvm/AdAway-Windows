@@ -25,7 +25,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.88
+      TAG: win11-webserver-v1.89
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -423,6 +423,8 @@ jobs:
         run: |
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_export_state_test.c -o query_log_export_state_test.exe
           ./query_log_export_state_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_export_file_win32.c query_log_export_file_win32_test.c -o query_log_export_file_win32_test.exe -municode
+          ./query_log_export_file_win32_test.exe "$(cygpath -m "$RUNNER_TEMP")"
 
       - name: Prepare resources (convert block placeholder images to webp)
         shell: bash
