@@ -1,6 +1,7 @@
 #ifndef ADAWAY_QUERY_LOG_EXPORT_TASK_H
 #define ADAWAY_QUERY_LOG_EXPORT_TASK_H
 #include "query_log_request.h"
+#include "query_log_navigation.h"
 #include <windows.h>
 #include <wchar.h>
 
@@ -22,7 +23,7 @@ struct qlx_export_progress {
     wchar_t stage[MAX_PATH];
 };
 static inline bool qlx_query_capture(struct qlx_query_snapshot *out,
-        const struct qlp_request *request, const struct qlp_page *page) {
+        const struct qlp_request *request, const struct qln_page *page) {
     if (!out || !request || !page || !request->filter.enabled ||
         !page->generation[0] || !page->anchor[0] || !page->query_key[0] ||
         page->total > page->retained_total || page->retained_total > QLP_MAX_TOTAL) return false;

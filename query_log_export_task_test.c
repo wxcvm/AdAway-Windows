@@ -4,7 +4,7 @@
 
 int main(void) {
     struct qlp_request live = {0};
-    struct qlp_page page = {0};
+    struct qln_page page = {0};
     live.offset=300;live.filter.enabled=true;strcpy(live.filter.query,"ads");
     strcpy(page.generation,"0123456789abcdef0123456789abcdef");
     strcpy(page.anchor,"123");
@@ -50,7 +50,7 @@ int main(void) {
     long_path[MAX_PATH]=0;
     assert(!qlx_task_confirm(&task,9,&worker.query,long_path));
     live.filter=worker.query.request.filter;
-    page= (struct qlp_page){0};
+    page= (struct qln_page){0};
     assert(!qlx_query_capture(&frozen,&live,&page));
     memcpy(page.generation,worker.query.request.generation,sizeof(page.generation));
     memcpy(page.anchor,worker.query.request.anchor,sizeof(page.anchor));
