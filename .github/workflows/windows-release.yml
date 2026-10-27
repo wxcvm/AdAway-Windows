@@ -423,6 +423,8 @@ jobs:
         run: |
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_export_state_test.c -o query_log_export_state_test.exe
           ./query_log_export_state_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_export_file_win32.c query_log_export_file_win32_test.c -o query_log_export_file_win32_test.exe -municode
+          ./query_log_export_file_win32_test.exe "$(cygpath -m "$RUNNER_TEMP")"
 
       - name: Prepare resources (convert block placeholder images to webp)
         shell: bash
