@@ -34,4 +34,4 @@ and cleanup failures, checks original bytes and a foreign staging sentinel, and
 uses event gates around the real filesystem commit boundary. The two gated races
 verify cancellation before CAS and rejection after COMMITTING. These tests are
 additional evidence, not a replacement for the actual GUI suite. The portable core and independent contract pins are
-unchanged; no application version or stable feed is advanced by this branch.
+unchanged; the in-place preview is 1.89; the stable feed is not advanced.

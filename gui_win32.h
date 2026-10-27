@@ -3,7 +3,7 @@
 #include <stdbool.h>
 
 /* Version marker - shown in the window title and the console startup log. */
-#define ADBLOCK_APP_VERSION "1.88"
+#define ADBLOCK_APP_VERSION "1.89"
 
 /*
  * Wide counterpart of ADBLOCK_APP_VERSION.
