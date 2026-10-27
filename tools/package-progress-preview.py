@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import re
+from preview_notes import render_notes
 root=Path(__file__).resolve().parent.parent
 output=root/'release-assets'
 output.mkdir(exist_ok=True)
@@ -38,6 +39,8 @@ for key,name in [('exe','adblock-webserver-setup.exe'),('zip','adblock-webserver
     manifest[key+'_url']=base+'/'+name
     manifest[key+'_sha256']='sha256:'+hashlib.sha256((output/name).read_bytes()).hexdigest()
 (output/'windows-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
+(output/'PREVIEW-NOTES.md').write_text(render_notes(
+    (root/'docs/preview-changes.md').read_text(encoding='utf-8'), version, os.environ),encoding='utf-8')
 (output/'SHA256SUMS.txt').write_text(''.join(
     f'{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n'
     for p in sorted(output.iterdir()) if p.is_file() and p.name!='SHA256SUMS.txt'),encoding='utf-8')

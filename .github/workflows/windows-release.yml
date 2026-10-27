@@ -17,15 +17,15 @@ permissions:
 jobs:
   build:
     concurrency:
-      group: windows-${{ (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && 'preview-publication' || github.run_id }}
-      cancel-in-progress: false
+      group: windows-${{ (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && 'preview-publication' || github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.89
+      TAG: win11-webserver-v1.90
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -52,6 +52,9 @@ jobs:
             exit 1
           fi
           echo "Original production signing credentials supplied; actual certificate verification remains mandatory."
+
+      - name: Validate generated preview notes
+        run: python tools/test_preview_notes.py
 
       - name: Set up MSYS2 (mingw64 + OpenSSL)
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
@@ -423,6 +426,8 @@ jobs:
         run: |
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_export_state_test.c -o query_log_export_state_test.exe
           ./query_log_export_state_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Ijni query_log_export_task_test.c dashboard_mongoose.o -o query_log_export_task_test.exe -lws2_32 -lbcrypt
+          ./query_log_export_task_test.exe
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_export_file_win32.c query_log_export_file_win32_test.c -o query_log_export_file_win32_test.exe -municode
           ./query_log_export_file_win32_test.exe "$(cygpath -m "$RUNNER_TEMP")"
 
