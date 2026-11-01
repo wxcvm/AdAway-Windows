@@ -1,0 +1,31 @@
+{
+  "repository": "wxcvm/AdAway",
+  "commit": "d710dd89ff9e77204ec5815394a8757fba033ce4",
+  "tree": "449772a1b279b037f023c21f7c972f8be80b13c8",
+  "files": {
+    "CMakeLists.txt": "feb455d8296122fe52dce0faabe697d082d959630195904faa1bec2a883a8bc9",
+    "build-openssl-host.sh": "46a1ada6e3e4552dbbf6894bc1c52504a9bc1c3c5920b03c7f001b7d5af0dee6",
+    "build.py": "312303fbf0c97b54c6e5990976188331147059bf035178a2060e8ea884b1de15",
+    "dependencies.lock.json": "2fc59becf789d3104640268a685ad8f644251b1253a94537264adc3ff27d4651",
+    "fetch.py": "b363195eab2d5f5772b93df671f9622a8fe2647bb1b5b77b647b3b7ec71f7e5c",
+    "src/backend_lws.c": "9d0568e4f9406f47915537f62b27a719de7b6cc85c09627f4c58b0019534e7cf",
+    "src/backend_mongoose.c": "f979c44f88f93afd06c2c91dd9899128790d24550404d6711978fbb3bec32253",
+    "src/certificates.c": "b6a14c0b022a11c772b237c4ba69e58e56b92f896b39cd86302ba8e733ce8f7a",
+    "src/fixture.c": "74ea2ce2a208084046151f9d6efa566de10cb8a618d44a9a33ac812909fbda37",
+    "src/main.c": "656cc93337a0389495eb96292978eea48ffc9d6009566e622373b96047880000",
+    "src/platform.h": "475161514d4ad2f1c98137dd31232489c2ba9d0749e4f409c2e042444b55b3ed",
+    "src/probe.c": "bb038b6dacd220a37b70cb8c4f0bc7a87b00941be80e38af86309eaa1ca657ed",
+    "src/spike.h": "036454a9599049749d5e41d7877d8bc63a38711b08b6314935e20c23ac8f854b",
+    "tests/android-runtime.py": "648f45d11d6b27de05a3972fb4f7177dea1af19729197996f97088cbbc20849b",
+    "tests/benchmark.py": "3f96fa3ba1bcae7f1b15a3c81e6c6aa72a8193d3868d806c1af027c02e4a8510",
+    "tests/compare.py": "bd19f179437a23115f23a4594114ca79fbd896b1ee37ada2568e9a8863bff60d",
+    "tests/compat/android/log.h": "9997768747cfd3656e3a59dc7b7f4042b5c7a278364ab1ecc3e50cc8d78c3492",
+    "tests/correctness.py": "873c96d29faf90ae41bd088d3d3926ded16e24b60f640db883bde8e08564f597",
+    "tests/native_probe.py": "2efcf5d01c9912b8f9bafc1188fe179f8f387c3c69bdeddf399595ca693d626e",
+    "tests/production_reference.py": "8616aab76a791ea3d6b53a7cf22539a1b1e2725d6df2f13721b967402f1d8092",
+    "tests/requirements.txt": "b6c8d86768d07e1dae4fb734c2e93997445a318d43290b307bfc1c800a0b1e52",
+    "tests/test_compare.py": "2089c5f26006b8f418415e4a58373fa22e09fdca46c9eb0abcc4a92894ee745a",
+    "tests/test_inputs.py": "e2d7236ebde17ccf47a60eb44a167e015467eabb56984c5728168481f6ee7138",
+    "tests/test_measurements.py": "972f05aa98307b9cb5160c7b5414411e45eb9aca4b930b7ffcb6164bd721d43f"
+  }
+}

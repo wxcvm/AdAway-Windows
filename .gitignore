@@ -19,3 +19,4 @@ wintun_test_dependency.dll
 transport-contract/
 tcp-contract/
 log-contract/
+.lws-spike/
