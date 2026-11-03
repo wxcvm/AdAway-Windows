@@ -33,7 +33,9 @@ function Wait-Stats([int]$Port) {
  do { try { return Invoke-RestMethod "http://127.0.0.1:$Port/internal-stats" -NoProxy -TimeoutSec 1 } catch { Start-Sleep -Milliseconds 100 } } while ([DateTime]::UtcNow -lt $deadline)
  throw "Server failed to answer on port $Port"
 }
-$root=Join-Path $env:RUNNER_TEMP ('adaway-restart-'+[Guid]::NewGuid().ToString('N'))
+# Exercise the actual installed-file path through Windows' wide APIs.
+# On the default US CI ANSI code page, narrow fopen() cannot represent 中文.
+$root=Join-Path $env:RUNNER_TEMP ('adaway-restart-中文-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
 Copy-Item (Join-Path (Split-Path (Resolve-Path $Executable)) '*') $root -Recurse
 $exe=Join-Path $root 'webserver.exe'; $ini=Join-Path $root 'webserver.ini'; $res=(Join-Path $root 'resources')+'\'

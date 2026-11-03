@@ -812,13 +812,20 @@ static void diag_sample(void) {
 /* Writes diagnose.txt (system + process + listener + log tail) so a user can
  * send one file instead of describing the problem. */
 static void diag_write_file(HWND hwnd) {
-    char path[MAX_PATH + 32];
-    if (get_module_path_utf8(path, MAX_PATH) <= 0) return;
-    char *slash = strrchr(path, '\\');
-    if (slash) *slash = '\0';
-    char out[MAX_PATH + 48];
-    snprintf(out, sizeof(out), "%s\\diagnose.txt", path);
-    FILE *f = fopen(out, "w");
+    // Use native wide paths: an installation beneath a Chinese user name is
+    // not necessarily representable by the active ANSI code page.
+    wchar_t module[MAX_PATH], out[MAX_PATH + 48];
+    DWORD length = GetModuleFileNameW(NULL, module, MAX_PATH);
+    if (!length || length >= MAX_PATH) {
+        MessageBoxW(hwnd, L"无法取得完整程序目录。", L"诊断", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    wchar_t *slash = wcsrchr(module, L'\\');
+    if (!slash) return;
+    *slash = 0;
+    int written = swprintf(out, sizeof(out) / sizeof(out[0]), L"%ls\\diagnose.txt", module);
+    if (written < 0 || (size_t)written >= sizeof(out) / sizeof(out[0])) return;
+    FILE *f = _wfopen(out, L"w");
     if (!f) {
         MessageBoxW(hwnd, L"无法写入 diagnose.txt（目录不可写）。", L"诊断", MB_OK | MB_ICONWARNING);
         return;
@@ -861,10 +868,17 @@ static void diag_write_file(HWND hwnd) {
                     g_sn->listeners[i].bound, g_sn->listeners[i].ipv6, g_sn->listeners[i].loopback);
     }
     const char *tails[2] = { "webserver.log", "crash.log" };
+    const wchar_t *wide_tails[2] = { L"webserver.log", L"crash.log" };
+    wchar_t resource_dir[MAX_PATH + 1];
+    bool resource_path_ok = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+            g_res, -1, resource_dir, MAX_PATH + 1) > 0;
     for (int t = 0; t < 2; t++) {
-        char lp[MAX_PATH + 48];
-        snprintf(lp, sizeof(lp), "%s\\%s", g_res, tails[t]);
-        FILE *l = fopen(lp, "r");
+        wchar_t lp[MAX_PATH + 48];
+        int count = resource_path_ok
+                ? swprintf(lp, sizeof(lp) / sizeof(lp[0]), L"%ls\\%ls", resource_dir, wide_tails[t])
+                : -1;
+        FILE *l = count >= 0 && (size_t)count < sizeof(lp) / sizeof(lp[0])
+                ? _wfopen(lp, L"r") : NULL;
         fprintf(f, "---- %s ----\n", tails[t]);
         if (l) {
             static char ring[80][300];
@@ -878,10 +892,8 @@ static void diag_write_file(HWND hwnd) {
         }
     }
     fclose(f);
-    wchar_t wout[MAX_PATH + 48];
-    MultiByteToWideChar(CP_ACP, 0, out, -1, wout, MAX_PATH + 48);
     MessageBoxW(hwnd, L"诊断信息已导出，点确定后将打开该文件。", L"诊断", MB_OK | MB_ICONINFORMATION);
-    ShellExecuteW(NULL, L"open", wout, NULL, NULL, SW_SHOWNORMAL);
+    ShellExecuteW(NULL, L"open", out, NULL, NULL, SW_SHOWNORMAL);
 }
 
 static void cert_refresh(bool force) {
@@ -1189,20 +1201,21 @@ static const struct policy_item g_policy[] = {
 #define POLICY_COUNT ((int)(sizeof(g_policy) / sizeof(g_policy[0])))
 
 /* ── settings persistence (webserver.ini next to the exe) ─────── */
-static void ini_file_path(char *out, size_t n) {
-    char exe[MAX_PATH];
-    if (get_module_path_utf8(exe, sizeof(exe)) <= 0) {
-        snprintf(out, n, "webserver.ini");
-        return;
-    }
-    char *slash = strrchr(exe, '\\');
-    if (slash) *slash = '\0';
-    snprintf(out, n, "%s\\webserver.ini", exe);
+static bool ini_file_path_wide(wchar_t *out, size_t cap) {
+    if (!out || cap < 16 || cap > MAXDWORD) return false;
+    DWORD length = GetModuleFileNameW(NULL, out, (DWORD)cap);
+    if (!length || length >= cap) return false;
+    wchar_t *slash = wcsrchr(out, L'\\');
+    if (!slash) return false;
+    const wchar_t suffix[] = L"\\webserver.ini";
+    if ((size_t)(slash - out) + sizeof(suffix) / sizeof(suffix[0]) > cap) return false;
+    wcscpy(slash, suffix);
+    return true;
 }
 
 static bool ini_save(int http_port, int https_port, bool bind_all) {
-    char path[1024];
-    ini_file_path(path, sizeof(path));
+    wchar_t path[MAX_PATH];
+    if (!ini_file_path_wide(path, MAX_PATH)) return false;
     /*
      * AUDIT W4-02 / V7: this used fopen(path, "w") and wrote back only these
      * four keys. Every other key was silently destroyed - stats_port and
@@ -1213,7 +1226,7 @@ static bool ini_save(int http_port, int https_port, bool bind_all) {
      */
     char *kept = NULL;
     size_t kept_len = 0;
-    FILE *r = fopen(path, "r");
+    FILE *r = _wfopen(path, L"r");
     if (r != NULL) {
         char line[512];
         while (fgets(line, sizeof(line), r) != NULL) {
@@ -1234,9 +1247,14 @@ static bool ini_save(int http_port, int https_port, bool bind_all) {
         if (ferror(r)) { free(kept); fclose(r); return false; }
         fclose(r);
     }
-    char staged[1100];
-    snprintf(staged, sizeof(staged), "%s.%lu.tmp", path, (unsigned long)GetCurrentProcessId());
-    FILE *f = fopen(staged, "w");
+    wchar_t staged[MAX_PATH + 32];
+    int staged_len = swprintf(staged, sizeof(staged) / sizeof(staged[0]),
+            L"%ls.%lu.tmp", path, (unsigned long)GetCurrentProcessId());
+    if (staged_len < 0 || (size_t)staged_len >= sizeof(staged) / sizeof(staged[0])) {
+        free(kept);
+        return false;
+    }
+    FILE *f = _wfopen(staged, L"w");
     if (f == NULL) { free(kept); return false; }
     fprintf(f, "http_port=%d\n", http_port);
     fprintf(f, "https_port=%d\n", https_port);
@@ -1253,17 +1271,18 @@ static bool ini_save(int http_port, int https_port, bool bind_all) {
     if (ok) ok = FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(f))) != 0;
     if (fclose(f) != 0) ok = false;
     free(kept);
-    if (ok) ok = MoveFileExA(staged, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-    if (!ok) DeleteFileA(staged);
+    if (ok) ok = MoveFileExW(staged, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    if (!ok) DeleteFileW(staged);
     return ok;
 }
 
 
 /* Reads theme= from webserver.ini; returns THEME_SYSTEM when absent. */
 static int ini_read_theme(void) {
-    char path[1024], line[256];
-    ini_file_path(path, sizeof(path));
-    FILE *f = fopen(path, "r");
+    wchar_t path[MAX_PATH];
+    char line[256];
+    if (!ini_file_path_wide(path, MAX_PATH)) return THEME_SYSTEM;
+    FILE *f = _wfopen(path, L"r");
     if (!f) return THEME_SYSTEM;
     int theme = THEME_SYSTEM;
     while (fgets(line, sizeof(line), f) != NULL) {
