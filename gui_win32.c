@@ -72,7 +72,9 @@ static int get_module_path_utf8(char *out, size_t cap) {
     wchar_t wide[MAX_PATH];
     if (out == NULL || cap == 0) return 0;
     out[0] = 0;
-    if (GetModuleFileNameW(NULL, wide, MAX_PATH) == 0) return 0;
+    DWORD length = GetModuleFileNameW(NULL, wide, MAX_PATH);
+    // A truncated result may not be NUL-terminated; never read beyond wide.
+    if (!length || length >= MAX_PATH) return 0;
     if (WideCharToMultiByte(CP_UTF8, 0, wide, -1, out, (int) cap, NULL, NULL) <= 0) {
         out[0] = 0;
         return 0;
