@@ -62,6 +62,7 @@
 #include "query_log_view.h"
 #include "query_log_order.h"
 #include "adguard_filter_import.h"
+#include "adguard_window_compare.h"
 #include "query_log_export.h"
 #include "query_log_export_state.h"
 #include "query_log_export_task.h"
@@ -1148,6 +1149,8 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_RANKING 1223
 #define IDC_QLOG_SOURCE 1224
 #define IDC_QLOG_IMPORT 1225
+#define IDC_QLOG_COMPARE 1226
+#define IDC_QLOG_WINDOW 1227
 #define IDC_QLOG_LIVE 1218
 #define IDC_QLOG_EXPORT 1219
 #define IDC_QLOG_UID 1220
@@ -1924,6 +1927,7 @@ static bool g_log_apps = false;
 static bool g_log_ranking = false; /* third subview in the same log center */
 static bool g_log_external = false; /* explicitly imported AdGuard snapshot */
 static struct ag_import *g_ag_import = NULL;
+static int g_log_compare_window = 1; /* 5 min / 1 hour / 24 hours */
 static bool g_log_rendering = false;
 static int g_log_shown = 0;
 static uint64_t g_log_render_hash;
@@ -2822,7 +2826,9 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_REQUESTS, 502, 24, 110, 28, L"BUTTON", L"✓ 请求记录", BS_PUSHBUTTON },
     { IDC_QLOG_APPS, 618, 24, 110, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
     { IDC_QLOG_RANKING, 734, 24, 110, 28, L"BUTTON", L"拦截排行", BS_PUSHBUTTON },
-    { IDC_QLOG_DIAG, 850, 24, 152, 28, L"BUTTON", L"AdGuard 诊断", BS_PUSHBUTTON },
+    { IDC_QLOG_COMPARE, 850, 24, 62, 28, L"BUTTON", L"对照", BS_PUSHBUTTON },
+    { IDC_QLOG_DIAG, 916, 24, 86, 28, L"BUTTON", L"诊断", BS_PUSHBUTTON },
+    { IDC_QLOG_WINDOW, 594, 56, 132, 27, L"BUTTON", L"时段：1小时", BS_PUSHBUTTON },
     { IDC_QLOG_SOURCE, 736, 56, 126, 27, L"BUTTON", L"来源：AdAway", BS_PUSHBUTTON },
     { IDC_QLOG_IMPORT, 870, 56, 132, 27, L"BUTTON", L"导入 AdGuard...", BS_PUSHBUTTON },
     { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
@@ -2994,6 +3000,7 @@ static void log_controls_refresh(HWND hwnd) {
         bool shared = id == IDC_QLOG_LIST || id == IDC_QLOG_DETAILS ||
             id == IDC_QLOG_APPS || id == IDC_QLOG_REQUESTS ||
             id == IDC_QLOG_RANKING || id == IDC_QLOG_DIAG ||
+            id == IDC_QLOG_COMPARE || id == IDC_QLOG_WINDOW ||
             id == IDC_QLOG_SOURCE || id == IDC_QLOG_IMPORT;
         bool visible = g_tab == 1 && (shared || (!imported && !g_log_ranking && !g_log_apps));
         ShowWindow(GetDlgItem(hwnd, id), visible ? SW_SHOW : SW_HIDE);
@@ -3005,6 +3012,11 @@ static void log_controls_refresh(HWND hwnd) {
     SetDlgItemTextW(hwnd, IDC_QLOG_SOURCE,
         imported ? L"来源：AdGuard" : L"来源：AdAway");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_SOURCE), !g_log_apps && g_ag_import != NULL);
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_COMPARE), g_ag_import && g_ag_import->count);
+    SetDlgItemTextW(hwnd, IDC_QLOG_WINDOW,
+        g_log_compare_window==0 ? L"时段：5分钟" :
+        g_log_compare_window==1 ? L"时段：1小时" : L"时段：24小时");
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_WINDOW), g_ag_import && g_ag_import->count);
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE),
@@ -3465,6 +3477,49 @@ static void log_list_refresh(HWND hwnd, bool force) {
     log_details_refresh(hwnd);
 }
 
+/* Only the presently loaded local HTTP history PAGE is compared with the
+ * independently imported AdGuard events. No host matching, global coverage
+ * percentage, or inferred request causality. The range is anchored to the
+ * newest imported event so old/offline exports remain interpretable. */
+static void log_compare_adguard(HWND hwnd) {
+    if (!g_ag_import || !g_ag_import->count) {
+        MessageBoxW(hwnd,L"请先手动导入包含有效事件的 AdGuard 过滤日志。",
+            L"观测窗口对照",MB_OK|MB_ICONINFORMATION);
+        return;
+    }
+    static const int64_t duration[]={300,3600,86400};
+    struct ag_window_compare window;
+    if(!ag_window_compare_begin(&window,g_ag_import,duration[g_log_compare_window]))return;
+    bool ready=g_sn && g_sn->qlog_ready && !g_sn->qlog_error &&
+        g_sn->qlog_revision==g_log_nav.revision;
+    if(ready) {
+        for(int i=0;i<g_sn->qlog_count;i++)
+            ag_window_compare_local(&window,g_sn->qlog[i].ts,g_sn->qlog[i].action);
+    }
+    wchar_t from[40],to[40],report[1600],local[240];
+    log_time(window.since,from,40,true);
+    log_time(window.until,to,40,true);
+    if(ready)
+        swprintf(local,240,L"本地当前页：窗口内 %u 条 Web 响应服务器记录（本地拦截 %u 条），"
+            L"本页载入 %d 条，偏移 %u。",
+            (unsigned)window.local,(unsigned)window.local_blocked,
+            g_sn->qlog_count,(unsigned)g_sn->qlog_page.offset);
+    else
+        wcscpy(local,L"本地当前页：数据未就绪或历史已过期，暂时无法对照。");
+    swprintf(report,1600,
+        L"观测窗口（系统本地时间）：%ls — %ls\r\n"
+        L"以本次导入的最新事件为截止，不是实时监测。\r\n\r\n"
+        L"AdGuard 已导入快照：窗口内 %u 条事件（拦截 %u 条、DNS %u 条）。\r\n"
+        L"%ls\r\n\r\n"
+        L"注意：两种来源统计彼此独立；本地仅计算当前已加载、可能筛选的分页，"
+        L"而不是全部本地历史或全机流量。\r\n"
+        L"同域名或时间相近也无法证明是同一请求，因此不计算跨来源拦截率、"
+        L"丢失率或请求延迟。若需检查其他本地页，可翻页后再次对照。",
+        from,to,(unsigned)window.imported,
+        (unsigned)window.imported_blocked,(unsigned)window.imported_dns,local);
+    MessageBoxW(hwnd,report,L"AdGuard ↔ AdAway · 观测窗口对照",MB_OK|MB_ICONINFORMATION);
+}
+
 /* A user-confirmed, read-only snapshot import. Parse then publish: failure
  * preserves the previous snapshot. No HTTP uploads, persistent raw exports,
  * private AdGuard storage, cookie/header logging or live-poll side effects. */
@@ -3858,7 +3913,7 @@ static void draw_activity_page(HDC hdc) {
     DrawTextW(hdc, L"日志中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, g_pal.muted);
-    RECT hint = {S(218), S(60), S(728), S(82)};
+    RECT hint = {S(218), S(60), S(578), S(82)};
     const wchar_t *log_hint = g_log_external && !g_log_apps ?
         L"AdGuard 离线快照 · 不自动同步" :
         (g_log_ranking ? L"AdAway 本地拦截排行 · 非全机 DNS" :
@@ -4643,6 +4698,12 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if(LOWORD(wp)==IDC_QLOG_EXPORT){log_export_start(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_DIAG){log_ingress_diagnostics(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_COMPARE){log_compare_adguard(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_WINDOW){
+            g_log_compare_window=(g_log_compare_window+1)%3;
+            log_controls_refresh(hwnd);
+            return 0;
+        }
         if(LOWORD(wp)==IDC_QLOG_IMPORT){log_import_adguard(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_SOURCE) {
             if(g_ag_import && !g_log_apps) {
