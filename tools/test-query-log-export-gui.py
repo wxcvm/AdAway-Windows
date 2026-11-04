@@ -504,6 +504,34 @@ def run(driver, exe, probe, evidence):
             imported=gui.child(gui.main,1215)
             wait(lambda:gui.send(imported,0x18B)==3,'AdGuard imported row count incorrect')
             assert gui.text(gui.child(gui.main,1224))=='来源：AdGuard'
+            window_button=gui.child(gui.main,1227)
+            assert gui.text(window_button)=='时段：1小时'
+            gui.click(gui.main,1227)
+            wait(lambda:gui.text(window_button)=='时段：24小时',
+                 '24-hour comparison window did not select')
+            gui.click(gui.main,1227)
+            wait(lambda:gui.text(window_button)=='时段：5分钟',
+                 'five-minute comparison window did not select')
+            gui.click(gui.main,1227)
+            wait(lambda:gui.text(window_button)=='时段：1小时',
+                 'one-hour comparison window did not select')
+            gui.click(gui.main,1226)
+            comparison=wait(lambda:gui.find('#32770',gui.main,
+                       title='AdGuard ↔ AdAway · 观测窗口对照'),
+                       'owned source-window comparison dialog missing')
+            controls=gui.messagebox_controls(comparison)
+            report=' '.join(label for _,kind,_,label in controls if kind=='Static')
+            assert ('AdGuard 已导入快照' in report and '3 条事件' in report
+                    and '本地当前页' in report and '不计算跨来源拦截率' in report), report
+            gui.capture('adguard-source-comparison',comparison)
+            ok=[hwnd for hwnd,kind,_,label in controls
+                if kind=='Button' and label.replace('&','').strip().casefold() in ('ok','确定')]
+            assert len(ok)==1, 'owned source-comparison OK missing or ambiguous'
+            gui.post(ok[0],0xF5)
+            wait(lambda:not gui.find('#32770',gui.main,
+                 title='AdGuard ↔ AdAway · 观测窗口对照'),
+                 'source-comparison dialog did not close')
+            record('adguard-user-selected-time-window-and-source-bounded-comparison')
             assert gui.send(imported,0x186,0,0)==0
             gui.send(gui.main,0x111,(1<<16)|1215,imported)
             details=gui.child(gui.main,1216)
