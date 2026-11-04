@@ -457,6 +457,10 @@ def run(driver, exe, probe, evidence):
             wait(lambda:not gui.find('#32770',gui.main,title='Open'),'AdGuard Open dialog did not close')
             success=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 离线导入完成'),
                          'AdGuard import result dialog missing')
+            gui.child(success,1)  # Wait for MessageBoxW's OK button to be created.
+            message=gui.child(success,0xFFFF)
+            assert '导入' in gui.text(message),'AdGuard import result message was blank'
+            gui.capture('adguard-import-result',success)
             gui.click(success,1)
             imported=gui.child(gui.main,1215)
             wait(lambda:gui.send(imported,0x18B)==3,'AdGuard imported row count incorrect')
