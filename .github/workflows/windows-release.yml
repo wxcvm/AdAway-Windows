@@ -1,13 +1,14 @@
 name: Windows 11 webserver release
 
 on:
-  # Main-branch merges run CI only; publishing requires manual dispatch.
+  # Main pushes run CI only. Official publishing requires manual dispatch or
+  # an explicit publish/win11-webserver-vX.Y ref matching the pinned TAG.
   workflow_dispatch:
   pull_request:
     branches: [ main, feat/dns-aaaa-diagnostics-v1, feat/dns-tcp-diagnostics-v1, feat/typed-rule-provenance-v1, feat/traffic-mode-foundation, feat/core-contract-v1, feat/rule-loader-atomic-v1 ]
   push:
     tags: ['progress-win-*']
-    branches: [ main, 'preview/release-*' ]
+    branches: [ main, 'preview/release-*', 'publish/win11-webserver-v*' ]
     # 本仓库只放 Windows 端文件（12 个在根目录），因此不再用 paths 过滤：
     # 原先三条路径是 AdAway 仓库的布局，迁出后永远匹配不到，会让代码改动的推送完全不触发 CI。
 
@@ -33,6 +34,16 @@ jobs:
       ADBLOCK_INPLACE_PREVIEW: ${{ (startsWith(github.ref, 'refs/tags/progress-win-') || startsWith(github.ref, 'refs/heads/preview/release-')) && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Verify explicitly requested official release ref
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/publish/win11-webserver-v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_NAME" != "publish/$TAG" ]; then
+            echo "::error::release branch must be publish/$TAG; refusing mismatched publication"
+            exit 1
+          fi
+          echo "Approved release ref matches pinned $TAG"
 
       # Fail within seconds on preview refs if the original signing identity
       # is missing. Previously a preview spent minutes compiling OpenSSL and
@@ -1035,8 +1046,10 @@ jobs:
             exit 0
           fi
           if [ -z "$SIGN_CERT_B64" ] || [ -z "$SIGN_CERT_PASS" ]; then
-            if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
-               [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            if { [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] &&
+               [ "$GITHUB_REF" = "refs/heads/main" ]; } ||
+             { [ "$GITHUB_EVENT_NAME" = "push" ] &&
+               [[ "$GITHUB_REF" == refs/heads/publish/win11-webserver-v* ]]; }; then
               echo "::error::Signed Windows release requires original production PFX and password"
               exit 1
             fi
@@ -1268,7 +1281,7 @@ jobs:
           openssl x509 -in "$pem" -noout -fingerprint -sha256
 
       - name: Verify original production signature and sign official installer
-        if: env.WINDOWS_UNSIGNED_RELEASE != '1' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        if: env.WINDOWS_UNSIGNED_RELEASE != '1' && ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/publish/win11-webserver-v')))
         shell: msys2 {0}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1318,7 +1331,7 @@ jobs:
           retention-days: 14
 
       - name: Publish Windows Release (ZIP and installer; unsigned when configured)
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/publish/win11-webserver-v'))
         shell: bash
         run: |
           : "${TAG:?TAG env var missing}"
@@ -1335,6 +1348,7 @@ jobs:
           VERSION="${TAG#win11-webserver-v}"
           gh release create "$TAG" adblock-webserver-win64.zip \
             dist-installer/adblock-webserver-setup.exe SHA256SUMS.txt --repo "${{ github.repository }}" \
+            --target "$GITHUB_SHA" \
             --latest \
             --title "ADBlock Windows v${VERSION} (x64 · 未签名)" \
             --notes "Windows ${VERSION} 正式构建（x64 · 未签名）。
@@ -1357,7 +1371,7 @@ jobs:
       # private, so its release API cannot be read without a token).
       # Skipped silently when DOH_ECH_TOKEN is not configured.
       - name: Publish zip to the public update feed (wxcvm/Doh-ECH)
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/publish/win11-webserver-v'))
         continue-on-error: true
         shell: bash
         env:
@@ -1380,7 +1394,7 @@ jobs:
       # The in-app updater reads this fixed-tag manifest instead of the REST API
       # (60 requests/hour per IP) - see UPDATE_MANIFEST_PATH in update_win32.c.
       - name: Publish windows-manifest.json (fixed tag win11-latest)
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/publish/win11-webserver-v'))
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1481,7 +1495,7 @@ jobs:
       # the release itself is already published at this point, so a failure here
       # must not turn a good release red.
       - name: Prune old Windows releases (keep newest 5)
-        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/publish/win11-webserver-v'))
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
