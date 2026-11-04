@@ -1,21 +1,46 @@
+# Checked-out upstream contracts and generated source
 jni/
 shared-contract/
 dns-contract/
-dns-loopback-probe.exe
-dns-loopback-results.json
-.build-core/
-__pycache__/
-app/src/main/assets/
-.adblock-upstream-manifest.json
-.upstream/
-dist/
-app_res.o
-app_build.rc
-app.ico
-*_test.exe
-wintun.dll
-wintun_test_dependency.dll
-
 transport-contract/
 tcp-contract/
 log-contract/
+.upstream/
+.adblock-upstream-manifest.json
+.build-core/
+app/src/main/assets/
+
+# Local build outputs (never ship or commit cached OpenSSL binaries)
+dist/
+dist-installer/
+.openssl-build/
+.gui-test/
+app_res.o
+app_build.rc
+app.ico
+*.o
+/*_test.exe
+/*.exe
+wintun.dll
+wintun_test_dependency.dll
+
+# Generated CI artifacts and locally exported distribution metadata
+/dns-loopback-results.json
+/query-log-server-results.json
+/save-restart-results.json
+/adblock-webserver-win64.zip
+/SHA256SUMS.txt
+/windows-manifest.json
+
+# Runtime files from testing directly in the repository root.
+# Preserve these user data files locally; no deletion is performed.
+/resources/
+/webserver.ini
+/webserver.log
+/webserver.log.1
+/crash.log
+/diagnose.txt
+
+# Local Python caches
+__pycache__/
+*.pyc
