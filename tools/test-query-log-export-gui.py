@@ -108,8 +108,10 @@ class Gui:
 
     def child(self, parent, control):
         self.owned(parent)
-        found=u.GetDlgItem(parent, control)
-        if not found:
+        def locate():
+            found=u.GetDlgItem(parent, control)
+            if found and u.IsWindowVisible(found):
+                return self.owned(found)
             matches=[]
             @CALLBACK
             def visit(hwnd,_):
@@ -118,9 +120,11 @@ class Gui:
                     matches.append(hwnd)
                 return True
             u.EnumChildWindows(parent,visit,0)
-            assert len(matches)==1, f'owned control {control} missing or ambiguous'
-            found=matches[0]
-        return self.owned(found)
+            assert len(matches)<=1, f'owned control {control} is ambiguous'
+            return self.owned(matches[0]) if matches else None
+        # MessageBoxW can become visible a moment before Windows creates its
+        # child controls. Wait for the owned button instead of racing creation.
+        return wait(locate,f'owned control {control} was not created',5)
 
     def activate(self, window):
         self.owned(window)
