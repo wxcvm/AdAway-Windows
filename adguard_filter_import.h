@@ -38,6 +38,43 @@ struct ag_import {
     struct ag_rank top[AG_IMPORT_TOP];
     size_t top_count;
 };
+/* Side-by-side source totals in a user-selected UTC time window, anchored
+ * to the newest imported AdGuard event. Local counts are supplied ONLY from
+ * the currently available AdAway HTTP history page, never from global stats.
+ * There is no shared event identity: no inferred matches, rate or latency. */
+struct ag_source_compare {
+    int64_t start_utc, end_utc;
+    size_t adguard_events, adguard_blocked, local_events, local_blocked;
+    bool has_import;
+};
+static inline struct ag_source_compare ag_compare_window(
+    const struct ag_import *snapshot, int64_t window_seconds) {
+    struct ag_source_compare report={0};
+    if (!snapshot || !snapshot->count || window_seconds<=0) return report;
+    int64_t latest=snapshot->events[0].unix_seconds;
+    for(size_t i=1;i<snapshot->count;i++)
+        if(snapshot->events[i].unix_seconds>latest)
+            latest=snapshot->events[i].unix_seconds;
+    report.start_utc=latest-window_seconds;
+    report.end_utc=latest;
+    report.has_import=true;
+    for(size_t i=0;i<snapshot->count;i++) {
+        const struct ag_event *event=&snapshot->events[i];
+        if(event->unix_seconds>report.start_utc && event->unix_seconds<=report.end_utc) {
+            report.adguard_events++;
+            if(event->log_type==0)report.adguard_blocked++;
+        }
+    }
+    return report;
+}
+static inline void ag_compare_local_page_row(
+    struct ag_source_compare *report, int64_t unix_seconds, int action) {
+    if(!report || !report->has_import) return;
+    if(unix_seconds>report->start_utc && unix_seconds<=report->end_utc) {
+        report->local_events++;
+        if(action==1)report->local_blocked++;
+    }
+}
 enum ag_import_error {
     AG_IMPORT_OK=0, AG_IMPORT_INVALID, AG_IMPORT_TOO_LARGE,
     AG_IMPORT_UNSUPPORTED, AG_IMPORT_NO_MEMORY
