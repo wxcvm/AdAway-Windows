@@ -1131,6 +1131,7 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_LIST 1215
 #define IDC_QLOG_DETAILS 1216
 #define IDC_QLOG_APPS 1217
+#define IDC_QLOG_REQUESTS 1222
 #define IDC_QLOG_LIVE 1218
 #define IDC_QLOG_EXPORT 1219
 #define IDC_QLOG_UID 1220
@@ -2565,7 +2566,7 @@ static void draw_sidebar(HDC hdc) {
         SetTextColor(hdc, active ? RGB(255, 255, 255) : g_pal.nav_text);
         {
             const wchar_t *label = t == 0 ? L"统计"
-                                 : (t == 1 ? L"应用日志"
+                                 : (t == 1 ? L"日志中心"
                                  : (t == 2 ? L"设置"
                                  : (t == 3 ? L"拦截排行" : (t == 4 ? L"订阅" : L"网络中心"))));
             TextOutW(hdc, S(70), S(ny + 10), label, (int) wcslen(label));
@@ -2768,8 +2769,9 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_FILTER, 710, 90, 158, 200, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
     { IDC_QLOG_LIST, 218, 132, 784, 290, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
     { IDC_QLOG_DETAILS, 218, 466, 784, 96, L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL },
-    { IDC_QLOG_DIAG, 686, 24, 160, 28, L"BUTTON", L"日志对接诊断", BS_PUSHBUTTON },
-    { IDC_QLOG_APPS, 856, 24, 146, 28, L"BUTTON", L"查看应用统计", BS_PUSHBUTTON },
+    { IDC_QLOG_REQUESTS, 504, 24, 150, 28, L"BUTTON", L"✓ 请求记录", BS_PUSHBUTTON },
+    { IDC_QLOG_APPS, 662, 24, 150, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
+    { IDC_QLOG_DIAG, 820, 24, 182, 28, L"BUTTON", L"AdGuard 对接诊断", BS_PUSHBUTTON },
     { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
 };
 #define CL_LOG ((int)(sizeof(g_loglayout) / sizeof(g_loglayout[0])))
@@ -2935,11 +2937,13 @@ static void log_controls_refresh(HWND hwnd) {
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_NEXT), current && g_sn->qlog_page.has_more);
     for (int i = 0; i < CL_LOG; ++i) {
         int id = g_loglayout[i].id;
-        bool visible = g_tab == 1 && (!g_log_apps || id == IDC_QLOG_LIST ||
-            id == IDC_QLOG_DETAILS || id == IDC_QLOG_APPS);
+        bool shared = id == IDC_QLOG_LIST || id == IDC_QLOG_DETAILS ||
+            id == IDC_QLOG_APPS || id == IDC_QLOG_REQUESTS || id == IDC_QLOG_DIAG;
+        bool visible = g_tab == 1 && (!g_log_apps || shared);
         ShowWindow(GetDlgItem(hwnd, id), visible ? SW_SHOW : SW_HIDE);
     }
-    SetDlgItemTextW(hwnd, IDC_QLOG_APPS, g_log_apps ? L"返回请求日志" : L"查看应用统计");
+    SetDlgItemTextW(hwnd, IDC_QLOG_REQUESTS, g_log_apps ? L"请求记录" : L"✓ 请求记录");
+    SetDlgItemTextW(hwnd, IDC_QLOG_APPS, g_log_apps ? L"✓ 应用活动" : L"应用活动");
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE), g_sn && g_sn->qlog_ready && !g_sn->qlog_error);
@@ -3608,8 +3612,8 @@ static void draw_activity_page(HDC hdc) {
     HFONT old = (HFONT)SelectObject(hdc, title_font);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, g_pal.text);
-    RECT title = {S(218), S(24), S(838), S(54)};
-    DrawTextW(hdc, g_log_apps ? L"应用活动" : L"请求日志", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
+    RECT title = {S(218), S(24), S(498), S(54)};
+    DrawTextW(hdc, L"日志中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, g_pal.muted);
     RECT hint = {S(218), S(60), S(1002), S(82)};
@@ -4384,12 +4388,17 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
-        if (LOWORD(wp) == IDC_QLOG_APPS) {
-            SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, LB_SETCURSEL, (WPARAM)-1, 0);
-            g_log_apps = !g_log_apps;
-            log_controls_refresh(hwnd);
-            log_details_refresh(hwnd);
-            InvalidateRect(hwnd, NULL, FALSE);
+        if (LOWORD(wp) == IDC_QLOG_REQUESTS || LOWORD(wp) == IDC_QLOG_APPS) {
+            bool show_apps = LOWORD(wp) == IDC_QLOG_APPS;
+            if (g_log_apps != show_apps) {
+                SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, LB_SETCURSEL, (WPARAM)-1, 0);
+                g_log_apps = show_apps;
+                // Both subviews share the existing log control and details
+                // panel, not the network request denominator or search state.
+                log_controls_refresh(hwnd);
+                log_details_refresh(hwnd);
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
             return 0;
         }
         if (LOWORD(wp) == IDC_QLOG_LIVE) {
