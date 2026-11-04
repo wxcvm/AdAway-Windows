@@ -3051,8 +3051,9 @@ static void log_list_refresh(HWND hwnd, bool force) {
     bool same_view = g_log_render_view_seen && qlv_same_view(&g_log_render_view, &view);
     // Rebuild even when two distinct pages happen to contain identical rows.
     hash = log_hash_bytes(hash, &view, sizeof(view));
-    hash = log_hash_bytes(hash, &g_log_filter, sizeof(g_log_filter));
-    hash = log_hash_bytes(hash, g_log_search, wcslen(g_log_search) * sizeof(wchar_t));
+    // The search text and selector are only drafts until the server returns
+    // their new page. Redrawing the old list on each keystroke otherwise
+    // loses selection and scroll position before any result has changed.
     int count = g_log_apps ? g_sn->app_count : g_sn->qlog_count;
     hash = log_hash_bytes(hash, &count, sizeof(count));
     hash = log_hash_bytes(hash, g_log_apps ? (const void *)g_sn->apps : (const void *)g_sn->qlog,
