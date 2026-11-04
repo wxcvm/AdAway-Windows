@@ -521,6 +521,51 @@ def run(driver, exe, probe, evidence):
             gui.send(gui.main,0x111,(1<<16)|1215,imported)
             wait(lambda:'2 条' in gui.text(details),'AdGuard DNS and TCP block events were lost')
             gui.capture('imported-adguard-rank')
+            # Selectable, source-separated UTC comparison; never assert that
+            # matching hosts imply matched or missed end-user requests.
+            window=gui.child(gui.main,1226)
+            assert gui.send(window,0x147)==1  # CB_GETCURSEL: one hour default
+            gui.send(window,0x14E,0,0)  # CB_SETCURSEL: fifteen minutes
+            gui.click(gui.main,1221)
+            comparison=wait(lambda:gui.find('#32770',gui.main,
+                title='AdGuard ↔ 本地请求日志 · 对接诊断'),
+                'owned source-comparison dialog missing')
+            labels=[line for _,cls,_,line in gui.messagebox_controls(comparison) if cls=='Static']
+            assert any('独立来源观测对比' in line and '15 分钟' in line and
+                'AdGuard：3 条事件' in line and '本地仅' not in line and
+                '本地历史页' in line and '全机拦截率' in line for line in labels), labels
+            assert not any('SYNTHETIC-NOT-FOR-UI' in line for line in labels)
+            gui.capture('adguard-source-window-comparison',comparison)
+            gui.click_text(comparison,'ok')
+            wait(lambda:not gui.find('#32770',gui.main,
+                title='AdGuard ↔ 本地请求日志 · 对接诊断'),
+                'source-comparison dialog did not close')
+            record('time-window-source-separation-and-current-local-page-caveat')
+            # Malformed imports must not destroy the prior snapshot.
+            malformed=gui.root/'invalid-v2.json'
+            malformed.write_text(json.dumps(dict(ProtocolVersion='2',LogRecords=[])),encoding='utf8')
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),'invalid AdGuard chooser missing')
+            gui.choose(chooser,malformed,initial_values=('',))
+            rejected=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 导入未完成'),
+                          'unsupported protocol not rejected')
+            assert any('ProtocolVersion 1' in line for _,cls,_,line in
+                gui.messagebox_controls(rejected) if cls=='Static')
+            gui.click_text(rejected,'ok')
+            wait(lambda:gui.send(imported,0x18B)==1,
+                 'failed import unexpectedly erased previous AdGuard rank')
+            # An explicit empty valid export clears the old in-memory snapshot.
+            empty_path=gui.root/'empty-adguard.json'
+            empty_path.write_text(json.dumps(dict(ProtocolVersion='1',LogRecords=[])),encoding='utf8')
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),'empty AdGuard chooser missing')
+            gui.choose(chooser,empty_path,initial_values=('',))
+            result=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 离线导入完成'),
+                        'empty import result missing')
+            gui.confirm_messagebox(result)
+            wait(lambda:gui.send(imported,0x18B)==0,'empty import did not clear old rows')
+            assert gui.text(gui.child(gui.main,1224))=='来源：AdGuard'
+            record('rejected-import-preserves-old-snapshot-and-empty-import-clears')
             gui.click(gui.main,1224)
             assert gui.text(gui.child(gui.main,1224))=='来源：AdAway'
             wait(lambda:gui.send(imported,0x18B)==2,
