@@ -521,6 +521,56 @@ def run(driver, exe, probe, evidence):
             gui.send(gui.main,0x111,(1<<16)|1215,imported)
             wait(lambda:'2 条' in gui.text(details),'AdGuard DNS and TCP block events were lost')
             gui.capture('imported-adguard-rank')
+            # Cancel, malformed JSON and a subsequent valid re-import must be
+            # transactional: neither failure nor cancellation clears old data.
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),
+                         'AdGuard repeat Open dialog missing')
+            gui.click(chooser,2)
+            wait(lambda:not gui.find('#32770',gui.main,title='Open'),
+                 'AdGuard cancelled Open dialog did not close')
+            assert gui.send(imported,0x18B)==1
+            assert gui.text(gui.child(gui.main,1224))=='来源：AdGuard'
+            bad=gui.root/'adguard-malformed.json'
+            bad.write_text('{"ProtocolVersion":"1","LogRecords":[{}]}',encoding='utf8')
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),
+                         'AdGuard invalid input Open dialog missing')
+            gui.choose(chooser,bad,initial_values=('',))
+            failure=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 导入未完成'),
+                         'invalid import did not show a native failure dialog')
+            assert any('JSON' in label for _,kind,_,label in gui.messagebox_controls(failure)
+                       if kind=='Static')
+            gui.click_text(failure,'ok')
+            wait(lambda:not gui.find('#32770',gui.main,title='AdGuard 导入未完成'),
+                 'invalid import result dialog did not close')
+            assert gui.send(imported,0x18B)==1
+            gui.send(imported,0x186,0,0)
+            gui.send(gui.main,0x111,(1<<16)|1215,imported)
+            assert 'blocked.example.test' in gui.text(details)
+            record('adguard-cancel-and-malformed-import-preserve-existing-snapshot')
+
+            newer=dict(ProtocolVersion='1',LogRecords=[
+                dict(RequestArgId='10000000-0000-0000-0000-000000000099',
+                     Time='2026-11-04T10:11:01.000+08:00',
+                     Host='new.example.test',ProtocolType='Dns',
+                     LogRecordType=0,ProcessId=0,FiredFilterId=1,StatusCode=0)])
+            replacement=gui.root/'adguard-new-snapshot.json'
+            replacement.write_text(json.dumps(newer),encoding='utf8')
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),
+                         'AdGuard repeat import Open dialog missing')
+            gui.choose(chooser,replacement,initial_values=('',))
+            success=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 离线导入完成'),
+                         'AdGuard replacement import result dialog missing')
+            gui.confirm_messagebox(success)
+            wait(lambda:gui.send(imported,0x18B)==1,
+                 'successful re-import did not replace prior ranking')
+            gui.send(imported,0x186,0,0)
+            gui.send(gui.main,0x111,(1<<16)|1215,imported)
+            assert 'new.example.test' in gui.text(details)
+            assert 'blocked.example.test' not in gui.text(details)
+            record('adguard-valid-reimport-replaces-prior-memory-only-snapshot')
             gui.click(gui.main,1224)
             assert gui.text(gui.child(gui.main,1224))=='来源：AdAway'
             wait(lambda:gui.send(imported,0x18B)==2,
