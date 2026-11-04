@@ -584,12 +584,17 @@ def run(driver, exe, probe, evidence):
                          'AdGuard replacement import result dialog missing')
             gui.confirm_messagebox(success)
             wait(lambda:gui.send(imported,0x18B)==1,
-                 'successful re-import did not replace prior ranking')
+                 'successful re-import did not replace prior request rows')
             gui.send(imported,0x186,0,0)
             gui.send(gui.main,0x111,(1<<16)|1215,imported)
             assert 'new.example.test' in gui.text(details)
             assert 'blocked.example.test' not in gui.text(details)
             record('adguard-valid-reimport-replaces-prior-memory-only-snapshot')
+            # A successful import intentionally resets to Requests; explicitly
+            # return to Ranking before asserting independent source rankings.
+            gui.click(gui.main,1223)
+            wait(lambda:gui.send(imported,0x18B)==1,
+                 'new AdGuard snapshot did not populate its independent ranking')
             gui.click(gui.main,1224)
             assert gui.text(gui.child(gui.main,1224))=='来源：AdAway'
             wait(lambda:gui.send(imported,0x18B)==2,
