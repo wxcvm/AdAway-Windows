@@ -263,6 +263,39 @@ static inline int ag_cmp_rank(const void *a,const void *b) {
     if(x->count!=y->count)return x->count>y->count?-1:1;
     return strcmp(x->host,y->host);
 }
+/* Compare independent observations within a UTC interval ending at the
+ * latest imported event. Local request samples must be supplied explicitly:
+ * a displayed page is not the complete retained Web history. */
+struct ag_window_counts {
+    size_t imported, imported_blocked, imported_dns;
+    size_t local_rows, local_blocked;
+};
+static inline bool ag_window_contains(uint64_t when, uint64_t anchor,
+                                       uint64_t span_us) {
+    return span_us && when <= anchor && anchor - when < span_us;
+}
+static inline void ag_window_count_imported(const struct ag_import *snapshot,
+                                             uint64_t anchor, uint64_t span_us,
+                                             struct ag_window_counts *counts) {
+    if (!snapshot || !counts) return;
+    for (size_t i=0; i<snapshot->count; i++) {
+        const struct ag_event *event=&snapshot->events[i];
+        if (!ag_window_contains(event->timestamp_us,anchor,span_us)) continue;
+        counts->imported++;
+        if (event->log_type == 0) counts->imported_blocked++;
+        if (strcmp(event->protocol,"Dns")==0) counts->imported_dns++;
+    }
+}
+static inline void ag_window_count_local(int64_t unix_seconds, int action,
+                                          uint64_t anchor, uint64_t span_us,
+                                          struct ag_window_counts *counts) {
+    if (!counts || unix_seconds < 0 ||
+        (uint64_t)unix_seconds > UINT64_MAX/1000000u) return;
+    if (!ag_window_contains((uint64_t)unix_seconds*1000000u,anchor,span_us)) return;
+    counts->local_rows++;
+    if (action == 1) counts->local_blocked++;
+}
+
 static inline enum ag_import_error ag_import_parse(
     const char *text, size_t length, struct ag_import **output) {
     if(!output)return AG_IMPORT_INVALID;
@@ -302,7 +335,6 @@ static inline enum ag_import_error ag_import_parse(
         if(item.log_type==0)result->blocked++;
         if(strcmp(item.protocol,"Dns")==0)result->dns_events++;
     }
-    if(!result->scanned){ag_import_free(result);return AG_IMPORT_INVALID;}
     struct ag_rank *all=calloc(result->count?result->count:1,sizeof(*all));
     if(!all){ag_import_free(result);return AG_IMPORT_NO_MEMORY;}
     size_t ranks=0;
