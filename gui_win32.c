@@ -58,6 +58,7 @@
 #include "dashboard_response.h"
 #include "query_log_navigation.h"
 #include "query_log_filter.h"
+#include "query_log_view.h"
 #include "query_log_export.h"
 #include "query_log_export_state.h"
 #include "query_log_export_task.h"
@@ -1898,6 +1899,9 @@ static bool g_log_apps = false;
 static bool g_log_rendering = false;
 static int g_log_shown = 0;
 static uint64_t g_log_render_hash;
+static struct qlv_view g_log_render_view;
+static bool g_log_render_view_seen;
+static bool g_log_invalid_draft;
 static wchar_t g_log_search[512];
 static int g_log_filter = -1;
 static wchar_t g_log_uid[24];
@@ -2705,6 +2709,8 @@ static void log_filter_schedule(HWND hwnd) {
     pthread_mutex_lock(&g_snap_mutex);
     g_log_query_pending=true;g_log_nav.revision++;
     pthread_mutex_unlock(&g_snap_mutex);
+    // The draft is being edited again: show pending until validation completes.
+    g_log_invalid_draft=false;
     if(g_sn)g_sn->qlog_error=3;
     log_controls_refresh(hwnd);
     SetTimer(hwnd,5,300,NULL);
@@ -2724,12 +2730,16 @@ static void log_filter_commit(HWND hwnd) {
         else {filter.has_uid=true;filter.uid=(int)value;}
     }
     char key[65];if(valid)valid=qlp_filter_key(&filter,key);
+    // Keep invalid-draft feedback independent of background poll snapshots.
+    // Otherwise a poll in the pending state overwrites error 5 with error 3.
+    g_log_invalid_draft=!valid;
     pthread_mutex_lock(&g_snap_mutex);
     if(valid){g_log_nav.request.filter=filter;qln_refresh(&g_log_nav);g_log_pause_after_query=true;g_log_query_pending=false;}
     /* Invalid drafts keep reads paused; no truncated query is ever submitted. */
     pthread_mutex_unlock(&g_snap_mutex);
     if(g_sn)g_sn->qlog_error=valid?3:5;
     if(valid&&g_poll_wake)SetEvent(g_poll_wake);
+    log_controls_refresh(hwnd);
     InvalidateRect(hwnd,NULL,FALSE);
 }
 
@@ -3031,15 +3041,27 @@ static void log_list_refresh(HWND hwnd, bool force) {
     HWND list = GetDlgItem(hwnd, IDC_QLOG_LIST);
     if (!list || !g_sn || g_tab != 1) return;
     uint64_t hash = UINT64_C(14695981039346656037);
-    hash = log_hash_bytes(hash, &g_log_apps, sizeof(g_log_apps));
-    hash = log_hash_bytes(hash, &g_log_filter, sizeof(g_log_filter));
-    hash = log_hash_bytes(hash, g_log_search, wcslen(g_log_search) * sizeof(wchar_t));
+    struct qlv_view view = {0};
+    view.apps = g_log_apps;
+    if (!g_log_apps) {
+        view.offset = g_sn->qlog_page.offset;
+        memcpy(view.generation, g_sn->qlog_page.generation, sizeof(view.generation));
+        memcpy(view.query_key, g_sn->qlog_page.query_key, sizeof(view.query_key));
+    }
+    bool same_view = g_log_render_view_seen && qlv_same_view(&g_log_render_view, &view);
+    // Rebuild even when two distinct pages happen to contain identical rows.
+    hash = log_hash_bytes(hash, &view, sizeof(view));
+    // The search text and selector are only drafts until the server returns
+    // their new page. Redrawing the old list on each keystroke otherwise
+    // loses selection and scroll position before any result has changed.
     int count = g_log_apps ? g_sn->app_count : g_sn->qlog_count;
     hash = log_hash_bytes(hash, &count, sizeof(count));
     hash = log_hash_bytes(hash, g_log_apps ? (const void *)g_sn->apps : (const void *)g_sn->qlog,
         (size_t)count * (g_log_apps ? sizeof(struct app_row) : sizeof(struct qlog_row)));
     if (!force && hash == g_log_render_hash) return;
     g_log_render_hash = hash;
+    g_log_render_view = view;
+    g_log_render_view_seen = true;
     struct qlog_row selected_log = {0};
     int selected_pid = -2;
     LRESULT selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
@@ -3079,7 +3101,10 @@ static void log_list_refresh(HWND hwnd, bool force) {
             preserve = false;
         }
     }
-    if (force && top != LB_ERR && top < g_log_shown) SendMessageW(list, LB_SETTOPINDEX, (WPARAM)top, 0);
+    // Repainting a live page must not throw the user's reading position away.
+    // A changed page/filter is a new view and intentionally starts at the top.
+    if ((force || same_view) && top != LB_ERR && top < g_log_shown)
+        SendMessageW(list, LB_SETTOPINDEX, (WPARAM)top, 0);
     SendMessageW(list, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(list, NULL, TRUE);
     g_log_rendering = false;
@@ -3479,6 +3504,9 @@ static void draw_activity_page(HDC hdc) {
     wchar_t count[240];
     if (g_log_apps) {
         swprintf(count, 240, L"已观测 %d 个进程；未知 PID 不推断为系统或当前应用。", sn ? sn->app_count : 0);
+    } else if (g_log_invalid_draft) {
+        swprintf(count, 240, L"筛选输入无效：搜索最多191字节 UTF-8，PID须为 -1 或非负整数；已保留旧记录。");
+        SetTextColor(hdc, C_RED);
     } else if (!sn || (!sn->has_data && !sn->qlog_ready)) {
         swprintf(count, 240, L"统计不可用；请检查响应服务器是否正在运行。这里不会把未采集当作零拦截。");
     } else if (sn->qlog_error) {
