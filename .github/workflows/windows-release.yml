@@ -359,6 +359,12 @@ jobs:
           print('wide-printf specifiers OK')
           PYEOF
 
+      - name: Test full Windows install-directory identity
+        shell: msys2 {0}
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -I. update_install_path_test.c -o update_install_path_test.exe
+          ./update_install_path_test.exe
+
       - name: Test opt-in preview and stable update manifest selection
         shell: msys2 {0}
         run: |

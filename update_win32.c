@@ -89,6 +89,7 @@ int update_state(void) {
 #define UPDATE_MODE_INSTALLER 1
 #define UPDATE_MODE_PORTABLE 2
 #include "update_package_policy.h"
+#include "update_install_path.h"
 #include "update_portable_script.h"
 
 /* Defined further down (the proxy/ini helpers); declared here because the mode
@@ -263,11 +264,13 @@ static int https_probe_system(void) {
 /* webserver.ini next to the exe (the dashboard writes it). */
 static int ini_path(wchar_t *out, size_t cap) {
     wchar_t exe[MAX_PATH];
-    if (!GetModuleFileNameW(NULL, exe, MAX_PATH)) return 0;
+    DWORD length = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (!length || length >= MAX_PATH) return 0;
     wchar_t *slash = wcsrchr(exe, L'\\');
-    if (slash != NULL) *slash = 0;
-    swprintf(out, cap, L"%ls\\webserver.ini", exe);
-    return 1;
+    if (!slash) return 0;
+    *slash = 0;
+    int written = swprintf(out, cap, L"%ls\\webserver.ini", exe);
+    return written > 0 && (size_t)written < cap;
 }
 
 /* [settings] proxy=... from webserver.ini ("" when unset). */
@@ -547,33 +550,19 @@ static int exe_dir(wchar_t *out, size_t cap) {
     wchar_t exe[MAX_PATH];
     if (cap == 0) return 0;
     out[0] = 0;
-    if (!GetModuleFileNameW(NULL, exe, MAX_PATH)) return 0;
+    DWORD length = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (!length || length >= MAX_PATH) return 0;
     wchar_t *slash = wcsrchr(exe, L'\\');
-    if (slash) *slash = 0;
+    if (!slash) return 0;
+    *slash = 0;
+    // A truncated directory must not accidentally match an installed path.
+    if (wcslen(exe) >= cap) return 0;
     wcsncpy(out, exe, cap - 1);
     out[cap - 1] = 0;
     return out[0] != 0;
 }
 
-/* Compare two folders: case-insensitive, '/' == '\', trailing separators
-   ignored (Inno records the folder without one, GetModuleFileName has none
-   either, but a hand-edited registry value may). */
-static int dir_same(const wchar_t *a, const wchar_t *b) {
-    for (;;) {
-        while (*a == L'/') a++;
-        while (*b == L'/') b++;
-        wchar_t ca = *a, cb = *b;
-        if (ca == L'\\') ca = 0;
-        if (cb == L'\\') cb = 0;
-        if (ca >= L'a' && ca <= L'z') ca = (wchar_t) (ca - 32);
-        if (cb >= L'a' && cb <= L'z') cb = (wchar_t) (cb - 32);
-        if (ca != cb) return 0;
-        if (ca == 0) return 1;
-        a++;
-        b++;
-    }
-}
-
+/* Compare complete install locations using the tested path helper. */
 static int read_install_location(REGSAM view, wchar_t *out, size_t cap) {
     static const wchar_t *sub =
         L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
@@ -606,13 +595,13 @@ static int read_install_location(REGSAM view, wchar_t *out, size_t cap) {
  */
 static int running_copy_is_installed(void) {
     wchar_t installed[MAX_PATH] = L"", here[MAX_PATH] = L"";
-    if (!exe_dir(here, MAX_PATH)) return 1;   /* cannot tell: keep the old path */
+    if (!exe_dir(here, MAX_PATH)) return 0;   /* unknown identity is not proof of an installer copy */
     if (!read_install_location(0, installed, MAX_PATH) &&
         !read_install_location(KEY_WOW64_64KEY, installed, MAX_PATH) &&
         !read_install_location(KEY_WOW64_32KEY, installed, MAX_PATH)) {
         return 0;                              /* no install record: portable */
     }
-    return dir_same(installed, here);
+    return update_install_path_equal(installed, here);
 }
 
 /*
