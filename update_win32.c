@@ -267,9 +267,10 @@ static int ini_path(wchar_t *out, size_t cap) {
     DWORD length = GetModuleFileNameW(NULL, exe, MAX_PATH);
     if (!length || length >= MAX_PATH) return 0;
     wchar_t *slash = wcsrchr(exe, L'\\');
-    if (slash != NULL) *slash = 0;
-    swprintf(out, cap, L"%ls\\webserver.ini", exe);
-    return 1;
+    if (!slash) return 0;
+    *slash = 0;
+    int written = swprintf(out, cap, L"%ls\\webserver.ini", exe);
+    return written > 0 && (size_t)written < cap;
 }
 
 /* [settings] proxy=... from webserver.ini ("" when unset). */
@@ -552,7 +553,10 @@ static int exe_dir(wchar_t *out, size_t cap) {
     DWORD length = GetModuleFileNameW(NULL, exe, MAX_PATH);
     if (!length || length >= MAX_PATH) return 0;
     wchar_t *slash = wcsrchr(exe, L'\\');
-    if (slash) *slash = 0;
+    if (!slash) return 0;
+    *slash = 0;
+    // A truncated directory must not accidentally match an installed path.
+    if (wcslen(exe) >= cap) return 0;
     wcsncpy(out, exe, cap - 1);
     out[cap - 1] = 0;
     return out[0] != 0;
