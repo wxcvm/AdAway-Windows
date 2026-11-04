@@ -1153,6 +1153,7 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_UID 1220
 #define IDC_STATS_RANGE 1320
 #define IDC_QLOG_DIAG 1221
+#define IDC_QLOG_WINDOW 1226
 #define IDC_POL0      1110
 #define IDC_SUBRELOAD 1130
 #define IDC_POLDEF    1131   /* 恢复推荐默认 */
@@ -2823,6 +2824,7 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_APPS, 618, 24, 110, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
     { IDC_QLOG_RANKING, 734, 24, 110, 28, L"BUTTON", L"拦截排行", BS_PUSHBUTTON },
     { IDC_QLOG_DIAG, 850, 24, 152, 28, L"BUTTON", L"AdGuard 诊断", BS_PUSHBUTTON },
+    { IDC_QLOG_WINDOW, 560, 56, 168, 120, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
     { IDC_QLOG_SOURCE, 736, 56, 126, 27, L"BUTTON", L"来源：AdAway", BS_PUSHBUTTON },
     { IDC_QLOG_IMPORT, 870, 56, 132, 27, L"BUTTON", L"导入 AdGuard...", BS_PUSHBUTTON },
     { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
@@ -2835,9 +2837,9 @@ static HWND s_ctrls[CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 2];
  * connection that never completed an HTTP request. */
 static void log_ingress_diagnostics(HWND hwnd) {
     const struct snapshot *sn = g_sn;
-    wchar_t report[2100];
+    wchar_t report[3200];
     if (!sn || !sn->valid) {
-        swprintf(report, 2100,
+        swprintf(report, 3200,
                  L"响应服务器统计目前不可用，不能判断是否收到 AdGuard 转来的请求。\n\n"
                  L"当前设置：HTTP %d，HTTPS %d。请先在设置页确认监听器绑定正常，再检查对接路径。\n\n"
                  L"AdGuard 的 DNS 重定向只返回 IP，不指定端口；使用自定义重定向时通常需在 80/443 监听。"
@@ -2851,7 +2853,7 @@ static void log_ingress_diagnostics(HWND hwnd) {
             swprintf(arrivals, 80, L"%lld", sn->response_tcp_accepts);
         else
             wcscpy(arrivals, L"服务端尚未提供");
-        swprintf(report, 2100,
+        swprintf(report, 3200,
                  L"本地监听 HTTP %d / HTTPS %d\n"
                  L"报告已绑定监听：%u 条；服务端绑定状态：%ls\n\n"
                  L"响应端口接入的 TCP 连接：%ls（本次运行，不含管理端口）\n"
@@ -2870,6 +2872,47 @@ static void log_ingress_diagnostics(HWND hwnd) {
                  sn->bind_ok ? L"已报告正常" : L"异常／待核对",
                  arrivals, sn->total_requests, sn->total_blocked, sn->tls_failures,
                  sn->qlog_count);
+    }
+    /* Both sources are independently observed. Imported UTC timestamps
+     * anchor the selected comparison; local figures cover only the shown page,
+     * never the full retained history or machine-wide interceptions. */
+    if (g_ag_import) {
+        size_t used=wcslen(report);
+        if (g_ag_import->count) {
+            LRESULT selected=SendDlgItemMessageW(hwnd,IDC_QLOG_WINDOW,CB_GETCURSEL,0,0);
+            unsigned minutes=selected==0?15u:selected==2?1440u:60u;
+            const wchar_t *range=minutes==15?L"15 分钟":minutes==60?L"1 小时":L"24 小时";
+            uint64_t anchor=g_ag_import->events[0].timestamp_us;
+            uint64_t span=(uint64_t)minutes*60u*1000000u;
+            struct ag_window_counts counts={0};
+            ag_window_count_imported(g_ag_import,anchor,span,&counts);
+            bool local_ready=sn && sn->qlog_ready && !sn->qlog_error &&
+                sn->qlog_revision==g_log_nav.revision;
+            if(local_ready)
+                for(int i=0;i<sn->qlog_count;i++)
+                    ag_window_count_local(sn->qlog[i].ts,sn->qlog[i].action,anchor,span,&counts);
+            wchar_t latest[48];
+            utf8_to_wide(g_ag_import->events[0].observed_time,latest,48);
+            if(used<3199)swprintf(report+used,3200-used,
+                L"\r\n\r\n── 独立来源观测对比 ──\r\n"
+                L"窗口：以最新导入事件 %ls 为终点，回看 %ls\r\n"
+                L"AdGuard：%u 条事件，其中拦截 %u、DNS %u\r\n"
+                L"AdAway 当前历史页：%ls\r\n"
+                L"只统计当前已读取的本地历史页（最多 %u 条），非完整保留历史。"
+                L"双方没有可靠的事件关联，不能用数量差推断漏拦或计算全机拦截率。"
+                L"导入是静态快照，重启后需要重新导入。",
+                latest,range,(unsigned)counts.imported,(unsigned)counts.imported_blocked,
+                (unsigned)counts.imported_dns,
+                local_ready?L"见下方本页计数":L"当前页不可用",
+                (unsigned)GUI_QLOG_MAX);
+            if(local_ready) {
+                used=wcslen(report);
+                if(used<3199)swprintf(report+used,3200-used,
+                    L"\r\n本页窗口内：请求 %u 条，其中本地拦截响应 %u 条。",
+                    (unsigned)counts.local_rows,(unsigned)counts.local_blocked);
+            }
+        } else if(used<3199)swprintf(report+used,3200-used,
+            L"\r\n\r\nAdGuard 当前导入为空（0 条记录），没有时间锚点，无法按窗口对比。");
     }
     MessageBoxW(hwnd, report, L"AdGuard ↔ 本地请求日志 · 对接诊断",
                 MB_OK | MB_ICONINFORMATION);
@@ -2994,8 +3037,10 @@ static void log_controls_refresh(HWND hwnd) {
         bool shared = id == IDC_QLOG_LIST || id == IDC_QLOG_DETAILS ||
             id == IDC_QLOG_APPS || id == IDC_QLOG_REQUESTS ||
             id == IDC_QLOG_RANKING || id == IDC_QLOG_DIAG ||
-            id == IDC_QLOG_SOURCE || id == IDC_QLOG_IMPORT;
+            id == IDC_QLOG_SOURCE || id == IDC_QLOG_IMPORT ||
+            id == IDC_QLOG_WINDOW;
         bool visible = g_tab == 1 && (shared || (!imported && !g_log_ranking && !g_log_apps));
+        if(id==IDC_QLOG_WINDOW)visible=visible && g_ag_import!=NULL;
         ShowWindow(GetDlgItem(hwnd, id), visible ? SW_SHOW : SW_HIDE);
     }
     SetDlgItemTextW(hwnd, IDC_QLOG_REQUESTS,
@@ -3004,6 +3049,8 @@ static void log_controls_refresh(HWND hwnd) {
     SetDlgItemTextW(hwnd, IDC_QLOG_RANKING, g_log_ranking ? L"✓ 拦截排行" : L"拦截排行");
     SetDlgItemTextW(hwnd, IDC_QLOG_SOURCE,
         imported ? L"来源：AdGuard" : L"来源：AdAway");
+    SetDlgItemTextW(hwnd, IDC_QLOG_DIAG,
+        g_ag_import ? L"时间窗口对比" : L"AdGuard 诊断");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_SOURCE), !g_log_apps && g_ag_import != NULL);
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
@@ -3858,7 +3905,7 @@ static void draw_activity_page(HDC hdc) {
     DrawTextW(hdc, L"日志中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, g_pal.muted);
-    RECT hint = {S(218), S(60), S(728), S(82)};
+    RECT hint = {S(218), S(60), S(g_ag_import ? 550 : 728), S(82)};
     const wchar_t *log_hint = g_log_external && !g_log_apps ?
         L"AdGuard 离线快照 · 不自动同步" :
         (g_log_ranking ? L"AdAway 本地拦截排行 · 非全机 DNS" :
@@ -4477,6 +4524,10 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         for (size_t i = 0; i < sizeof(log_filters) / sizeof(log_filters[0]); ++i)
             SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_ADDSTRING, 0, (LPARAM)log_filters[i]);
         SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_SETCURSEL, 0, 0);
+        const wchar_t *compare_windows[] = {L"对比：15 分钟",L"对比：1 小时",L"对比：24 小时"};
+        for(size_t i=0;i<sizeof(compare_windows)/sizeof(compare_windows[0]);i++)
+            SendDlgItemMessageW(hwnd,IDC_QLOG_WINDOW,CB_ADDSTRING,0,(LPARAM)compare_windows[i]);
+        SendDlgItemMessageW(hwnd,IDC_QLOG_WINDOW,CB_SETCURSEL,1,0);
         s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"测试双栈转发与恢复",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
                 0,0,1,1,hwnd,(HMENU)(INT_PTR)IDC_TRANSPORT_PROBE,hinst,NULL);
         s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"过去 24 小时",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
