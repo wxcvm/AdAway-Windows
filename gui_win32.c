@@ -60,6 +60,8 @@
 #include "query_log_navigation.h"
 #include "query_log_filter.h"
 #include "query_log_view.h"
+#include "query_log_order.h"
+#include "adguard_filter_import.h"
 #include "query_log_export.h"
 #include "query_log_export_state.h"
 #include "query_log_export_task.h"
@@ -524,6 +526,7 @@ static void json_top(const char *body, struct snapshot *sn) {
     if (p == NULL) return;
     p++;
     const char *arr_end = json_array_end(p);
+    if (arr_end == NULL) return;
     while (sn->top_count < GUI_TOP_MAX) {
         const char *open = strchr(p, '{');
         const char *close = open ? strchr(open, '}') : NULL;
@@ -534,7 +537,7 @@ static void json_top(const char *body, struct snapshot *sn) {
         /* Stop at the end of this array: an empty ranking must not pick up the
            objects of the next array (see the same guard in json_apps()). */
         if (open == NULL || close == NULL) break;
-        if (arr_end != NULL && open > arr_end) break;
+        if (open > arr_end || close > arr_end) break;
         il = (size_t)(close - open) + 1;
         if (il >= sizeof(item)) il = sizeof(item) - 1;
         memcpy(item, open, il);
@@ -549,8 +552,18 @@ static void json_top(const char *body, struct snapshot *sn) {
             if (e != NULL && e > q)
                 MultiByteToWideChar(CP_UTF8, 0, q, (int)(e - q), t->host, 127);
         }
-        sn->top_count++;
+        if (t->host[0] && t->count > 0) sn->top_count++;
         p = close + 1;
+    }
+    /* Server array order is not a display contract; sort only valid rows. */
+    for (int i = 1; i < sn->top_count; ++i) {
+        struct top_row item = sn->top[i];
+        int j = i;
+        while (j > 0 && sn->top[j - 1].count < item.count) {
+            sn->top[j] = sn->top[j - 1];
+            --j;
+        }
+        sn->top[j] = item;
     }
 }
 
@@ -1132,6 +1145,9 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_DETAILS 1216
 #define IDC_QLOG_APPS 1217
 #define IDC_QLOG_REQUESTS 1222
+#define IDC_QLOG_RANKING 1223
+#define IDC_QLOG_SOURCE 1224
+#define IDC_QLOG_IMPORT 1225
 #define IDC_QLOG_LIVE 1218
 #define IDC_QLOG_EXPORT 1219
 #define IDC_QLOG_UID 1220
@@ -1905,6 +1921,9 @@ static DWORD g_poll_last_post = 0;   /* keep-alive post (clock) */
    The card follows
    the mouse wheel instead of silently dropping everything older. */
 static bool g_log_apps = false;
+static bool g_log_ranking = false; /* third subview in the same log center */
+static bool g_log_external = false; /* explicitly imported AdGuard snapshot */
+static struct ag_import *g_ag_import = NULL;
 static bool g_log_rendering = false;
 static int g_log_shown = 0;
 static uint64_t g_log_render_hash;
@@ -2404,6 +2423,8 @@ static void draw_settings_section_header(HDC hdc, int x, int y,
     DeleteObject(small);
 }
 
+/* Five destinations; ranking now lives inside the log-center tabs. */
+static const int g_sidebar_tabs[] = {0, 1, 2, 4, 5};
 /* sidebar nav hit areas (logical units; callers pass physical coords) */
 static bool nav_hit(int x, int y, int which) {
     int top = 96 + which * 46;   /* six equally spaced navigation destinations */
@@ -2499,8 +2520,9 @@ static void draw_sidebar(HDC hdc) {
     }
 
     /* nav items */
-    for (int t = 0; t < 6; t++) {
-        int ny = 96 + t * 46;
+    for (int pos = 0; pos < 5; pos++) {
+        int t = g_sidebar_tabs[pos];
+        int ny = 96 + pos * 46;
         bool active = (g_tab == t);
         rounded_card(hdc, 16, ny, 160, 40, 10,
                      active ? g_pal.nav_active : g_pal.sidebar,
@@ -2596,19 +2618,19 @@ static void draw_sidebar(HDC hdc) {
             const wchar_t *label = t == 0 ? L"统计"
                                  : (t == 1 ? L"日志中心"
                                  : (t == 2 ? L"设置"
-                                 : (t == 3 ? L"拦截排行" : (t == 4 ? L"订阅" : L"网络中心"))));
+                                 : (t == 4 ? L"订阅" : L"网络中心")));
             TextOutW(hdc, S(70), S(ny + 10), label, (int) wcslen(label));
         }
         SelectObject(hdc, old);
         DeleteObject(nf);
     }
 
-    /* Discoverable keyboard hint below the six nav entries. */
+    /* Discoverable keyboard hint below the five nav entries. */
     {
         HFONT hint = mfont(10, FW_NORMAL);
         HFONT prev = (HFONT)SelectObject(hdc, hint);
         SetTextColor(hdc, g_pal.nav_text);
-        TextOutW(hdc, S(22), S(548), L"Alt+1~6 切换页面", 12);
+        TextOutW(hdc, S(22), S(548), L"Alt+1/2/3/5/6", (int)wcslen(L"Alt+1/2/3/5/6"));
         SelectObject(hdc, prev);
         DeleteObject(hint);
     }
@@ -2797,9 +2819,12 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_FILTER, 710, 90, 158, 200, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
     { IDC_QLOG_LIST, 218, 132, 784, 290, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
     { IDC_QLOG_DETAILS, 218, 466, 784, 96, L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL },
-    { IDC_QLOG_REQUESTS, 504, 24, 150, 28, L"BUTTON", L"✓ 请求记录", BS_PUSHBUTTON },
-    { IDC_QLOG_APPS, 662, 24, 150, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
-    { IDC_QLOG_DIAG, 820, 24, 182, 28, L"BUTTON", L"AdGuard 对接诊断", BS_PUSHBUTTON },
+    { IDC_QLOG_REQUESTS, 502, 24, 110, 28, L"BUTTON", L"✓ 请求记录", BS_PUSHBUTTON },
+    { IDC_QLOG_APPS, 618, 24, 110, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
+    { IDC_QLOG_RANKING, 734, 24, 110, 28, L"BUTTON", L"拦截排行", BS_PUSHBUTTON },
+    { IDC_QLOG_DIAG, 850, 24, 152, 28, L"BUTTON", L"AdGuard 诊断", BS_PUSHBUTTON },
+    { IDC_QLOG_SOURCE, 736, 56, 126, 27, L"BUTTON", L"来源：AdAway", BS_PUSHBUTTON },
+    { IDC_QLOG_IMPORT, 870, 56, 132, 27, L"BUTTON", L"导入 AdGuard...", BS_PUSHBUTTON },
     { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
 };
 #define CL_LOG ((int)(sizeof(g_loglayout) / sizeof(g_loglayout[0])))
@@ -2961,26 +2986,36 @@ static void log_export_start(HWND hwnd) {
 static void log_controls_refresh(HWND hwnd) {
     bool current = g_sn && g_sn->qlog_ready && !g_sn->qlog_error &&
         g_sn->qlog_revision == g_log_nav.revision;
-    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_PREVIOUS), current && g_log_nav.depth > 0);
-    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_NEXT), current && g_sn->qlog_page.has_more);
+    bool imported = g_log_external && !g_log_apps;
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_PREVIOUS), !imported && current && g_log_nav.depth > 0);
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_NEXT), !imported && current && g_sn->qlog_page.has_more);
     for (int i = 0; i < CL_LOG; ++i) {
         int id = g_loglayout[i].id;
         bool shared = id == IDC_QLOG_LIST || id == IDC_QLOG_DETAILS ||
-            id == IDC_QLOG_APPS || id == IDC_QLOG_REQUESTS || id == IDC_QLOG_DIAG;
-        bool visible = g_tab == 1 && (!g_log_apps || shared);
+            id == IDC_QLOG_APPS || id == IDC_QLOG_REQUESTS ||
+            id == IDC_QLOG_RANKING || id == IDC_QLOG_DIAG ||
+            id == IDC_QLOG_SOURCE || id == IDC_QLOG_IMPORT;
+        bool visible = g_tab == 1 && (shared || (!imported && !g_log_ranking && !g_log_apps));
         ShowWindow(GetDlgItem(hwnd, id), visible ? SW_SHOW : SW_HIDE);
     }
-    SetDlgItemTextW(hwnd, IDC_QLOG_REQUESTS, g_log_apps ? L"请求记录" : L"✓ 请求记录");
+    SetDlgItemTextW(hwnd, IDC_QLOG_REQUESTS,
+        (!g_log_apps && !g_log_ranking) ? L"✓ 请求记录" : L"请求记录");
     SetDlgItemTextW(hwnd, IDC_QLOG_APPS, g_log_apps ? L"✓ 应用活动" : L"应用活动");
+    SetDlgItemTextW(hwnd, IDC_QLOG_RANKING, g_log_ranking ? L"✓ 拦截排行" : L"拦截排行");
+    SetDlgItemTextW(hwnd, IDC_QLOG_SOURCE,
+        imported ? L"来源：AdGuard" : L"来源：AdAway");
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_SOURCE), !g_log_apps && g_ag_import != NULL);
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
-    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE), g_sn && g_sn->qlog_ready && !g_sn->qlog_error);
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE),
+        !imported && g_sn && g_sn->qlog_ready && !g_sn->qlog_error);
     enum qlx_phase phase=qlx_phase_get(&g_log_export_phase);
     bool cancellable=phase==QLX_QUEUED||phase==QLX_RUNNING;
     SetDlgItemTextW(hwnd,IDC_QLOG_EXPORT,phase==QLX_COMMITTING?L"正在完成保存":
         phase==QLX_CANCEL_REQUESTED?L"正在取消并清理":phase==QLX_CHOOSING?L"正在选择文件":
         phase==QLX_CLEANUP_FAILED?L"检查暂存清理":cancellable?L"取消导出":L"导出全部匹配");
-    EnableWindow(GetDlgItem(hwnd,IDC_QLOG_EXPORT),cancellable||phase==QLX_CLEANUP_FAILED||(!qlx_phase_busy(phase)&&current));
+    EnableWindow(GetDlgItem(hwnd,IDC_QLOG_EXPORT),
+        !imported && (cancellable||phase==QLX_CLEANUP_FAILED||(!qlx_phase_busy(phase)&&current)));
     log_list_refresh(hwnd, false);
 }
 
@@ -3143,9 +3178,38 @@ static WNDPROC g_log_list_original;
 static LRESULT CALLBACK log_list_proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     /* Native listboxes consume their own wheel/scroll messages. The parent's
        WM_MOUSEWHEEL handler alone cannot protect a page being read this way. */
-    if (!g_log_apps && (message == WM_MOUSEWHEEL || message == WM_VSCROLL))
+    if (!g_log_apps && !g_log_ranking && !g_log_external &&
+        (message == WM_MOUSEWHEEL || message == WM_VSCROLL))
         log_freeze_current(GetParent(hwnd));
     return CallWindowProcW(g_log_list_original, hwnd, message, wp, lp);
+}
+
+static const wchar_t *adguard_remote_family(const struct ag_event *event) {
+    const char *address=event->remote_address;
+    if(!address[0])return !strcmp(event->protocol,"Dns")?L"DNS":L"未知地址";
+    unsigned colons=0;
+    for(const char *p=address;*p;p++)if(*p==':')++colons;
+    if(address[0]=='['||colons>1)return L"IPv6";
+    if(strchr(address,'.')||colons==1)return L"IPv4";
+    return L"未知地址";
+}
+static const wchar_t *adguard_request_type(const struct ag_event *event) {
+    if(!strcmp(event->protocol,"Dns"))return L"DNS";
+    switch(event->request_type) {
+        case 1:return L"主文档";
+        case 2:return L"子文档";
+        case 4:return L"脚本";
+        case 8:return L"样式表";
+        case 16:return L"对象";
+        case 32:return L"图片";
+        case 64:return L"XHR / Fetch";
+        case 128:return L"媒体";
+        case 256:return L"字体";
+        case 512:return L"WebSocket";
+        case 1024:return L"Ping";
+        case 2048:return L"其他";
+        default:return L"未知类型";
+    }
 }
 
 static void log_details_refresh(HWND hwnd) {
@@ -3153,12 +3217,72 @@ static void log_details_refresh(HWND hwnd) {
     LRESULT selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
     LRESULT index = selected == LB_ERR ? LB_ERR : SendMessageW(list, LB_GETITEMDATA, (WPARAM)selected, 0);
     wchar_t text[2400];
-    if (!g_sn || index == LB_ERR || index < 0 || index >= (g_log_apps ? g_sn->app_count : g_sn->qlog_count)) {
-        SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, g_log_apps ? L"选中进程查看计数；仅统计到达响应服务器的连接。" :
-            L"选中请求查看详情。这里记录响应服务器收到的 HTTP 请求，不代表全部 DNS／Hosts 拦截。键盘方向键可浏览，Ctrl+C 可复制详情。");
+    if (g_log_external && !g_log_apps) {
+        if (!g_ag_import || index == LB_ERR || index < 0 ||
+            (size_t)index >= (g_log_ranking ? g_ag_import->top_count : g_ag_import->count)) {
+            SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS,
+                L"AdGuard 离线导入 · 选择记录查看时间、远程地址、进程与规则。"
+                L"不会保留或显示原始 Cookie、请求头、完整网址与应用路径。");
+            return;
+        }
+        if (g_log_ranking) {
+            const struct ag_rank *rank = &g_ag_import->top[index];
+            wchar_t domain[192];
+            utf8_to_wide(rank->host, domain, 192);
+            swprintf(text, 2400,
+                L"来源：AdGuard 过滤日志（用户手动导入）\r\n"
+                L"域名：%ls\r\n拦截事件：%u 条\r\n"
+                L"DNS / TCP 分别计数；一条记录不必然对应一次独立请求。",
+                domain, (unsigned)rank->count);
+        } else {
+            const struct ag_event *event = &g_ag_import->events[index];
+            wchar_t domain[192], process[96], rule[192], at[48], proto[16], dns[16], remote[160], stealth[96];
+            utf8_to_wide(event->host,domain,192);
+            utf8_to_wide(event->app,process,96);
+            utf8_to_wide(event->rule,rule,192);
+            utf8_to_wide(event->observed_time,at,48);
+            utf8_to_wide(event->protocol,proto,16);
+            utf8_to_wide(event->dns_type,dns,16);
+            utf8_to_wide(event->remote_address,remote,160);
+            if(event->stealth_options&16384u)wcscpy(stealth,L"Protection from DPI was applied");
+            else if(event->stealth_options)swprintf(stealth,96,L"已应用（选项码 %u）",event->stealth_options);
+            else wcscpy(stealth,L"未应用");
+            const wchar_t *outcome = event->log_type==0 ? L"AdGuard 拦截" :
+                event->log_type==3 ? L"已处理（非拦截）" :
+                event->log_type==5 ? L"其他观测（非拦截）" : L"未知记录类型";
+            swprintf(text,2400,
+                L"来源：AdGuard 过滤日志（手动导入）\r\n时间：%ls（原始时区）\r\n"
+                L"域名：%ls\r\n远程地址：%ls（%ls）\r\n"
+                L"进程：%ls    PID：%d\r\n"
+                L"隐身模式：%ls\r\n"
+                L"协议：%ls    DNS 查询类型：%ls    请求类型：%ls\r\n"
+                L"结果：%ls    状态码：%d\r\n"
+                L"匹配规则：%ls    过滤器 ID：%d\r\n"
+                L"事件类型：%d（仅类型 0 计入导入拦截排行）\r\n"
+                L"离线快照，不代表 AdAway 已收到此连接或自动同步。",
+                at,domain,remote[0]?remote:L"未提供",adguard_remote_family(event),
+                process[0]?process:L"未知",event->process_id,stealth,
+                proto,dns[0]?dns:L"不适用",adguard_request_type(event),
+                outcome,event->status,rule[0]?rule:L"未提供",event->filter_id,event->log_type);
+        }
+        SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, text);
         return;
     }
-    if (g_log_apps) {
+    if (!g_sn || index == LB_ERR || index < 0 ||
+        index >= (g_log_ranking ? g_sn->top_count : (g_log_apps ? g_sn->app_count : g_sn->qlog_count))) {
+        SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, g_log_ranking ?
+            L"选择域名查看本地拦截响应次数；本排行不包含 AdGuard 独立拦截。" :
+            (g_log_apps ? L"选中进程查看计数；仅统计到达响应服务器的连接。" :
+            L"选中请求查看详情。这里记录响应服务器收到的 HTTP 请求，不代表全部 DNS／Hosts 拦截。键盘方向键可浏览，Ctrl+C 可复制详情。"));
+        return;
+    }
+    if (g_log_ranking) {
+        const struct top_row *rank = &g_sn->top[index];
+        swprintf(text, 2400,
+            L"来源：AdAway 本地 Web 响应服务器\r\n域名：%ls\r\n本地拦截响应：%lld 次\r\n"
+            L"按累计计数排序；未采集到的 AdGuard / DNS / Hosts 拦截不会出现在这里。",
+            rank->host, rank->count);
+    } else if (g_log_apps) {
         struct app_row *app = &g_sn->apps[index];
         wchar_t pid[40];
         if (app->uid >= 0) swprintf(pid, 40, L"%d", app->uid); else wcscpy(pid, L"未知");
@@ -3191,76 +3315,243 @@ static uint64_t log_hash_bytes(uint64_t value, const void *bytes, size_t count) 
 
 static void log_list_refresh(HWND hwnd, bool force) {
     HWND list = GetDlgItem(hwnd, IDC_QLOG_LIST);
-    if (!list || !g_sn || g_tab != 1) return;
+    if (!list || g_tab != 1) return;
+    if (g_log_external && !g_log_apps) {
+        struct qlv_view view={0};
+        view.external=true;
+        view.ranking=g_log_ranking;
+        uint64_t hash=UINT64_C(14695981039346656037);
+        hash=log_hash_bytes(hash,&view,sizeof(view));
+        const size_t count=g_ag_import ?
+            (g_log_ranking ? g_ag_import->top_count : g_ag_import->count) : 0;
+        hash=log_hash_bytes(hash,&count,sizeof(count));
+        if (g_ag_import && count) {
+            hash=log_hash_bytes(hash,g_log_ranking ?
+                (const void *)g_ag_import->top : (const void *)g_ag_import->events,
+                count*(g_log_ranking ? sizeof(struct ag_rank) : sizeof(struct ag_event)));
+        }
+        bool same_view=g_log_render_view_seen &&
+            qlv_same_view(&g_log_render_view,&view);
+        if (!force && hash==g_log_render_hash) return;
+        g_log_render_hash=hash;
+        g_log_render_view=view;
+        g_log_render_view_seen=true;
+        LRESULT top=SendMessageW(list,LB_GETTOPINDEX,0,0);
+        g_log_rendering=true;
+        SendMessageW(list,WM_SETREDRAW,FALSE,0);
+        SendMessageW(list,LB_RESETCONTENT,0,0);
+        g_log_shown=0;
+        for(size_t i=0;i<count;i++) {
+            wchar_t line[512],host[192];
+            if(g_log_ranking) {
+                const struct ag_rank *rank=&g_ag_import->top[i];
+                utf8_to_wide(rank->host,host,192);
+                swprintf(line,512,L"%02u    %ls    ·    AdGuard 拦截事件 %u 条",
+                    (unsigned)(i+1),host,(unsigned)rank->count);
+            }else{
+                const struct ag_event *event=&g_ag_import->events[i];
+                utf8_to_wide(event->host,host,192);
+                wchar_t clock[9];
+                memcpy(clock,L"00:00:00",9*sizeof(wchar_t));
+                for(int j=0;j<8;j++)clock[j]=(wchar_t)event->observed_time[11+j];
+                const wchar_t *label=event->log_type==0 ? L"拦截" :
+                    event->log_type==3 ? L"已处理" :
+                    event->log_type==5 ? L"其他观测" : L"未知事件";
+                swprintf(line,512,L"%ls    [AdGuard · %ls · %hs · %ls · %ls]    %ls",
+                    clock,adguard_remote_family(event),event->protocol,label,
+                    adguard_request_type(event),host);
+            }
+            LRESULT item=SendMessageW(list,LB_ADDSTRING,0,(LPARAM)line);
+            if(item==LB_ERR||item==LB_ERRSPACE)break;
+            SendMessageW(list,LB_SETITEMDATA,(WPARAM)item,(LPARAM)i);
+            ++g_log_shown;
+        }
+        if(same_view && top!=LB_ERR && top<g_log_shown)
+            SendMessageW(list,LB_SETTOPINDEX,(WPARAM)top,0);
+        SendMessageW(list,WM_SETREDRAW,TRUE,0);
+        InvalidateRect(list,NULL,TRUE);
+        g_log_rendering=false;
+        log_details_refresh(hwnd);
+        return;
+    }
+    if (!g_sn) return;
     uint64_t hash = UINT64_C(14695981039346656037);
     struct qlv_view view = {0};
     view.apps = g_log_apps;
-    if (!g_log_apps) {
+    view.ranking = g_log_ranking;
+    if (!g_log_apps && !g_log_ranking) {
         view.offset = g_sn->qlog_page.offset;
         memcpy(view.generation, g_sn->qlog_page.generation, sizeof(view.generation));
         memcpy(view.query_key, g_sn->qlog_page.query_key, sizeof(view.query_key));
     }
     bool same_view = g_log_render_view_seen && qlv_same_view(&g_log_render_view, &view);
-    // Rebuild even when two distinct pages happen to contain identical rows.
+    /* Filter drafts must not rebuild old results before the server publishes. */
     hash = log_hash_bytes(hash, &view, sizeof(view));
-    // The search text and selector are only drafts until the server returns
-    // their new page. Redrawing the old list on each keystroke otherwise
-    // loses selection and scroll position before any result has changed.
-    int count = g_log_apps ? g_sn->app_count : g_sn->qlog_count;
+    int count = g_log_ranking ? g_sn->top_count :
+        (g_log_apps ? g_sn->app_count : g_sn->qlog_count);
     hash = log_hash_bytes(hash, &count, sizeof(count));
-    hash = log_hash_bytes(hash, g_log_apps ? (const void *)g_sn->apps : (const void *)g_sn->qlog,
-        (size_t)count * (g_log_apps ? sizeof(struct app_row) : sizeof(struct qlog_row)));
+    const void *rows = g_log_ranking ? (const void *)g_sn->top :
+        (g_log_apps ? (const void *)g_sn->apps : (const void *)g_sn->qlog);
+    size_t row_size = g_log_ranking ? sizeof(struct top_row) :
+        (g_log_apps ? sizeof(struct app_row) : sizeof(struct qlog_row));
+    hash = log_hash_bytes(hash, rows, (size_t)count * row_size);
     if (!force && hash == g_log_render_hash) return;
     g_log_render_hash = hash;
     g_log_render_view = view;
     g_log_render_view_seen = true;
+
+    /* Selection item data is always the source-array index, not the visible
+       index, which may differ after sorting the current page by timestamp. */
     struct qlog_row selected_log = {0};
     int selected_pid = -2;
     LRESULT selected = SendMessageW(list, LB_GETCURSEL, 0, 0);
-    LRESULT old_index = selected == LB_ERR ? LB_ERR : SendMessageW(list, LB_GETITEMDATA, (WPARAM)selected, 0);
-    /* Once snapshots change, the old index belongs to the previous snapshot.
-       Clearing selection avoids ever presenting another request as its details. */
-    bool preserve = force && old_index >= 0 && old_index < count;
+    LRESULT old_index = selected == LB_ERR ? LB_ERR :
+        SendMessageW(list, LB_GETITEMDATA, (WPARAM)selected, 0);
+    bool preserve = force && !g_log_ranking && old_index >= 0 && old_index < count;
     if (preserve) {
         if (g_log_apps) selected_pid = g_sn->apps[old_index].uid;
         else selected_log = g_sn->qlog[old_index];
     }
     LRESULT top = SendMessageW(list, LB_GETTOPINDEX, 0, 0);
+
+    /* Stable timestamp sorting only within this visible page: equal timestamps
+       retain the server's event-sequence order. No cursor or export changes. */
+    size_t order[GUI_QLOG_MAX];
+    if (!g_log_apps && !g_log_ranking) {
+        struct qlo_time_row times[GUI_QLOG_MAX];
+        for (int i = 0; i < count; ++i)
+            times[i].timestamp = g_sn->qlog[i].ts > 0 ? (uint64_t)g_sn->qlog[i].ts : 0;
+        qlo_descending_time_order(times, (size_t)count, order);
+    }
+
     g_log_rendering = true;
     SendMessageW(list, WM_SETREDRAW, FALSE, 0);
     SendMessageW(list, LB_RESETCONTENT, 0, 0);
     g_log_shown = 0;
     for (int i = 0; i < count; ++i) {
+        int row_index = (!g_log_apps && !g_log_ranking) ? (int)order[i] : i;
         wchar_t line[512];
-        if (g_log_apps) {
-            struct app_row *app = &g_sn->apps[i];
+        if (g_log_ranking) {
+            const struct top_row *rank = &g_sn->top[row_index];
+            swprintf(line, 512, L"%02d    %ls    ·    本地拦截 %lld 次",
+                i + 1, rank->host, rank->count);
+        } else if (g_log_apps) {
+            const struct app_row *app = &g_sn->apps[row_index];
             swprintf(line, 512, L"%ls    连接 %lld    请求 %lld    拦截 %lld",
                 app->name, app->connections, app->requests, app->blocked);
         } else {
-            struct qlog_row *row = &g_sn->qlog[i];
-            /* Versioned server query already filters the complete retained history. */
-            wchar_t time[32]; log_time(row->ts, time, 32, false);
-            swprintf(line, 512, L"%ls    [%ls · %ls · %ls]    %ls", time, log_family_label(row->family),
-                log_action_label(row->action), row->action == 1 ? log_type_label(row->type) : L"不适用", row->host);
+            const struct qlog_row *row = &g_sn->qlog[row_index];
+            wchar_t time[32];
+            log_time(row->ts, time, 32, false);
+            swprintf(line, 512, L"%ls    [AdAway · %ls · %ls · 策略:%ls]    %ls",
+                time, log_family_label(row->family), log_action_label(row->action),
+                row->action == 1 ? log_type_label(row->type) : L"不适用", row->host);
         }
         LRESULT item = SendMessageW(list, LB_ADDSTRING, 0, (LPARAM)line);
         if (item == LB_ERR || item == LB_ERRSPACE) break;
-        SendMessageW(list, LB_SETITEMDATA, (WPARAM)item, (LPARAM)i);
+        SendMessageW(list, LB_SETITEMDATA, (WPARAM)item, (LPARAM)row_index);
         ++g_log_shown;
-        if (preserve && (g_log_apps ? g_sn->apps[i].uid == selected_pid :
-                memcmp(&selected_log, &g_sn->qlog[i], sizeof(selected_log)) == 0)) {
+        if (preserve && (g_log_apps ? g_sn->apps[row_index].uid == selected_pid :
+            memcmp(&selected_log, &g_sn->qlog[row_index], sizeof(selected_log)) == 0)) {
             SendMessageW(list, LB_SETCURSEL, (WPARAM)item, 0);
             preserve = false;
         }
     }
-    // Repainting a live page must not throw the user's reading position away.
-    // A changed page/filter is a new view and intentionally starts at the top.
     if ((force || same_view) && top != LB_ERR && top < g_log_shown)
         SendMessageW(list, LB_SETTOPINDEX, (WPARAM)top, 0);
     SendMessageW(list, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(list, NULL, TRUE);
     g_log_rendering = false;
     log_details_refresh(hwnd);
+}
+
+/* A user-confirmed, read-only snapshot import. Parse then publish: failure
+ * preserves the previous snapshot. No HTTP uploads, persistent raw exports,
+ * private AdGuard storage, cookie/header logging or live-poll side effects. */
+static void log_import_adguard(HWND hwnd) {
+    wchar_t path[4096] = {0};
+    const wchar_t filter[] =
+        L"AdGuard 过滤日志 (*.json)\0*.json\0JSON 文件 (*.json)\0*.json\0\0";
+    OPENFILENAMEW picker={0};
+    picker.lStructSize=sizeof(picker);
+    picker.hwndOwner=hwnd;
+    picker.lpstrFile=path;
+    picker.nMaxFile=(DWORD)(sizeof path/sizeof path[0]);
+    picker.lpstrFilter=filter;
+    picker.nFilterIndex=1;
+    picker.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER;
+    if (!GetOpenFileNameW(&picker)) {
+        DWORD picker_error=CommDlgExtendedError();
+        if(picker_error)MessageBoxW(hwnd,L"文件选择器未能打开；原导入快照未修改。",
+            L"AdGuard 导入",MB_ICONWARNING|MB_OK);
+        return;
+    }
+    HANDLE handle=CreateFileW(path,GENERIC_READ,FILE_SHARE_READ,NULL,OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,NULL);
+    if(handle==INVALID_HANDLE_VALUE) {
+        MessageBoxW(hwnd,L"无法读取所选 JSON 文件；原导入快照未修改。",
+            L"AdGuard 导入",MB_ICONERROR|MB_OK);
+        return;
+    }
+    LARGE_INTEGER length={0};
+    bool valid=GetFileSizeEx(handle,&length)!=0 &&
+        length.QuadPart>0 && length.QuadPart<=AG_IMPORT_MAX_BYTES;
+    if(!valid) {
+        CloseHandle(handle);
+        MessageBoxW(hwnd,L"导出文件为空、无法读取或超过 12 MiB 限制。",
+            L"AdGuard 导入",MB_ICONERROR|MB_OK);
+        return;
+    }
+    size_t n=(size_t)length.QuadPart;
+    char *data=malloc(n+1);
+    if(!data) {
+        CloseHandle(handle);
+        MessageBoxW(hwnd,L"导入内存分配失败；原快照仍保留。",
+            L"AdGuard 导入",MB_ICONERROR|MB_OK);
+        return;
+    }
+    DWORD got=0;
+    BOOL read_ok=ReadFile(handle,data,(DWORD)n,&got,NULL);
+    CloseHandle(handle);
+    if(!read_ok || got!=(DWORD)n) {
+        free(data);
+        MessageBoxW(hwnd,L"未完整读取导出文件；原快照仍保留。",
+            L"AdGuard 导入",MB_ICONERROR|MB_OK);
+        return;
+    }
+    data[n]=0;
+    struct ag_import *staged=NULL;
+    enum ag_import_error error=ag_import_parse(data,n,&staged);
+    free(data); /* immediately dispose of headers/cookies from the raw export */
+    if(error!=AG_IMPORT_OK) {
+        const wchar_t *reason=error==AG_IMPORT_UNSUPPORTED ?
+            L"目前只支持 AdGuard 过滤日志 ProtocolVersion 1。" :
+            error==AG_IMPORT_TOO_LARGE ? L"导出记录超过 5000 条或文件太大。" :
+            error==AG_IMPORT_NO_MEMORY ? L"内存分配失败。" :
+            L"JSON 格式、必需字段、时间或字符串无效；没有部分导入。";
+        MessageBoxW(hwnd,reason,L"AdGuard 导入未完成",MB_ICONERROR|MB_OK);
+        return;
+    }
+    struct ag_import *previous=g_ag_import;
+    g_ag_import=staged;
+    ag_import_free(previous);
+    g_log_external=true;
+    g_log_apps=false;
+    g_log_ranking=false;
+    g_log_render_hash=0;
+    SendDlgItemMessageW(hwnd,IDC_QLOG_LIST,LB_SETCURSEL,(WPARAM)-1,0);
+    log_controls_refresh(hwnd);
+    InvalidateRect(hwnd,NULL,FALSE);
+    wchar_t message[400];
+    swprintf(message,400,
+        L"已导入 %u 条 AdGuard 事件（读取 %u 条，缺少域名 %u 条，重复标识 %u 条）。\r\n"
+        L"拦截事件 %u 条 · DNS 事件 %u 条。\r\n"
+        L"数据只保留在当前进程内存中；不包含原始 Cookie、请求头及完整路径。"
+        L"\r\n这是离线快照，不会自动同步最新过滤活动。",
+        (unsigned)staged->count,(unsigned)staged->scanned,
+        (unsigned)staged->missing_host,(unsigned)staged->duplicates,
+        (unsigned)staged->blocked,(unsigned)staged->dns_events);
+    MessageBoxW(hwnd,message,L"AdGuard 离线导入完成",MB_OK|MB_ICONINFORMATION);
 }
 
 /*
@@ -3513,123 +3804,8 @@ static void draw_network_center_page(HDC hdc) {
         L"隔离双栈转发", L"本机夹具；可取消、重试，不更改系统路由或 DNS。",
         true);
     draw_network_capability(hdc, 616, 478, 398,
-        L"本地监听与规则", L"当前可在设置、订阅和拦截排行页面管理；此处不重复开关。",
+        L"本地监听与规则", L"当前可在设置、订阅和日志中心管理；此处不重复开关。",
         true);
-}
-
-static void draw_ranking_page(HDC hdc) {
-    struct snapshot *sn = g_sn;
-    HFONT hf = mfont(15, FW_SEMIBOLD);
-    HFONT lf = mfont(12, FW_NORMAL);
-    HFONT old;
-    static const wchar_t *HINT =
-        L"按被拦截次数排序 - 只统计真正被拦下的请求（占位图 / 204 / 空响应）";
-    static const wchar_t *WAIT = L"等待服务器统计数据 ...";
-    static const wchar_t *NONE =
-        L"还没有拦截记录：等有广告/追踪请求被拦下后，这里会出现排行。";
-    const int rows_shown = 12;
-    SetBkMode(hdc, TRANSPARENT);
-
-    /* ── 排行 ── */
-    rounded_card(hdc, 202, 12, 812, 348, 12, g_pal.card, g_pal.border);
-    old = (HFONT) SelectObject(hdc, hf);
-    SetTextColor(hdc, g_pal.text);
-    TextOutW(hdc, S(218), S(24), L"拦截排行", 4);
-    SelectObject(hdc, lf);
-    SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(218), S(48), HINT, (int) wcslen(HINT));
-    if (sn == NULL || !sn->has_data) {
-        TextOutW(hdc, S(222), S(100), WAIT, (int) wcslen(WAIT));
-    } else if (sn->top_count == 0) {
-        TextOutW(hdc, S(222), S(100), NONE, (int) wcslen(NONE));
-    } else {
-        int rows = sn->top_count > rows_shown ? rows_shown : sn->top_count;
-        long long maxc = 1;
-        for (int i = 0; i < rows; i++)
-            if (sn->top[i].count > maxc) maxc = sn->top[i].count;
-        SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(222), S(74), L"域名", 2);
-        TextOutW(hdc, S(880), S(74), L"拦截次数", 4);
-        for (int i = 0; i < rows; i++) {
-            wchar_t rank[16], num[32];
-            int y = 100 + i * 21;
-            swprintf(rank, 16, L"%d.", i + 1);
-            SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(222), S(y), rank, (int) wcslen(rank));
-            /* DrawText trims to the actual pixel width between rank and bar,
-             * unlike the old 44-character heuristic, which clipped differently
-             * at 125%/150% DPI and for long IDN/hostnames. */
-            RECT host_box = {S(251), S(y), S(545), S(y + 19)};
-            DrawTextW(hdc, sn->top[i].host, -1, &host_box,
-                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-            /* 条形长度按最忙的域名归一，形状一眼能看出差距 */
-            if (sn->top[i].count > 0) {
-                int w = (int) (160.0 * (double) sn->top[i].count / (double) maxc);
-                if (w < 2) w = 2;
-                HBRUSH bb = CreateSolidBrush(C_ACCENT);
-                RECT bar = {S(560), S(y + 2), S(560 + w), S(y + 13)};
-                FillRect(hdc, &bar, bb);
-                DeleteObject(bb);
-            }
-            SetTextColor(hdc, g_pal.muted);
-            fmt_num(num, 32, sn->top[i].count);
-            TextOutW(hdc, S(880), S(y), num, (int) wcslen(num));
-        }
-    }
-
-    /* ── 类型分布 ── */
-    rounded_card(hdc, 202, 372, 812, 248, 12, g_pal.card, g_pal.border);
-    SelectObject(hdc, hf);
-    SetTextColor(hdc, g_pal.text);
-    TextOutW(hdc, S(218), S(384), L"拦截类型分布", 6);
-    {
-        /* 「证书被拒」：握手失败/成功总数。这里用全局 g_sn —— 本区块没有局部快照
-           指针（写 sn 会编译不过）。失败数远大于成功数，通常意味着客户端在做
-           证书固定（pinning）。 */
-        const struct snapshot *tsn = g_sn;
-        wchar_t tls_line[160];
-        swprintf(tls_line, 160,
-                 L"TLS 握手失败 %lld 次（原因未确认）· 成功 %lld 次",
-                 tsn ? tsn->tls_failures : 0LL,
-                 tsn ? tsn->tls_handshakes : 0LL);
-        TextOutW(hdc, S(430), S(384), tls_line, (int) wcslen(tls_line));
-    }
-    SelectObject(hdc, lf);
-    SetTextColor(hdc, g_pal.muted);
-    {
-        static const wchar_t *THINT = L"服务端按命中的策略类别累计（自本次安装以来的总数）";
-        TextOutW(hdc, S(218), S(408), THINT, (int) wcslen(THINT));
-    }
-    if (sn != NULL && sn->has_data) {
-        long long maxv = 1;
-        for (int i = 0; i < BLOCK_TYPE_COUNT && i < 16; i++)
-            if (sn->blocked_by_type[i] > maxv) maxv = sn->blocked_by_type[i];
-        const int per_col = (BLOCK_TYPE_COUNT + 1) / 2;
-        for (int i = 0; i < BLOCK_TYPE_COUNT && i < 16; i++) {
-            int col = i / per_col;
-            int row = i % per_col;
-            int x = 222 + col * 400;
-            int y = 440 + row * 26;
-            wchar_t num[32];
-            SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(x), S(y), kBlockTypes[i].label,
-                     (int) wcslen(kBlockTypes[i].label));
-            if (sn->blocked_by_type[i] > 0) {
-                int w = (int) (150.0 * (double) sn->blocked_by_type[i] / (double) maxv);
-                if (w < 2) w = 2;
-                HBRUSH bb = CreateSolidBrush(C_ACCENT);
-                RECT bar = {S(x + 96), S(y + 2), S(x + 96 + w), S(y + 13)};
-                FillRect(hdc, &bar, bb);
-                DeleteObject(bb);
-            }
-            SetTextColor(hdc, g_pal.muted);
-            fmt_num(num, 32, sn->blocked_by_type[i]);
-            TextOutW(hdc, S(x + 260), S(y), num, (int) wcslen(num));
-        }
-    }
-    SelectObject(hdc, old);
-    DeleteObject(hf);
-    DeleteObject(lf);
 }
 
 /* These are counts of observed application rows, not of all running
@@ -3680,13 +3856,39 @@ static void draw_activity_page(HDC hdc) {
     DrawTextW(hdc, L"日志中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, g_pal.muted);
-    RECT hint = {S(218), S(60), S(1002), S(82)};
-    DrawTextW(hdc, g_log_apps ? L"仅显示服务器观测到的进程；连接、HTTP 请求与拦截响应分别计数。" :
-        L"Web 响应服务器活动 · 搜索与分类覆盖全部保留历史，不代表整机 DNS。", -1, &hint,
-        DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    RECT hint = {S(218), S(60), S(728), S(82)};
+    const wchar_t *log_hint = g_log_external && !g_log_apps ?
+        L"AdGuard 离线快照 · 不自动同步" :
+        (g_log_ranking ? L"AdAway 本地拦截排行 · 非全机 DNS" :
+        (g_log_apps ? L"只统计本地已观测到的应用" :
+        L"本地 Web 请求 · 本页按时间降序显示"));
+    DrawTextW(hdc, log_hint, -1, &hint, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     if (g_log_apps) draw_app_log_summary(hdc, sn);
+    if (g_log_ranking) {
+        rounded_card(hdc, 218, 88, 784, 36, 9, g_pal.content_bg, g_pal.border);
+        SetTextColor(hdc, g_pal.text);
+        wchar_t headline[180];
+        if (g_log_external && g_ag_import)
+            swprintf(headline, 180, L"拦截排行展示 %u 个域名 · AdGuard 拦截事件 %u 条",
+                (unsigned)g_ag_import->top_count, (unsigned)g_ag_import->blocked);
+        else if (sn && sn->has_data)
+            swprintf(headline, 180, L"已统计 %d 个域名（最多展示 20 个） · 本地累计拦截 %lld 次",
+                     sn->top_count, sn->total_blocked);
+        else wcscpy(headline, L"等待本地响应服务器统计；没有记录不等于没有拦截");
+        TextOutW(hdc, S(232), S(98), headline, (int)wcslen(headline));
+    }
     wchar_t count[240];
-    if (g_log_apps) {
+    if (g_log_external && !g_log_apps && g_ag_import) {
+        swprintf(count, 240, L"AdGuard 导入 %u 条（原文件 %u，缺少域名 %u，重复 %u）；"
+                 L"拦截 %u 条，DNS %u 条。仅离线快照，与本地拦截率分开。",
+            (unsigned)g_ag_import->count,(unsigned)g_ag_import->scanned,
+            (unsigned)g_ag_import->missing_host,(unsigned)g_ag_import->duplicates,
+            (unsigned)g_ag_import->blocked,(unsigned)g_ag_import->dns_events);
+    } else if (g_log_ranking) {
+        if (sn && sn->has_data)
+            swprintf(count, 240, L"本地拦截域名排行：%d 个 · 未包含 AdGuard 独立拦截记录。", sn->top_count);
+        else wcscpy(count, L"本地排行暂不可用 · 未采集到的请求不按零次处理。");
+    } else if (g_log_apps) {
         swprintf(count, 240, L"已观测 %d 个进程；未知 PID 不推断为系统或当前应用。", sn ? sn->app_count : 0);
     } else if (g_log_invalid_draft) {
         swprintf(count, 240, L"筛选输入无效：搜索最多191字节 UTF-8，PID须为 -1 或非负整数；已保留旧记录。");
@@ -3714,15 +3916,15 @@ static void draw_activity_page(HDC hdc) {
     export_error=g_log_export_progress.error;cleanup_error=g_log_export_progress.cleanup_error;
     enum qlx_phase phase=qlx_phase_get(&g_log_export_phase);
     pthread_mutex_unlock(&g_snap_mutex);
-    if(phase==QLX_CHOOSING)swprintf(count,240,L"已固定 %u 条匹配历史，正在选择保存位置；取消选择不会读取或写入文件。",export_total);
-    else if(phase==QLX_COMMITTING)swprintf(count,240,L"正在完成保存：%u / %u 条 · 已进入原子替换阶段，不再接受取消。",export_done,export_total);
-    else if(phase==QLX_CANCEL_REQUESTED)swprintf(count,240,L"正在取消并清理本次暂存文件；清理结束前不能开始另一项导出。");
-    else if(phase==QLX_RUNNING||phase==QLX_QUEUED)swprintf(count,240,L"正在导出固定历史：%u / %u 条 · 可取消，完成前不发布文件。",export_done,export_total);
-    else if(phase==QLX_SUCCEEDED)swprintf(count,240,L"全部匹配历史导出完成（%u 条）；使用点击导出时的固定快照。",export_done);
-    else if(phase==QLX_CANCELLED)swprintf(count,240,L"导出已取消，原目标保持不变，本次暂存文件已清理。");
-    else if(phase==QLX_CLEANUP_FAILED)swprintf(count,240,L"导出未发布，但暂存清理失败（%lu）；文件位置见 webserver.log，请处理后重试。",(unsigned long)cleanup_error);
-    else if(phase==QLX_DIALOG_FAILED)swprintf(count,240,L"系统文件对话框失败（0x%08lx），未开始导出。",(unsigned long)export_error);
-    else if(phase==QLX_FAILED)swprintf(count,240,export_error==ERROR_RETRY?L"点击导出时的历史已过期，未改用新历史、未发布部分文件；请刷新后重试。":L"导出失败（%lu），原目标未替换、本次暂存文件已清理。",(unsigned long)export_error);
+    if(!(g_log_external && !g_log_apps) && phase==QLX_CHOOSING)swprintf(count,240,L"已固定 %u 条匹配历史，正在选择保存位置；取消选择不会读取或写入文件。",export_total);
+    else if(!(g_log_external && !g_log_apps) && phase==QLX_COMMITTING)swprintf(count,240,L"正在完成保存：%u / %u 条 · 已进入原子替换阶段，不再接受取消。",export_done,export_total);
+    else if(!(g_log_external && !g_log_apps) && phase==QLX_CANCEL_REQUESTED)swprintf(count,240,L"正在取消并清理本次暂存文件；清理结束前不能开始另一项导出。");
+    else if(!(g_log_external && !g_log_apps) && (phase==QLX_RUNNING||phase==QLX_QUEUED))swprintf(count,240,L"正在导出固定历史：%u / %u 条 · 可取消，完成前不发布文件。",export_done,export_total);
+    else if(!(g_log_external && !g_log_apps) && phase==QLX_SUCCEEDED)swprintf(count,240,L"全部匹配历史导出完成（%u 条）；使用点击导出时的固定快照。",export_done);
+    else if(!(g_log_external && !g_log_apps) && phase==QLX_CANCELLED)swprintf(count,240,L"导出已取消，原目标保持不变，本次暂存文件已清理。");
+    else if(!(g_log_external && !g_log_apps) && phase==QLX_CLEANUP_FAILED)swprintf(count,240,L"导出未发布，但暂存清理失败（%lu）；文件位置见 webserver.log，请处理后重试。",(unsigned long)cleanup_error);
+    else if(!(g_log_external && !g_log_apps) && phase==QLX_DIALOG_FAILED)swprintf(count,240,L"系统文件对话框失败（0x%08lx），未开始导出。",(unsigned long)export_error);
+    else if(!(g_log_external && !g_log_apps) && phase==QLX_FAILED)swprintf(count,240,export_error==ERROR_RETRY?L"点击导出时的历史已过期，未改用新历史、未发布部分文件；请刷新后重试。":L"导出失败（%lu），原目标未替换、本次暂存文件已清理。",(unsigned long)export_error);
     RECT count_rect = {S(218), S(430), S(1002), S(453)};
     DrawTextW(hdc, count, -1, &count_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, old);
@@ -4151,6 +4353,17 @@ static void update_prompt_notify(HWND hwnd) {
 #define UI_ACCEL_NAV_PREV  47007
 
 static void ui_navigate_to(HWND hwnd, int next_tab) {
+    if (next_tab == 3) {
+        /* Older Alt+4 shortcut: open the ranking subview, not a hidden page. */
+        g_log_apps = false;
+        g_log_ranking = true;
+        next_tab = 1;
+        if (g_tab == 1) {
+            log_controls_refresh(hwnd);
+            InvalidateRect(hwnd, NULL, FALSE);
+            return;
+        }
+    }
     if (next_tab < 0 || next_tab >= 6 || next_tab == g_tab) return;
     if (s_sub_remove_index >= 0) subs_cancel_remove(hwnd);
     s_sub_show_full = false;
@@ -4382,7 +4595,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_MOUSEWHEEL:
         if (g_tab == 1) {
-            if (!g_log_apps) log_freeze_current(hwnd);
+            if (!g_log_apps && !g_log_ranking && !g_log_external) log_freeze_current(hwnd);
             SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, WM_VSCROLL,
                 GET_WHEEL_DELTA_WPARAM(wp) > 0 ? SB_LINEUP : SB_LINEDOWN, 0);
             return 0;
@@ -4409,8 +4622,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP: {
         int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
         int new_tab = -1;
-        for (int tab = 0; tab < 6; ++tab) {
-            if (nav_hit(x, y, tab)) { new_tab = tab; break; }
+        for (int pos = 0; pos < 5; ++pos) {
+            if (nav_hit(x, y, pos)) { new_tab = g_sidebar_tabs[pos]; break; }
         }
         if (new_tab >= 0) {
             ui_navigate_to(hwnd, new_tab);
@@ -4428,6 +4641,16 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if(LOWORD(wp)==IDC_QLOG_EXPORT){log_export_start(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_DIAG){log_ingress_diagnostics(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_IMPORT){log_import_adguard(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_SOURCE) {
+            if(g_ag_import && !g_log_apps) {
+                g_log_external=!g_log_external;
+                SendDlgItemMessageW(hwnd,IDC_QLOG_LIST,LB_SETCURSEL,(WPARAM)-1,0);
+                log_controls_refresh(hwnd);
+                InvalidateRect(hwnd,NULL,FALSE);
+            }
+            return 0;
+        }
         if(LOWORD(wp)==IDC_QLOG_UID&&HIWORD(wp)==EN_CHANGE){GetDlgItemTextW(hwnd,IDC_QLOG_UID,g_log_uid,24);log_filter_schedule(hwnd);return 0;}
         if (LOWORD(wp) == IDC_QLOG_SEARCH && HIWORD(wp) == EN_CHANGE) {
             GetDlgItemTextW(hwnd, IDC_QLOG_SEARCH, g_log_search, 512);
@@ -4443,16 +4666,20 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (LOWORD(wp) == IDC_QLOG_LIST && HIWORD(wp) == LBN_SELCHANGE && !g_log_rendering) {
-            if (!g_log_apps) log_freeze_current(hwnd);
+            if (!g_log_apps && !g_log_ranking && !g_log_external) log_freeze_current(hwnd);
             log_details_refresh(hwnd);
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
-        if (LOWORD(wp) == IDC_QLOG_REQUESTS || LOWORD(wp) == IDC_QLOG_APPS) {
+        if (LOWORD(wp) == IDC_QLOG_REQUESTS || LOWORD(wp) == IDC_QLOG_APPS ||
+            LOWORD(wp) == IDC_QLOG_RANKING) {
             bool show_apps = LOWORD(wp) == IDC_QLOG_APPS;
-            if (g_log_apps != show_apps) {
+            bool show_rank = LOWORD(wp) == IDC_QLOG_RANKING;
+            if (g_log_apps != show_apps || g_log_ranking != show_rank) {
                 SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, LB_SETCURSEL, (WPARAM)-1, 0);
                 g_log_apps = show_apps;
+                g_log_ranking = show_rank;
+                if (show_apps) g_log_external = false; /* local-only application counters */
                 // Both subviews share the existing log control and details
                 // panel, not the network request denominator or search state.
                 log_controls_refresh(hwnd);
@@ -4478,8 +4705,11 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             }
             if (id == UI_ACCEL_NAV_NEXT || id == UI_ACCEL_NAV_PREV) {
-                ui_navigate_to(hwnd, (g_tab + 6 +
-                    (id == UI_ACCEL_NAV_NEXT ? 1 : -1)) % 6);
+                int current = 0;
+                for (int pos = 0; pos < 5; ++pos)
+                    if (g_sidebar_tabs[pos] == g_tab) { current = pos; break; }
+                ui_navigate_to(hwnd, g_sidebar_tabs[(current + 5 +
+                    (id == UI_ACCEL_NAV_NEXT ? 1 : -1)) % 5]);
                 return 0;
             }
         }
@@ -4912,17 +5142,6 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        if (g_tab == 3) {
-            /* 拦截排行 page */
-            draw_ranking_page(hdc);
-            BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
-            SelectObject(mem, oldbmp);
-            DeleteObject(bmp);
-            DeleteDC(mem);
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-
         /* Statistics page: compact AdGuard-inspired overview, but only for
            data the local HTTP response server truly measures. */
         const struct snapshot *sn = g_sn;
@@ -5175,6 +5394,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (g_poll_wake) { CloseHandle(g_poll_wake); g_poll_wake = NULL; }
         tray_remove();
+        ag_import_free(g_ag_import);
+        g_ag_import=NULL;
         if (g_ctl_font) { DeleteObject(g_ctl_font); g_ctl_font = NULL; }
         PostQuitMessage(0);
         return 0;
