@@ -88,16 +88,16 @@ int main(void){
         "{\"ProtocolVersion\":\"2\",\"LogRecords\":[]}");
     CHECK(ag_import_parse(invalid,strlen(invalid),&import)==AG_IMPORT_UNSUPPORTED);
     CHECK(import==NULL);
-    const char *empty="{\\"ProtocolVersion\\":\\"1\\",\\"LogRecords\\":[]}";
+    const char *empty="{\"ProtocolVersion\":\"1\",\"LogRecords\":[]}";
     CHECK(ag_import_parse(empty,strlen(empty),&import)==AG_IMPORT_INVALID);
     CHECK(import==NULL);
     const char *bad =
-        "{\\"ProtocolVersion\\":\\"1\\",\\"LogRecords\\":["
-        "{\\"RequestArgId\\":\\"00000000-0000-0000-0000-000000000009\\","
-        "\\"Time\\":\\"2026-02-30T10:00:00Z\\","
-        "\\"Host\\":\\"invalid.example\\",\\"ProtocolType\\":\\"Dns\\","
-        "\\"LogRecordType\\":0,\\"ProcessId\\":0,\\"FiredFilterId\\":0,"
-        "\\"StatusCode\\":0}]}";
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":["
+        "{\"RequestArgId\":\"00000000-0000-0000-0000-000000000009\","
+        "\"Time\":\"2026-02-30T10:00:00Z\","
+        "\"Host\":\"invalid.example\",\"ProtocolType\":\"Dns\","
+        "\"LogRecordType\":0,\"ProcessId\":0,\"FiredFilterId\":0,"
+        "\"StatusCode\":0}]}";
     CHECK(ag_import_parse(bad,strlen(bad),&import)==AG_IMPORT_INVALID);
     CHECK(import==NULL);
     CHECK(ag_import_parse(body,AG_IMPORT_MAX_BYTES+1,&import)==AG_IMPORT_TOO_LARGE);
