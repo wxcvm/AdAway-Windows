@@ -53,6 +53,18 @@ int main(void){
     CHECK(import->events[2].stealth_options==16384u);
     CHECK(!strcmp(import->events[2].app,"test-app.exe"));
     CHECK(!strstr(import->events[2].app,"synthetic"));
+    uint64_t anchor=0; int64_t anchor_seconds=0;
+    CHECK(ag_parse_timestamp("2026-11-04T10:10:54.1350494+08:00",&anchor,&anchor_seconds));
+    struct ag_window_counts window={0};
+    ag_window_count_imported(import,anchor,60u*1000000u,&window);
+    CHECK(window.imported==3 && window.imported_blocked==2 && window.imported_dns==1);
+    ag_window_count_local(anchor_seconds-30,1,anchor,60u*1000000u,&window);
+    ag_window_count_local(anchor_seconds-120,1,anchor,60u*1000000u,&window);
+    ag_window_count_local(anchor_seconds+1,1,anchor,60u*1000000u,&window);
+    CHECK(window.local_rows==1 && window.local_blocked==1);
+    struct ag_window_counts narrow={0};
+    ag_window_count_imported(import,anchor,10u*1000000u,&narrow);
+    CHECK(narrow.imported==1 && narrow.imported_blocked==1 && narrow.imported_dns==1);
     ag_import_free(import);
     CHECK(ag_import_parse(body,strlen(body),&import)==AG_IMPORT_OK);
     ag_import_free(import);
@@ -69,6 +81,12 @@ int main(void){
     CHECK(!strcmp(import->events[0].protocol,"Quic"));
     CHECK(!strcmp(import->events[0].app,"\xe6\xb5\x8b\xe8\xaf\x95\xe5\xba\x94\xe7\x94\xa8.exe"));
     ag_import_free(import);
+    const char *empty="{\\"ProtocolVersion\\":\\"1\\",\\"LogRecords\\":[]}";
+    CHECK(ag_import_parse(empty,strlen(empty),&import)==AG_IMPORT_OK);
+    CHECK(import && import->count==0 && import->scanned==0 && import->top_count==0);
+    ag_import_free(import);
+    const char embedded_nul[] = "{\\"ProtocolVersion\\":\\"1\\"}\\0garbage";
+    CHECK(ag_import_parse(embedded_nul,sizeof embedded_nul-1,&import)==AG_IMPORT_INVALID);
     char invalid[400];snprintf(invalid,sizeof invalid,
         "{\"ProtocolVersion\":\"2\",\"LogRecords\":[]}");
     CHECK(ag_import_parse(invalid,strlen(invalid),&import)==AG_IMPORT_UNSUPPORTED);
