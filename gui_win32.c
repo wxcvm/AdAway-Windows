@@ -1971,6 +1971,16 @@ static double stats_trend_value(const struct histogram *bucket, int series) {
     return requests - blocked;
 }
 
+/* Zero-filled buckets exist before the first received request. Do not paint
+ * flat colored baselines that imply measured trends without traffic. */
+static bool stats_history_has_requests(const struct histogram *history, int count) {
+    if (!history || count <= 0) return false;
+    if (count > HIST_MAX) count = HIST_MAX;
+    for (int i = 0; i < count; ++i)
+        if (history[i].requests > 0) return true;
+    return false;
+}
+
 /* Compact AdGuard-inspired KPI: a genuine sparkline is drawn only for metrics
  * with an actual time series. Connections have no per-bucket series in this
  * server contract, so do not invent one. */
@@ -2002,7 +2012,8 @@ static void draw_kpi(HDC hdc, int x, int y, int w, int h,
     DeleteObject(title_font);
     DeleteObject(value_font);
 
-    if (history && history_count > 1 && series >= 0) {
+    if (history_count > 1 && series >= 0 &&
+        stats_history_has_requests(history, history_count)) {
         int count = history_count < HIST_MAX ? history_count : HIST_MAX;
         double peak = series == 2 ? 100.0 : 1.0;
         for (int i = 0; i < count; ++i) {
@@ -2046,7 +2057,8 @@ static void draw_chart(HDC hdc, RECT panel, const wchar_t *title,
 
     int left = S(panel.left + 24), top = S(panel.top + 60);
     int usable_w = S(width - 42), usable_h = S(height - 100);
-    if (!history || history_count <= 0 || usable_w < 16 || usable_h < 16) {
+    if (!stats_history_has_requests(history, history_count) ||
+        usable_w < 16 || usable_h < 16) {
         SetTextColor(hdc, g_pal.muted);
         TextOutW(hdc, left, top + S(14), L"暂无本地请求趋势", 8);
         return;
@@ -2142,7 +2154,8 @@ static void draw_stats_type_panel(HDC hdc, const struct snapshot *sn) {
     }
     if (top_count == 0) {
         SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(x + 18), S(y + 103), L"暂无可验证的拦截分类统计", 13);
+        TextOutW(hdc, S(x + 18), S(y + 103), L"暂无可验证的拦截分类统计",
+                 (int)wcslen(L"暂无可验证的拦截分类统计"));
     } else {
         const COLORREF accents[] = {RGB(183, 103, 234), RGB(40, 200, 126),
                                     RGB(74, 147, 246), RGB(246, 192, 69),
