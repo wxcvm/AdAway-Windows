@@ -404,6 +404,8 @@ jobs:
           ./query_log_evidence_test.exe
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_filter_test.c -o query_log_filter_test.exe
           ./query_log_filter_test.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic query_log_view_test.c -o query_log_view_test.exe
+          ./query_log_view_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -I. -Ijni tools/query-log-client-probe.c dashboard_mongoose.o -o query-log-client-probe.exe -lws2_32 -lbcrypt
 
       - name: Test pinned query log contract and atomic Windows persistence
