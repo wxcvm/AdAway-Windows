@@ -2376,6 +2376,34 @@ static void draw_statusbar(HDC hdc) {
     DeleteObject(f);
 }
 
+/* A shared, bounded section header for the native settings cards. The
+ * existing controls and their HWND IDs remain unchanged; this is visual
+ * hierarchy only, not a second settings persistence layer. */
+static void draw_settings_section_header(HDC hdc, int x, int y,
+                                         const wchar_t *title,
+                                         const wchar_t *subtitle,
+                                         COLORREF accent) {
+    HBRUSH bar = CreateSolidBrush(accent);
+    RECT mark = {S(x), S(y + 4), S(x + 4), S(y + 23)};
+    FillRect(hdc, &mark, bar);
+    DeleteObject(bar);
+    HFONT heading = mfont(15, FW_SEMIBOLD);
+    HFONT small = mfont(11, FW_NORMAL);
+    HGDIOBJ original = SelectObject(hdc, heading);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, g_pal.text);
+    RECT head = {S(x + 14), S(y), S(x + 324), S(y + 28)};
+    DrawTextW(hdc, title, -1, &head, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+    SelectObject(hdc, small);
+    SetTextColor(hdc, g_pal.muted);
+    RECT detail = {S(x + 328), S(y + 2), S(996), S(y + 27)};
+    DrawTextW(hdc, subtitle, -1, &detail,
+              DT_SINGLELINE | DT_RIGHT | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(hdc, original);
+    DeleteObject(heading);
+    DeleteObject(small);
+}
+
 /* sidebar nav hit areas (logical units; callers pass physical coords) */
 static bool nav_hit(int x, int y, int which) {
     int top = 96 + which * 46;   /* six equally spaced navigation destinations */
@@ -4809,38 +4837,37 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         draw_sidebar(hdc);
 
         if (g_tab == 2) {
-            /* settings page */
-            /* grouped card backgrounds behind the native controls */
+            /* Settings page: grouped controls, clear scope and safer help.
+             * Keep every native ID/position stable for keyboard and CI tests. */
             rounded_card(hdc, 202, 12, 812, 240, 16, g_pal.card, g_pal.border);
             rounded_card(hdc, 202, 258, 812, 176, 16, g_pal.card, g_pal.border);
             rounded_card(hdc, 202, 442, 812, 182, 16, g_pal.card, g_pal.border);
+            draw_settings_section_header(hdc, 218, 20, L"网络监听",
+                L"IPv4 / IPv6 独立 · 端口修改后按需重启", RGB(40, 200, 126));
+            draw_settings_section_header(hdc, 218, 266, L"内容拦截",
+                L"按类别选择本地响应策略 · 点击即应用", RGB(183, 103, 234));
+            draw_settings_section_header(hdc, 218, 450, L"证书与维护",
+                L"证书信任、规则同步、更新与诊断", RGB(74, 147, 246));
 
-            HFONT shf = mfont(15, FW_SEMIBOLD);
-            HFONT lf = mfont(12, FW_NORMAL);
-            HFONT old = (HFONT)SelectObject(hdc, shf);
+            HFONT help_font = mfont(11, FW_NORMAL);
+            HGDIOBJ old = SelectObject(hdc, help_font);
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(218), S(20), L"服务器", 3);
-            SelectObject(hdc, lf);
             SetTextColor(hdc, g_pal.muted);
             wchar_t shint[320];
             char host[68]; listener_display_host(host);
-            swprintf(shint, 320,
-                     L"已保存：http://%hs:%d · IPv4 / IPv6 独立，留空关闭对应协议，重启后应用",
+            swprintf(shint, 320, L"已保存：http://%hs:%d · 监听配置独立保存；重启后生效",
                      host, g_http_port);
-            TextOutW(hdc, S(218), S(44), shint, (int)wcslen(shint));
-            TextOutW(hdc, S(218), S(76), L"HTTP 端口:", 9);
-            TextOutW(hdc, S(500), S(76), L"HTTPS 端口:", 10);
-            SelectObject(hdc, shf);
-            SetTextColor(hdc, g_pal.text);
-            TextOutW(hdc, S(218), S(266), L"拦截策略 · 点击切换响应方式", (int)wcslen(L"拦截策略 · 点击切换响应方式"));
-            TextOutW(hdc, S(218), S(450), L"证书与维护", 5);
-            SelectObject(hdc, lf);
-            SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(218), S(472), L"浏览器显示安全锁需要把 CA 证书加入受信任的根证书颁发机构。", 29);
+            RECT saved_rect = {S(218), S(45), S(996), S(64)};
+            DrawTextW(hdc, shint, -1, &saved_rect,
+                      DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            TextOutW(hdc, S(218), S(76), L"HTTP 端口:", (int)wcslen(L"HTTP 端口:"));
+            TextOutW(hdc, S(500), S(76), L"HTTPS 端口:", (int)wcslen(L"HTTPS 端口:"));
+            RECT trust_rect = {S(218), S(472), S(996), S(486)};
+            DrawTextW(hdc,
+                L"信任本机 CA 不保证所有 HTTPS 客户端接受证书；证书固定的应用可能拒绝连接。",
+                -1, &trust_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             SelectObject(hdc, old);
-            DeleteObject(shf);
-            DeleteObject(lf);
+            DeleteObject(help_font);
             draw_statusbar(hdc);
             BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
             SelectObject(mem, oldbmp);
