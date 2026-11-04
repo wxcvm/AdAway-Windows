@@ -3005,6 +3005,7 @@ static void log_controls_refresh(HWND hwnd) {
     SetDlgItemTextW(hwnd, IDC_QLOG_SOURCE,
         imported ? L"来源：AdGuard" : L"来源：AdAway");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_SOURCE), !g_log_apps && g_ag_import != NULL);
+    SetDlgItemTextW(hwnd, IDC_QLOG_DIAG, g_ag_import ? L"来源对照／诊断" : L"AdGuard 诊断");
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE),
@@ -3162,6 +3163,64 @@ static void log_time(long long stamp, wchar_t *out, size_t capacity, bool date) 
     struct tm *local = stamp > 0 ? localtime(&value) : NULL;
     if (!local || !wcsftime(out, capacity, date ? L"%Y-%m-%d %H:%M:%S" : L"%H:%M:%S", local))
         swprintf(out, capacity, L"时间未知");
+}
+
+/* User-selected, fixed windows anchored at the latest imported event.
+ * This compares independent observed counts; AdAway data is limited to
+ * the currently loaded, possibly filtered HTTP history page. */
+static void log_source_compare(HWND hwnd) {
+    if(!g_ag_import || !g_ag_import->count) {
+        log_ingress_diagnostics(hwnd);
+        return;
+    }
+    HMENU menu=CreatePopupMenu();
+    if(!menu)return;
+    AppendMenuW(menu,MF_STRING,1,L"查看原有监听诊断");
+    AppendMenuW(menu,MF_SEPARATOR,0,NULL);
+    AppendMenuW(menu,MF_STRING,2,L"来源对照 · 最近 15 分钟");
+    AppendMenuW(menu,MF_STRING,3,L"来源对照 · 最近 1 小时");
+    AppendMenuW(menu,MF_STRING,4,L"来源对照 · 最近 24 小时");
+    RECT rect={0};
+    GetWindowRect(GetDlgItem(hwnd,IDC_QLOG_DIAG),&rect);
+    SetForegroundWindow(hwnd);
+    int choice=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN,
+                              rect.left,rect.bottom,0,hwnd,NULL);
+    DestroyMenu(menu);
+    if(choice==1){log_ingress_diagnostics(hwnd);return;}
+    if(choice<2||choice>4)return;
+    int64_t seconds=choice==2?900:choice==3?3600:86400;
+    const wchar_t *label=choice==2?L"15 分钟":choice==3?L"1 小时":L"24 小时";
+    struct ag_source_compare compared=ag_compare_window(g_ag_import,seconds);
+    bool local_ready=g_sn && g_sn->qlog_ready && !g_sn->qlog_error &&
+        g_sn->qlog_revision==g_log_nav.revision;
+    if(local_ready)for(int i=0;i<g_sn->qlog_count;i++)
+        ag_compare_local_page_row(&compared,g_sn->qlog[i].ts,g_sn->qlog[i].action);
+    wchar_t first[48],last[48],local[240],report[1600];
+    log_time(compared.start_utc,first,48,true);
+    log_time(compared.end_utc,last,48,true);
+    if(local_ready)
+        swprintf(local,240,L"本页 HTTP 记录 %u 条，窗口内 %u 条，其中本地拦截响应 %u 条。\n"
+            L"当前筛选匹配 %u 条，页起点 %u；其他页及未到达监听器的请求不计入。",
+            (unsigned)g_sn->qlog_count,(unsigned)compared.local_events,
+            (unsigned)compared.local_blocked,
+            (unsigned)g_sn->qlog_page.total,(unsigned)g_sn->qlog_page.offset);
+    else
+        wcscpy(local,L"本地 HTTP 历史尚未就绪，不能把缺失记录当作零条；请刷新后重试。");
+    swprintf(report,1600,
+        L"对照范围：最新导入事件前 %ls\n"
+        L"%ls ～ %ls（本机显示时间，按 UTC 秒比较）\n\n"
+        L"AdGuard 离线日志\n"
+        L"  窗口内事件：%u 条；AdGuard 拦截事件：%u 条\n"
+        L"  总共导入：%u 条；DNS 和 TCP 可能分别产生事件\n\n"
+        L"AdAway 本地 Web 响应服务器\n"
+        L"  %ls\n\n"
+        L"这是两个来源的并排观测，不是全机流量覆盖率。\n"
+        L"双方记录没有共同请求 ID，不能据此推断单次事件匹配、"
+        L"同步延迟、漏拦率或合并拦截总数。\n"
+        L"导入是内存中的离线快照；重启后需要重新导入。",
+        label,first,last,(unsigned)compared.adguard_events,
+        (unsigned)compared.adguard_blocked,(unsigned)g_ag_import->count,local);
+    MessageBoxW(hwnd,report,L"AdGuard ↔ AdAway · 来源时间对照",MB_OK|MB_ICONINFORMATION);
 }
 
 static void log_freeze_current(HWND hwnd) {
@@ -4642,7 +4701,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if(LOWORD(wp)==IDC_QLOG_EXPORT){log_export_start(hwnd);return 0;}
-        if(LOWORD(wp)==IDC_QLOG_DIAG){log_ingress_diagnostics(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_DIAG){log_source_compare(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_IMPORT){log_import_adguard(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_SOURCE) {
             if(g_ag_import && !g_log_apps) {
