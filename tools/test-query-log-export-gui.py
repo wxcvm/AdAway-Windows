@@ -131,6 +131,49 @@ class Gui:
         u.SetForegroundWindow(window)
         wait(lambda:u.GetForegroundWindow()==window,'owned dialog could not be activated',3)
 
+    def messagebox_controls(self, parent):
+        # Win32 MessageBox templates may expose controls with different IDs
+        # across desktop themes. Discover the actual owned child HWNDs.
+        self.owned(parent)
+        controls=[]
+        @CALLBACK
+        def visit(hwnd,_):
+            pid=w.DWORD(); u.GetWindowThreadProcessId(hwnd,c.byref(pid))
+            if pid.value!=self.process.pid or not u.IsWindowVisible(hwnd):
+                return True
+            cls=c.create_unicode_buffer(256); u.GetClassNameW(hwnd,cls,256)
+            if cls.value in ('Button','Static'):
+                controls.append((hwnd,cls.value,u.GetDlgCtrlID(hwnd)))
+            return True
+        u.EnumChildWindows(parent,visit,0)
+        return [(hwnd,cls,control,self.text(hwnd)) for hwnd,cls,control in controls]
+
+    def confirm_messagebox(self,parent):
+        self.activate(parent)
+        def locate():
+            controls=self.messagebox_controls(parent)
+            labels=[text for _,cls,_,text in controls if cls=='Static']
+            buttons=[(hwnd,text) for hwnd,cls,_,text in controls
+                     if cls=='Button' and u.IsWindowEnabled(hwnd)]
+            ok=[hwnd for hwnd,text in buttons
+                if text.replace('&','').strip().casefold() in ('ok','确定')]
+            # Verify both native message content and the actual visible OK
+            # button. Never address another process or use global key input.
+            if not any('已导入' in text and '拦截事件' in text for text in labels):
+                return None
+            assert len(ok)<=1, 'multiple owned OK buttons in import dialog'
+            return ok[0] if ok else None
+        try:
+            button=wait(locate,'owned import result text/OK button not found',6)
+        except AssertionError as exc:
+            controls=self.messagebox_controls(parent)
+            evidence=[(cls,control,label[:60]) for _,cls,control,label in controls]
+            raise AssertionError(f'{exc}; visible owned controls={evidence}') from exc
+        self.capture('adguard-import-result',parent)
+        self.post(button,0xF5)  # BM_CLICK on the discovered native button.
+        wait(lambda:not self.find('#32770',self.main,title='AdGuard 离线导入完成'),
+             'native import result dialog did not close')
+
     def capture(self, name, window=None):
         window=self.owned(window or self.main)
         rect=w.RECT(); assert u.GetWindowRect(window,c.byref(rect))
@@ -457,11 +500,7 @@ def run(driver, exe, probe, evidence):
             wait(lambda:not gui.find('#32770',gui.main,title='Open'),'AdGuard Open dialog did not close')
             success=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 离线导入完成'),
                          'AdGuard import result dialog missing')
-            gui.child(success,1)  # Wait for MessageBoxW's OK button to be created.
-            message=gui.child(success,-1)  # IDC_STATIC in the native MessageBox template.
-            assert '导入' in gui.text(message),'AdGuard import result message was blank'
-            gui.capture('adguard-import-result',success)
-            gui.click(success,1)
+            gui.confirm_messagebox(success)
             imported=gui.child(gui.main,1215)
             wait(lambda:gui.send(imported,0x18B)==3,'AdGuard imported row count incorrect')
             assert gui.text(gui.child(gui.main,1224))=='来源：AdGuard'
