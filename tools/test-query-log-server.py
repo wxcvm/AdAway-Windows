@@ -197,6 +197,40 @@ class Fixture:
         assert client.returncode == 0 and client.stdout.strip() == b"valid-stats"
         return document
 
+    def verify_pre_http_arrival(self):
+        # A response-port TCP accept without an HTTP request is real ingress,
+        # but must not inflate the HTTP request counter or invent a log row.
+        before = self.validate_stats(0)
+        assert isinstance(before.get("response_tcp_accepts"), int)
+        existing_rows = self.page()["total"]
+        # Keep the socket open while the server's polling loop accepts it.
+        # Closing immediately could race the accept callback on Windows and
+        # produce a false-negative even though TCP connect() succeeded.
+        with socket.create_connection(("127.0.0.1", self.http), timeout=5):
+            last = before
+            for _ in range(80):
+                last = self.validate_stats(0)
+                if last["response_tcp_accepts"] >= before["response_tcp_accepts"] + 1:
+                    break
+                time.sleep(0.05)
+            assert last["response_tcp_accepts"] == before["response_tcp_accepts"] + 1, (
+                f"TCP accepted counter did not advance: before={before['response_tcp_accepts']} "
+                f"after={last['response_tcp_accepts']}")
+            assert last["total_requests"] == before["total_requests"], (
+                "TCP without a request cannot be counted as an HTTP request")
+            assert self.page()["total"] == existing_rows, (
+                "TCP without a request cannot appear in the query log")
+        # The management listener must reject ordinary Web URLs; it should
+        # never produce a user query row or inflate either ingress counter.
+        assert self.exchange(self.stats, "/query-log-fixture.gif",
+                             hostname="not-management.example.test")[0] == 404
+        after_management = self.validate_stats(0)
+        assert after_management["response_tcp_accepts"] == last["response_tcp_accepts"], (
+            "Management-port traffic leaked into response TCP counter")
+        assert after_management["total_requests"] == before["total_requests"], (
+            "Management-port traffic leaked into Web request counter")
+        assert self.page()["total"] == existing_rows
+
     def control(self, command):
         token = (self.resources / "control_token.txt").read_text(encoding="ascii").strip()
         result = self.exchange(self.stats, "/control", body=("cmd=" + command).encode("ascii"), token=token)
@@ -221,6 +255,7 @@ def run(exe, probe):
             fixture.start()
             fixture.verify_control_authentication()
             fixture.control("clear_query_log")
+            fixture.verify_pre_http_arrival()
             assert fixture.page()["total"] == 0
             fixture.batch(1, 600)
             fixture.validate_stats(600)
@@ -270,7 +305,7 @@ def run(exe, probe):
                         longHostStatsComplete=True,
                         ipv6AuthorityAndMissingHostPrivacy=True,
                         ipv4AndIpv6LogRecords=True, socketFamilyNotInferredFromHost=True,
-                        hostNetworkChanges=False)
+                        preHttpTcpArrivalsSeparatedFromLog=True, hostNetworkChanges=False)
         finally:
             fixture.stop()
 
