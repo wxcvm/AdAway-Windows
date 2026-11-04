@@ -81,11 +81,11 @@ int main(void){
     CHECK(!strcmp(import->events[0].protocol,"Quic"));
     CHECK(!strcmp(import->events[0].app,"\xe6\xb5\x8b\xe8\xaf\x95\xe5\xba\x94\xe7\x94\xa8.exe"));
     ag_import_free(import);
-    const char *empty="{\\"ProtocolVersion\\":\\"1\\",\\"LogRecords\\":[]}";
+    const char *empty="{\"ProtocolVersion\":\"1\",\"LogRecords\":[]}";
     CHECK(ag_import_parse(empty,strlen(empty),&import)==AG_IMPORT_OK);
     CHECK(import && import->count==0 && import->scanned==0 && import->top_count==0);
     ag_import_free(import);
-    const char embedded_nul[] = "{\\"ProtocolVersion\\":\\"1\\"}\\0garbage";
+    const char embedded_nul[] = "{\"ProtocolVersion\":\"1\"}\0garbage";
     CHECK(ag_import_parse(embedded_nul,sizeof embedded_nul-1,&import)==AG_IMPORT_INVALID);
     char invalid[400];snprintf(invalid,sizeof invalid,
         "{\"ProtocolVersion\":\"2\",\"LogRecords\":[]}");
