@@ -596,7 +596,8 @@ def run(driver, exe, probe, evidence):
             wait(lambda:gui.send(imported,0x18B)==1,
                  'new AdGuard snapshot did not populate its independent ranking')
             gui.click(gui.main,1224)
-            assert gui.text(gui.child(gui.main,1224))=='来源：AdAway'
+            wait(lambda:gui.text(gui.child(gui.main,1224))=='来源：AdAway',
+                 'source switch did not complete after native posted button click')
             wait(lambda:gui.send(imported,0x18B)==2,
                  'switching to AdAway did not restore its independent local ranking')
             gui.click(gui.main,1222)
