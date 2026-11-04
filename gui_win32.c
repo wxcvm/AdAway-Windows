@@ -3514,6 +3514,7 @@ static void log_import_adguard(HWND hwnd) {
     BOOL read_ok=ReadFile(handle,data,(DWORD)n,&got,NULL);
     CloseHandle(handle);
     if(!read_ok || got!=(DWORD)n) {
+        SecureZeroMemory(data,n+1);
         free(data);
         MessageBoxW(hwnd,L"未完整读取导出文件；原快照仍保留。",
             L"AdGuard 导入",MB_ICONERROR|MB_OK);
@@ -3522,7 +3523,8 @@ static void log_import_adguard(HWND hwnd) {
     data[n]=0;
     struct ag_import *staged=NULL;
     enum ag_import_error error=ag_import_parse(data,n,&staged);
-    free(data); /* immediately dispose of headers/cookies from the raw export */
+    SecureZeroMemory(data,n+1); /* raw export may contain private headers/cookies */
+    free(data);
     if(error!=AG_IMPORT_OK) {
         const wchar_t *reason=error==AG_IMPORT_UNSUPPORTED ?
             L"目前只支持 AdGuard 过滤日志 ProtocolVersion 1。" :
