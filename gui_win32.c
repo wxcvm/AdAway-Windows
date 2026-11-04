@@ -1131,6 +1131,7 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_LIST 1215
 #define IDC_QLOG_DETAILS 1216
 #define IDC_QLOG_APPS 1217
+#define IDC_QLOG_REQUESTS 1222
 #define IDC_QLOG_LIVE 1218
 #define IDC_QLOG_EXPORT 1219
 #define IDC_QLOG_UID 1220
@@ -2565,7 +2566,7 @@ static void draw_sidebar(HDC hdc) {
         SetTextColor(hdc, active ? RGB(255, 255, 255) : g_pal.nav_text);
         {
             const wchar_t *label = t == 0 ? L"统计"
-                                 : (t == 1 ? L"应用日志"
+                                 : (t == 1 ? L"日志中心"
                                  : (t == 2 ? L"设置"
                                  : (t == 3 ? L"拦截排行" : (t == 4 ? L"订阅" : L"网络中心"))));
             TextOutW(hdc, S(70), S(ny + 10), label, (int) wcslen(label));
@@ -2768,8 +2769,9 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_FILTER, 710, 90, 158, 200, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
     { IDC_QLOG_LIST, 218, 132, 784, 290, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
     { IDC_QLOG_DETAILS, 218, 466, 784, 96, L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL },
-    { IDC_QLOG_DIAG, 686, 24, 160, 28, L"BUTTON", L"日志对接诊断", BS_PUSHBUTTON },
-    { IDC_QLOG_APPS, 856, 24, 146, 28, L"BUTTON", L"查看应用统计", BS_PUSHBUTTON },
+    { IDC_QLOG_REQUESTS, 504, 24, 150, 28, L"BUTTON", L"✓ 请求记录", BS_PUSHBUTTON },
+    { IDC_QLOG_APPS, 662, 24, 150, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
+    { IDC_QLOG_DIAG, 820, 24, 182, 28, L"BUTTON", L"AdGuard 对接诊断", BS_PUSHBUTTON },
     { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
 };
 #define CL_LOG ((int)(sizeof(g_loglayout) / sizeof(g_loglayout[0])))
@@ -2935,11 +2937,13 @@ static void log_controls_refresh(HWND hwnd) {
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_NEXT), current && g_sn->qlog_page.has_more);
     for (int i = 0; i < CL_LOG; ++i) {
         int id = g_loglayout[i].id;
-        bool visible = g_tab == 1 && (!g_log_apps || id == IDC_QLOG_LIST ||
-            id == IDC_QLOG_DETAILS || id == IDC_QLOG_APPS);
+        bool shared = id == IDC_QLOG_LIST || id == IDC_QLOG_DETAILS ||
+            id == IDC_QLOG_APPS || id == IDC_QLOG_REQUESTS || id == IDC_QLOG_DIAG;
+        bool visible = g_tab == 1 && (!g_log_apps || shared);
         ShowWindow(GetDlgItem(hwnd, id), visible ? SW_SHOW : SW_HIDE);
     }
-    SetDlgItemTextW(hwnd, IDC_QLOG_APPS, g_log_apps ? L"返回请求日志" : L"查看应用统计");
+    SetDlgItemTextW(hwnd, IDC_QLOG_REQUESTS, g_log_apps ? L"请求记录" : L"✓ 请求记录");
+    SetDlgItemTextW(hwnd, IDC_QLOG_APPS, g_log_apps ? L"✓ 应用活动" : L"应用活动");
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_LIVE), g_sn && g_sn->qlog_ready && !g_sn->qlog_error);
@@ -3600,6 +3604,42 @@ static void draw_ranking_page(HDC hdc) {
     DeleteObject(lf);
 }
 
+/* These are counts of observed application rows, not of all running
+ * Windows processes. Keep unknown attribution visible instead of guessing. */
+static void draw_app_log_summary(HDC hdc, const struct snapshot *sn) {
+    int with_requests = 0, unknown = 0;
+    bool available = sn && sn->has_data;
+    if (available) for (int i = 0; i < sn->app_count; ++i) {
+        if (sn->apps[i].requests > 0) ++with_requests;
+        if (sn->apps[i].uid < 0) ++unknown;
+    }
+    const wchar_t *titles[] = {L"观测到的进程", L"有 Web 请求", L"未归属进程"};
+    int values[] = {available ? sn->app_count : 0, with_requests, unknown};
+    const COLORREF accents[] = {RGB(40, 200, 126), RGB(183, 103, 234), RGB(74, 147, 246)};
+    HFONT font = mfont(11, FW_SEMIBOLD);
+    HGDIOBJ old = SelectObject(hdc, font);
+    SetBkMode(hdc, TRANSPARENT);
+    for (int i = 0; i < 3; ++i) {
+        int x = 218 + i * 252;
+        rounded_card(hdc, x, 89, 244, 34, 9, g_pal.content_bg, g_pal.border);
+        HBRUSH mark = CreateSolidBrush(accents[i]);
+        RECT accent = {S(x + 8), S(98), S(x + 12), S(114)};
+        FillRect(hdc, &accent, mark);
+        DeleteObject(mark);
+        SetTextColor(hdc, g_pal.text);
+        TextOutW(hdc, S(x + 19), S(97), titles[i], (int)wcslen(titles[i]));
+        wchar_t value[20];
+        if (available) swprintf(value, 20, L"%d", values[i]);
+        else wcscpy(value, L"—");
+        SetTextColor(hdc, accents[i]);
+        RECT number = {S(x + 171), S(91), S(x + 232), S(119)};
+        DrawTextW(hdc, value, -1, &number,
+                  DT_SINGLELINE | DT_RIGHT | DT_VCENTER | DT_NOPREFIX);
+    }
+    SelectObject(hdc, old);
+    DeleteObject(font);
+}
+
 static void draw_activity_page(HDC hdc) {
     struct snapshot *sn = g_sn;
     rounded_card(hdc, 202, 12, 812, 608, 12, g_pal.card, g_pal.border);
@@ -3608,19 +3648,15 @@ static void draw_activity_page(HDC hdc) {
     HFONT old = (HFONT)SelectObject(hdc, title_font);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, g_pal.text);
-    RECT title = {S(218), S(24), S(838), S(54)};
-    DrawTextW(hdc, g_log_apps ? L"应用活动" : L"请求日志", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
+    RECT title = {S(218), S(24), S(498), S(54)};
+    DrawTextW(hdc, L"日志中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, g_pal.muted);
     RECT hint = {S(218), S(60), S(1002), S(82)};
     DrawTextW(hdc, g_log_apps ? L"仅显示服务器观测到的进程；连接、HTTP 请求与拦截响应分别计数。" :
         L"Web 响应服务器活动 · 搜索与分类覆盖全部保留历史，不代表整机 DNS。", -1, &hint,
         DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-    if (g_log_apps) {
-        RECT app_scope = {S(218), S(90), S(1002), S(119)};
-        DrawTextW(hdc, L"按请求数排列，列表可滚动；选中进程查看完整计数。", -1, &app_scope,
-            DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-    }
+    if (g_log_apps) draw_app_log_summary(hdc, sn);
     wchar_t count[240];
     if (g_log_apps) {
         swprintf(count, 240, L"已观测 %d 个进程；未知 PID 不推断为系统或当前应用。", sn ? sn->app_count : 0);
@@ -4384,12 +4420,17 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             InvalidateRect(hwnd, NULL, FALSE);
             return 0;
         }
-        if (LOWORD(wp) == IDC_QLOG_APPS) {
-            SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, LB_SETCURSEL, (WPARAM)-1, 0);
-            g_log_apps = !g_log_apps;
-            log_controls_refresh(hwnd);
-            log_details_refresh(hwnd);
-            InvalidateRect(hwnd, NULL, FALSE);
+        if (LOWORD(wp) == IDC_QLOG_REQUESTS || LOWORD(wp) == IDC_QLOG_APPS) {
+            bool show_apps = LOWORD(wp) == IDC_QLOG_APPS;
+            if (g_log_apps != show_apps) {
+                SendDlgItemMessageW(hwnd, IDC_QLOG_LIST, LB_SETCURSEL, (WPARAM)-1, 0);
+                g_log_apps = show_apps;
+                // Both subviews share the existing log control and details
+                // panel, not the network request denominator or search state.
+                log_controls_refresh(hwnd);
+                log_details_refresh(hwnd);
+                InvalidateRect(hwnd, NULL, FALSE);
+            }
             return 0;
         }
         if (LOWORD(wp) == IDC_QLOG_LIVE) {
