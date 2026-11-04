@@ -89,17 +89,21 @@ class Gui:
         self.send(hwnd, 0xD, len(buf), c.addressof(buf))
         return buf.value
 
-    def find(self, class_name, owner=None):
+    def find(self, class_name, owner=None, title=None):
         matches = []
         @CALLBACK
         def visit(hwnd, _):
             pid = w.DWORD(); u.GetWindowThreadProcessId(hwnd, c.byref(pid))
             cls = c.create_unicode_buffer(256); u.GetClassNameW(hwnd, cls, 256)
             if pid.value == self.process.pid and cls.value == class_name and u.IsWindowVisible(hwnd):
-                if owner is None or u.GetAncestor(hwnd, 3) == owner:
-                    matches.append(hwnd)
+                if owner is not None and u.GetAncestor(hwnd, 3) != owner:
+                    return True
+                if title is not None and self.text(hwnd) != title:
+                    return True
+                matches.append(hwnd)
             return True
         u.EnumWindows(visit, 0)
+        assert len(matches) <= 1, f'ambiguous owned {class_name} window title={title!r}'
         return matches[0] if matches else None
 
     def child(self, parent, control):
@@ -153,7 +157,7 @@ class Gui:
         self.activate(dialog)
         return dialog
 
-    def choose(self, dialog, path):
+    def choose(self, dialog, path, initial_values=('AdAway-requests','AdAway-requests.csv')):
         self.owned(dialog)
         assert u.GetAncestor(dialog, 3) == self.main
         controls = []
@@ -170,8 +174,11 @@ class Gui:
         # Windows builds. Never assume GetDlgItem(top-level) is sufficient.
         # Captured CI hierarchy: the DirectUI file name is native Edit 1001
         # inside its combo, while the address bar's 1001 is ToolbarWindow32.
-        edits = [x for x in controls if x['id'] in (0x480,1001) and x['cls']=='Edit']
-        combos = [x for x in controls if x['id']==0x47C and x['cls'] in ('ComboBox','ComboBoxEx32')]
+        # Save dialog: Edit 1001. Open dialog: the File name Edit has ID
+        # 1148 (0x47C), while its ComboBox/ComboBoxEx32 parents share that
+        # numeric ID; never select those wrapper controls as ambiguous peers.
+        edits = [x for x in controls if x['id'] in (0x480,1001,0x47C) and x['cls']=='Edit']
+        combos = [x for x in controls if x['id']==0x47C and x['cls']=='ComboBox']
         candidates = edits or combos
         assert len(candidates)<=1, 'ambiguous native file name controls'
         if candidates:
@@ -179,7 +186,7 @@ class Gui:
             # The common dialog becomes visible before it binds lpstrFile.
             # Wait for that observable default, not an arbitrary sleep; an
             # earlier SetWindowText was overwritten by native initialization.
-            wait(lambda:self.text(edit) in ('AdAway-requests','AdAway-requests.csv'),
+            wait(lambda:self.text(edit) in initial_values,
                  'native file name initialization did not complete')
             if candidates[0]['cls']=='Edit':
                 # WM_SETTEXT changed pixels but did not commit the DirectUI
@@ -304,7 +311,12 @@ class Controlled:
                 code = 200
                 if parsed.path == '/internal-stats':
                     body = dict(uptime_seconds=10, total_requests=owner.count, total_connections=owner.count,
-                                blocked_images=owner.count, top_blocked=[], apps=[], query_log=[])
+                                blocked_images=owner.count,
+                                top_blocked=[dict(host='b.example',count=3),
+                                             dict(host='',count=99),
+                                             dict(host='a.example',count=7),
+                                             dict(host='zero.example',count=0)],
+                                apps=[], query_log=[])
                 elif parsed.path == '/internal-qlog':
                     offset = int(q.get('offset', ['0'])[0]); frozen = 'generation' in q
                     owner.requests.append(dict(offset=offset, frozen=frozen, query=q))
@@ -412,6 +424,83 @@ def run(driver, exe, probe, evidence):
     try:
         gui=Gui(driver,root/'controlled-gui',fixture.resources,(controlled.port,controlled.port,controlled.port))
         try:
+            # Synthetic offline AdGuard v1 export; no private user log is in CI.
+            sample=dict(ProtocolVersion='1',LogRecords=[
+                dict(RequestArgId='10000000-0000-0000-0000-000000000001',
+                     Time='2026-11-04T10:10:24.0822308+08:00',
+                     Host='blocked.example.test',RemoteIpAddress='192.0.2.10:443',
+                     ProtocolType='Tcp',Type=2048,AppliedStealthModeOptions=16384,
+                     LogRecordType=0,ProcessId=4242,FiredFilterId=3,StatusCode=0,
+                     AppPath=r'C:\synthetic\test-app.exe',
+                     Rule='||blocked.example.test^',
+                     RequestHeaders={'Cookie':'SYNTHETIC-NOT-FOR-UI'}),
+                dict(RequestArgId='10000000-0000-0000-0000-000000000002',
+                     Time='2026-11-04T10:10:54.1350494+08:00',
+                     Host='blocked.example.test',RemoteIpAddress=None,
+                     ProtocolType='Dns',Type=8192,
+                     LogRecordType=0,ProcessId=0,FiredFilterId=5,StatusCode=0,
+                     AppPath=None,Rule='||blocked.example.test^',DnsType='A'),
+                dict(RequestArgId='10000000-0000-0000-0000-000000000003',
+                     Time='2026-11-04T10:10:40.000+08:00',
+                     Host='allowed.example',ProtocolType='Tcp',
+                     LogRecordType=3,ProcessId=12,FiredFilterId=0,StatusCode=200,
+                     AppPath='Helper.exe',Rule=None)])
+            path=gui.root/'adguard-filter-test.json'
+            path.write_text(json.dumps(sample,ensure_ascii=False),encoding='utf-8')
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),'AdGuard owned Open dialog missing')
+            gui.choose(chooser,path,initial_values=('',))
+            wait(lambda:not gui.find('#32770',gui.main,title='Open'),'AdGuard Open dialog did not close')
+            success=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 离线导入完成'),
+                         'AdGuard import result dialog missing')
+            gui.click(success,1)
+            imported=gui.child(gui.main,1215)
+            wait(lambda:gui.send(imported,0x18B)==3,'AdGuard imported row count incorrect')
+            assert gui.text(gui.child(gui.main,1224))=='来源：AdGuard'
+            assert gui.send(imported,0x186,0,0)==0
+            gui.send(gui.main,0x111,(1<<16)|1215,imported)
+            details=gui.child(gui.main,1216)
+            wait(lambda:'10:10:54' in gui.text(details),'AdGuard original timezone not preserved')
+            assert 'Dns' in gui.text(details) and 'SYNTHETIC-NOT-FOR-UI' not in gui.text(details)
+            gui.send(imported,0x186,2,0)
+            gui.send(gui.main,0x111,(1<<16)|1215,imported)
+            wait(lambda:'192.0.2.10:443' in gui.text(details),
+                 'AdGuard remote endpoint was not retained in sanitized details')
+            assert 'IPv4' in gui.text(details) and '其他' in gui.text(details)
+            assert 'Protection from DPI was applied' in gui.text(details)
+            gui.click(gui.main,1223)
+            wait(lambda:gui.send(imported,0x18B)==1,'AdGuard blocked-host rank not grouped')
+            assert gui.send(imported,0x186,0,0)==0
+            gui.send(gui.main,0x111,(1<<16)|1215,imported)
+            wait(lambda:'2 条' in gui.text(details),'AdGuard DNS and TCP block events were lost')
+            gui.capture('imported-adguard-rank')
+            gui.click(gui.main,1224)
+            assert gui.text(gui.child(gui.main,1224))=='来源：AdAway'
+            wait(lambda:gui.send(imported,0x18B)==2,
+                 'switching to AdAway did not restore its independent local ranking')
+            gui.click(gui.main,1222)
+            wait(lambda:u.IsWindowVisible(gui.button) and u.IsWindowEnabled(gui.button),
+                 'AdAway export unavailable after switching imported source off')
+            record('adguard-v1-open-import-time-provenance-private-details-and-source-toggle')
+            # Real native log-center tab: skip phantom/zero hosts, then sort
+            # the valid local block counts. Click into details and back.
+            gui.click(gui.main, 1223)
+            ranked=gui.child(gui.main, 1215)
+            wait(lambda: gui.send(ranked, 0x18B)==2,
+                 'ranking tab did not display two valid local hosts')
+            assert gui.send(ranked, 0x186, 0, 0)==0  # LB_SETCURSEL first row
+            gui.send(gui.main, 0x111, (1<<16)|1215, ranked)  # LBN_SELCHANGE
+            details=gui.child(gui.main, 1216)
+            wait(lambda: 'a.example' in gui.text(details),
+                 'ranking detail did not follow sorted first row')
+            assert '7 次' in gui.text(details) and 'AdAway' in gui.text(details)
+            gui.capture('merged-ranking-detail')
+            gui.click(gui.main, 1222)
+            wait(lambda: gui.text(gui.child(gui.main,1222))=='✓ 请求记录',
+                 'ranking did not return to the request view')
+            assert u.IsWindowVisible(gui.button), 'request-only export not restored'
+            record('local-ranking-sort-detail-source-and-return-to-request')
+
             target=gui.root/'cancelled.csv'; target.write_bytes(b'old bytes')
             controlled.hold=True
             dialog=gui.dialog(); gui.choose(dialog,target)
