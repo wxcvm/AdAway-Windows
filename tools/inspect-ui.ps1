@@ -123,6 +123,25 @@ function Save-Window([string]$Name) {
 }
 Set-ClientSize 1032 678
 Set-Page 0; Save-Window 'overview-light'
+# Verify the real production range selector, including navigation persistence.
+$rangeButton=[UiReviewNative]::GetDlgItem($window,1320)
+if (!$rangeButton -or ![UiReviewNative]::IsWindowVisible($rangeButton) -or
+    (Read-ControlText $rangeButton) -ne '过去 24 小时') {
+    throw 'Statistics overview has no usable default 24-hour selector'
+}
+Send-BoundedMessage $window 0x111 ([IntPtr]1320) ([IntPtr]::Zero)
+if ((Read-ControlText $rangeButton) -ne '过去 30 天') {
+    throw 'Statistics period switch did not select 30-day history'
+}
+Save-Window 'overview-30-days-light'
+Set-Page 1; Set-Page 0
+if ((Read-ControlText $rangeButton) -ne '过去 30 天') {
+    throw 'Statistics range was unexpectedly reset on navigation'
+}
+Send-BoundedMessage $window 0x111 ([IntPtr]1320) ([IntPtr]::Zero)
+if ((Read-ControlText $rangeButton) -ne '过去 24 小时') {
+    throw 'Statistics range switch did not restore 24-hour history'
+}
 Set-Page 1
 foreach ($id in @(1210,1211,1212,1213,1214,1215,1216,1217,1218)) {
     $button=[UiReviewNative]::GetDlgItem($window,$id)
@@ -601,6 +620,10 @@ Save-Window 'settings-dark-compact'
 Set-Page 4; Save-Window 'subscriptions-dark-compact'
 Set-ClientSize 1032 678
 Save-Window 'subscriptions-dark'
+Set-Page 0; Save-Window 'overview-dark'
+if ((Read-ControlText $rangeButton) -ne '过去 24 小时') {
+    throw 'Statistics range changed unexpectedly after dark-theme navigation'
+}
 $records | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $OutputDirectory 'layout-evidence.json')
 $compact=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark-compact').FontHeight)
 $standard=[Math]::Abs(($records | Where-Object Name -eq 'settings-dark').FontHeight)
