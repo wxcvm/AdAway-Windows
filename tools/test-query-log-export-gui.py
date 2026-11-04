@@ -593,6 +593,8 @@ def run(driver, exe, probe, evidence):
             # A successful import intentionally resets to Requests; explicitly
             # return to Ranking before asserting independent source rankings.
             gui.click(gui.main,1223)
+            wait(lambda:gui.text(gui.child(gui.main,1223))=='✓ 拦截排行',
+                 'successful re-import did not return to the AdGuard ranking view')
             wait(lambda:gui.send(imported,0x18B)==1,
                  'new AdGuard snapshot did not populate its independent ranking')
             gui.click(gui.main,1224)
