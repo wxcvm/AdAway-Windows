@@ -143,7 +143,7 @@ if ((Read-ControlText $rangeButton) -ne '过去 24 小时') {
     throw 'Statistics range switch did not restore 24-hour history'
 }
 Set-Page 1
-foreach ($id in @(1210,1211,1212,1213,1214,1215,1216,1217,1218)) {
+foreach ($id in @(1210,1211,1212,1213,1214,1215,1216,1217,1218,1221,1222)) {
     $button=[UiReviewNative]::GetDlgItem($window,$id)
     if (!$button -or ![UiReviewNative]::IsWindowVisible($button)) { throw "History control missing: $id" }
 }
@@ -241,11 +241,28 @@ try {
     Send-BoundedMessage $window 0x111 ([IntPtr](1214 -bor (1 -shl 16))) $logFilter
     Set-ControlText $logSearch ''
     Wait-FilteredPage $rowCount
+    $requestTab=[UiReviewNative]::GetDlgItem($window,1222)
+    $appTab=[UiReviewNative]::GetDlgItem($window,1217)
+    if ((Read-ControlText $requestTab) -ne '✓ 请求记录' -or (Read-ControlText $appTab) -ne '应用活动') {
+        throw 'The unified log center does not initially select request history'
+    }
     Send-BoundedMessage $window 0x111 ([IntPtr]1217) ([IntPtr]::Zero)
-    if ([UiReviewNative]::IsWindowVisible($logSearch)) { throw 'Log filters overlap independent application view' }
+    if ([UiReviewNative]::IsWindowVisible($logSearch) -or
+        (Read-ControlText $appTab) -ne '✓ 应用活动' -or
+        (Read-ControlText $requestTab) -ne '请求记录') {
+        throw 'Application activity is not an independent log-center tab'
+    }
     Save-Window 'logs-applications-view'
+    # Selecting the active tab must be idempotent.
     Send-BoundedMessage $window 0x111 ([IntPtr]1217) ([IntPtr]::Zero)
-    if (![UiReviewNative]::IsWindowVisible($logSearch)) { throw 'Returning to request history did not restore filters' }
+    if ((Read-ControlText $appTab) -ne '✓ 应用活动') {
+        throw 'Repeated click left the application activity tab'
+    }
+    Send-BoundedMessage $window 0x111 ([IntPtr]1222) ([IntPtr]::Zero)
+    if (![UiReviewNative]::IsWindowVisible($logSearch) -or
+        (Read-ControlText $requestTab) -ne '✓ 请求记录') {
+        throw 'Returning to request history did not restore filters'
+    }
     Send-BoundedMessage $window 0x111 ([IntPtr]1218) ([IntPtr]::Zero)
     Wait-LogButtons $false $true
     if ((Read-ControlText ([UiReviewNative]::GetDlgItem($window,1218))) -ne '暂停刷新') { throw 'Resume did not restore live first-page mode' }
