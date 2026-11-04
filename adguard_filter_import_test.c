@@ -1,4 +1,5 @@
 #include "adguard_filter_import.h"
+#include "adguard_window_compare.h"
 #include <stdio.h>
 #include <stdlib.h>
 #define CHECK(x) do { if(!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);exit(1);} }while(0)
@@ -53,6 +54,20 @@ int main(void){
     CHECK(import->events[2].stealth_options==16384u);
     CHECK(!strcmp(import->events[2].app,"test-app.exe"));
     CHECK(!strstr(import->events[2].app,"synthetic"));
+    struct ag_window_compare coverage;
+    CHECK(ag_window_compare_begin(&coverage,import,3600));
+    CHECK(coverage.imported==3 && coverage.imported_blocked==2);
+    CHECK(coverage.imported_dns==1 && coverage.local==0);
+    ag_window_compare_local(&coverage,coverage.until,1);
+    ag_window_compare_local(&coverage,coverage.until-5,2);
+    ag_window_compare_local(&coverage,coverage.since-1,1);
+    ag_window_compare_local(&coverage,coverage.until+1,1);
+    CHECK(coverage.local==2 && coverage.local_blocked==1);
+    CHECK(ag_window_compare_begin(&coverage,import,15));
+    CHECK(coverage.imported==1 && coverage.imported_blocked==1 && coverage.imported_dns==1);
+    CHECK(ag_window_compare_begin(&coverage,import,86400));
+    CHECK(coverage.imported==3);
+    CHECK(!ag_window_compare_begin(&coverage,import,0));
     ag_import_free(import);
     CHECK(ag_import_parse(body,strlen(body),&import)==AG_IMPORT_OK);
     ag_import_free(import);
@@ -72,6 +87,21 @@ int main(void){
     char invalid[400];snprintf(invalid,sizeof invalid,
         "{\"ProtocolVersion\":\"2\",\"LogRecords\":[]}");
     CHECK(ag_import_parse(invalid,strlen(invalid),&import)==AG_IMPORT_UNSUPPORTED);
+    CHECK(import==NULL);
+    const char *empty="{\\"ProtocolVersion\\":\\"1\\",\\"LogRecords\\":[]}";
+    CHECK(ag_import_parse(empty,strlen(empty),&import)==AG_IMPORT_INVALID);
+    CHECK(import==NULL);
+    const char *bad =
+        "{\\"ProtocolVersion\\":\\"1\\",\\"LogRecords\\":["
+        "{\\"RequestArgId\\":\\"00000000-0000-0000-0000-000000000009\\","
+        "\\"Time\\":\\"2026-02-30T10:00:00Z\\","
+        "\\"Host\\":\\"invalid.example\\",\\"ProtocolType\\":\\"Dns\\","
+        "\\"LogRecordType\\":0,\\"ProcessId\\":0,\\"FiredFilterId\\":0,"
+        "\\"StatusCode\\":0}]}";
+    CHECK(ag_import_parse(bad,strlen(bad),&import)==AG_IMPORT_INVALID);
+    CHECK(import==NULL);
+    CHECK(ag_import_parse(body,AG_IMPORT_MAX_BYTES+1,&import)==AG_IMPORT_TOO_LARGE);
+    CHECK(import==NULL);
     puts("PASS: AdGuard v1 synthetic JSON, UTC offset, independent DNS/TCP events, dedup, privacy, ranking");
     return 0;
 }
