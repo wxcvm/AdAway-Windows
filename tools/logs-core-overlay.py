@@ -42,6 +42,40 @@ static void req_host_of(struct mg_http_message *hm, char *out, size_t cap) {
         if source.count(old) != expected:
             raise ValueError("query log connection hook changed: " + old)
         source = source.replace(old, old.replace(", hm);", ", hm, c);"))
+    # The HTTP history starts at MG_EV_HTTP_MSG, so a TCP connection accepted
+    # by the response listener with no HTTP message (e.g. failed TLS) cannot
+    # appear in that history. Count response-port TCP arrivals separately,
+    # excluding management-port polls. This is process-lifetime diagnostic
+    # evidence; never inflate total_requests or blocked counts with it.
+    # Stats JSON is built above fn(); the counter must be declared before
+    # the stats builder to keep the generated C valid under C11.
+    replace('static int build_stats_json(struct settings *s, char *out, size_t out_sz) {',
+            'static uint64_t s_response_tcp_accepts;\n'
+            'static int build_stats_json(struct settings *s, char *out, size_t out_sz) {')
+    # mg_addr.port is network-byte-order in the pinned Mongoose header.
+    # The upstream comparisons incorrectly treat it as a host-order integer.
+    # This broke the management-only port guard and polluted listener counts.
+    upstream_port_check = 'c->loc.port == (uint16_t) s->stats_port'
+    if source.count(upstream_port_check) != 2:
+        raise ValueError("management-port comparison contract changed")
+    source = source.replace(upstream_port_check,
+                            'mg_ntohs(c->loc.port) == (uint16_t) s->stats_port')
+
+    replace('        /* Connections are counted when the first REAL request arrives',
+            '        struct settings *listener_settings = (struct settings *)c->fn_data;\n'
+            '        if (listener_settings &&\n'
+            '            mg_ntohs(c->loc.port) != (uint16_t)listener_settings->stats_port)\n'
+            '            s_response_tcp_accepts++;\n'
+            '        /* Connections are counted when the first REAL request arrives')
+    replace(r'        "\"total_connections\":%llu,"',
+            r'        "\"response_tcp_accepts\":%llu,"' + '\n' +
+            r'        "\"total_connections\":%llu,"')
+    replace('        (unsigned long long)req,\n'
+            '        (unsigned long long)s_stats.total_connections,',
+            '        (unsigned long long)req,\n'
+            '        (unsigned long long)s_response_tcp_accepts,\n'
+            '        (unsigned long long)s_stats.total_connections,')
+
     # Response evidence is captured after the actual reply, not guessed from
     # classification; keep-alive responses must start at this event's offset.
     replace('    struct mg_http_message *hm = (struct mg_http_message *)ev_data;\n    struct settings *s = (struct settings *)c->fn_data;',

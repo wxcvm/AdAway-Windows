@@ -56,6 +56,7 @@
 #include "listener_arrival_dialog_win32.h"
 #include "control_http_result.h"
 #include "dashboard_response.h"
+#include "web_block_rate.h"
 #include "query_log_navigation.h"
 #include "query_log_filter.h"
 #include "query_log_view.h"
@@ -208,6 +209,8 @@ struct top_row {
 struct snapshot {
     long long uptime_seconds;
     long long total_requests;
+    long long response_tcp_accepts; /* Unparsed TCP accepts on response listeners, this process only. */
+    bool response_tcp_accepts_reported;
     long long total_connections;
     long long tls_handshakes;
     /* 证书被拒：TLS 握手失败总数。做证书固定（pinning）的客户端会持续失败，
@@ -734,6 +737,8 @@ static void snapshot_fetch(int port, struct snapshot *sn) {
     if (!dashboard_stats_valid(mg_str(buf))) return;
     sn->uptime_seconds = json_num(buf, "uptime_seconds");
     sn->total_requests = json_num(buf, "total_requests");
+    sn->response_tcp_accepts_reported = mg_json_get_tok(mg_str(buf), "$.response_tcp_accepts").len != 0;
+    sn->response_tcp_accepts = json_num(buf, "response_tcp_accepts");
     sn->total_connections = json_num(buf, "total_connections");
     sn->tls_handshakes = json_num(buf, "tls_handshakes");
     sn->tls_failures = json_num(buf, "tls_failures");
@@ -1129,6 +1134,8 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_LIVE 1218
 #define IDC_QLOG_EXPORT 1219
 #define IDC_QLOG_UID 1220
+#define IDC_STATS_RANGE 1320
+#define IDC_QLOG_DIAG 1221
 #define IDC_POL0      1110
 #define IDC_SUBRELOAD 1130
 #define IDC_POLDEF    1131   /* 恢复推荐默认 */
@@ -1868,6 +1875,7 @@ static DWORD g_adguard_probe_tick = 0;
 static struct wintun_probe_result g_wintun_probe;
 
 static int g_tab = 0;               /* 0 = statistics, 1 = 应用日志, 2 = settings */
+static bool g_stats_show_month = false;
 /* Operation results persist; live service and certificate state have dedicated labels. */
 static wchar_t g_status[4096] = L"就绪 · 使用左侧“订阅”管理规则来源";
 static int s_ctrl_count = 0;
@@ -1953,175 +1961,226 @@ static void fmt_num(wchar_t *dst, size_t n, long long v) {
     else swprintf(dst, n, L"%lld", v);
 }
 
-static void draw_kpi(HDC hdc, int x, int y, int w, int h,
-                     const wchar_t *label, const wchar_t *value,
-                     COLORREF accent) {
-    rounded_card(hdc, x + 1, y + 2, w, h, 12, g_pal.gridline, g_pal.gridline);  /* soft shadow */
-    rounded_card(hdc, x, y, w, h, 12, g_pal.card, g_pal.border);
-    HBRUSH ab = CreateSolidBrush(accent);
-    HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
-    HGDIOBJ ob = SelectObject(hdc, ab);
-    RoundRect(hdc, S(x + 3), S(y + 14), S(x + 7), S(y + h - 14), S(4), S(4));  /* accent bar */
-    Ellipse(hdc, S(x + w - 15), S(y + 13), S(x + w - 8), S(y + 20));           /* corner dot */
-    SelectObject(hdc, op);
-    SelectObject(hdc, ob);
-    DeleteObject(ab);
-    HFONT vf = mfont(20, FW_SEMIBOLD);
-    HFONT lf = mfont(12, FW_NORMAL);
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, g_pal.text);
-    HFONT old = (HFONT)SelectObject(hdc, vf);
-    TextOutW(hdc, S(x + 16), S(y + 16), value, (int)wcslen(value));
-    SetTextColor(hdc, g_pal.muted);
-    SelectObject(hdc, lf);
-    TextOutW(hdc, S(x + 16), S(y + 46), label, (int)wcslen(label));
-    SelectObject(hdc, old);
-    DeleteObject(vf);
-    DeleteObject(lf);
+static double stats_trend_value(const struct histogram *bucket, int series) {
+    double requests = bucket->requests > 0 ? (double)bucket->requests : 0.0;
+    double blocked = bucket->blocked > 0 ? (double)bucket->blocked : 0.0;
+    if (blocked > requests) blocked = requests;
+    if (series == 0) return requests;
+    if (series == 1) return blocked;
+    if (series == 2) return requests > 0.0 ? blocked * 100.0 / requests : 0.0;
+    return requests - blocked;
 }
 
+/* Compact AdGuard-inspired KPI: a genuine sparkline is drawn only for metrics
+ * with an actual time series. Connections have no per-bucket series in this
+ * server contract, so do not invent one. */
+static void draw_kpi(HDC hdc, int x, int y, int w, int h,
+                     const wchar_t *label, const wchar_t *value,
+                     COLORREF accent, const struct histogram *history,
+                     int history_count, int series) {
+    rounded_card(hdc, x + 1, y + 2, w, h, 12, g_pal.gridline, g_pal.gridline);
+    rounded_card(hdc, x, y, w, h, 12, g_pal.card, g_pal.border);
+    HBRUSH brush = CreateSolidBrush(accent);
+    HGDIOBJ old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+    HGDIOBJ old_brush = SelectObject(hdc, brush);
+    RoundRect(hdc, S(x + 10), S(y + 12), S(x + 15), S(y + 27), S(4), S(4));
+    Ellipse(hdc, S(x + w - 20), S(y + 14), S(x + w - 11), S(y + 23));
+    SelectObject(hdc, old_brush);
+    SelectObject(hdc, old_pen);
+    DeleteObject(brush);
+
+    HFONT title_font = mfont(12, FW_NORMAL);
+    HFONT value_font = mfont(21, FW_SEMIBOLD);
+    SetBkMode(hdc, TRANSPARENT);
+    HGDIOBJ original = SelectObject(hdc, title_font);
+    SetTextColor(hdc, g_pal.muted);
+    TextOutW(hdc, S(x + 24), S(y + 12), label, (int)wcslen(label));
+    SelectObject(hdc, value_font);
+    SetTextColor(hdc, g_pal.text);
+    TextOutW(hdc, S(x + 16), S(y + 32), value, (int)wcslen(value));
+    SelectObject(hdc, original);
+    DeleteObject(title_font);
+    DeleteObject(value_font);
+
+    if (history && history_count > 1 && series >= 0) {
+        int count = history_count < HIST_MAX ? history_count : HIST_MAX;
+        double peak = series == 2 ? 100.0 : 1.0;
+        for (int i = 0; i < count; ++i) {
+            double value_now = stats_trend_value(&history[i], series);
+            if (value_now > peak) peak = value_now;
+        }
+        POINT points[HIST_MAX];
+        for (int i = 0; i < count; ++i) {
+            double now = stats_trend_value(&history[i], series);
+            points[i].x = S(x + 14) + (int)((double)S(w - 28) * i / (count - 1));
+            points[i].y = S(y + h - 10) - (int)((double)S(17) * now / peak);
+        }
+        HPEN line = CreatePen(PS_SOLID, S(2) > 1 ? S(2) : 1, accent);
+        HGDIOBJ old = SelectObject(hdc, line);
+        Polyline(hdc, points, count);
+        SelectObject(hdc, old);
+        DeleteObject(line);
+    } else {
+        HFONT hint_font = mfont(10, FW_NORMAL);
+        HGDIOBJ old = SelectObject(hdc, hint_font);
+        SetTextColor(hdc, g_pal.muted);
+        TextOutW(hdc, S(x + 16), S(y + h - 22), L"本地累计", 4);
+        SelectObject(hdc, old);
+        DeleteObject(hint_font);
+    }
+}
+
+/* One truthful combined trend: counted Web requests, blocked and the
+ * remainder (not necessarily "allowed"; some were forwarded or exempted). */
 static void draw_chart(HDC hdc, RECT panel, const wchar_t *title,
-                       const struct histogram *h, int count) {
-    rounded_card(hdc, panel.left, panel.top,
-                 panel.right - panel.left, panel.bottom - panel.top, 12, g_pal.card, g_pal.border);
-    HFONT tf = mfont(14, FW_SEMIBOLD);
+                       const struct histogram *history, int history_count) {
+    int width = panel.right - panel.left, height = panel.bottom - panel.top;
+    rounded_card(hdc, panel.left, panel.top, width, height, 12, g_pal.card, g_pal.border);
+    HFONT title_font = mfont(14, FW_SEMIBOLD);
+    HGDIOBJ original = SelectObject(hdc, title_font);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, g_pal.text);
-    HFONT old = (HFONT)SelectObject(hdc, tf);
-    TextOutW(hdc, S(panel.left + 16), S(panel.top + 12), title, (int)wcslen(title));
-    SelectObject(hdc, old);
-    DeleteObject(tf);
+    TextOutW(hdc, S(panel.left + 16), S(panel.top + 14), title, (int)wcslen(title));
+    SelectObject(hdc, original);
+    DeleteObject(title_font);
 
-    int ax = panel.left + 20, ay = panel.top + 42;
-    int aw = panel.right - panel.left - 34, ah = panel.bottom - panel.top - 62;
-    if (count <= 0 || aw < 10 || ah < 10) {
+    int left = S(panel.left + 24), top = S(panel.top + 60);
+    int usable_w = S(width - 42), usable_h = S(height - 100);
+    if (!history || history_count <= 0 || usable_w < 16 || usable_h < 16) {
         SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(ax + 4), S(ay + 12), L"暂无数据", 4);
+        TextOutW(hdc, left, top + S(14), L"暂无本地请求趋势", 8);
         return;
     }
-    long long maxv = 1;
-    for (int i = 0; i < count; i++) {
-        if (h[i].requests > maxv) maxv = h[i].requests;
-        if (h[i].blocked > maxv) maxv = h[i].blocked;
+    int count = history_count < HIST_MAX ? history_count : HIST_MAX;
+    double peak = 1.0;
+    for (int i = 0; i < count; ++i) {
+        double requests = stats_trend_value(&history[i], 0);
+        if (requests > peak) peak = requests;
     }
-    HPEN gp = CreatePen(PS_SOLID, 1, g_pal.gridline);
-    HGDIOBJ gop = SelectObject(hdc, gp);
-    for (int g = 0; g <= 3; g++) {
-        int gy = S(ay) + (int)((double)(S(ah)) * g / 3.0);
-        MoveToEx(hdc, S(ax), gy, NULL);
-        LineTo(hdc, S(ax) + S(aw), gy);
+    HPEN grid = CreatePen(PS_SOLID, 1, g_pal.gridline);
+    HGDIOBJ old_pen = SelectObject(hdc, grid);
+    for (int k = 0; k < 4; k++) {
+        int y = top + usable_h * k / 3;
+        MoveToEx(hdc, left, y, NULL);
+        LineTo(hdc, left + usable_w, y);
     }
-    SelectObject(hdc, gop);
-    DeleteObject(gp);
+    SelectObject(hdc, old_pen);
+    DeleteObject(grid);
+    if (count < 2) return;
 
-    wchar_t numbuf[64];
-    HFONT lf = mfont(11, FW_NORMAL);
-    SelectObject(hdc, lf);
-    SetTextColor(hdc, g_pal.muted);
-    swprintf(numbuf, 64, L"%lld", maxv);
-    TextOutW(hdc, S(ax), S(ay) - S(18), numbuf, (int)wcslen(numbuf));
-    TextOutW(hdc, S(ax), S(ay) + S(ah) + S(4), L"0", 1);
-    SelectObject(hdc, old);
-    DeleteObject(lf);
-
-    int slotw = aw / count;
-    if (slotw < 4) slotw = 4;
-    /*
-     * Chart polish (the old drawing put two very thin slivers side by side on
-     * flat blue/red, which is what "统计图太丑" was about):
-     *   - wider rounded columns with a real gap between the pair;
-     *   - a baseline axis so the plot has a floor;
-     *   - the highest blocked column is labelled with its value.
-     * Purely inside the existing plot rectangle - no control moves, so nothing
-     * can overlap (see the settings-page fix in 1.50).
-     */
-    /*
-     * ONE solid column per slot. The previous revision drew the pair
-     * (requests + blocked) as two separate thin columns with a gap between
-     * them, which read as "the chart is broken in the middle" - so the blocked
-     * share is now a segment at the bottom of the same column instead.
-     */
-    int barw = slotw - 2;
-    if (barw < 3) barw = 3;
-    long long peak_blocked = -1;
-    int peak_index = 0;
-    for (int i = 0; i < count; i++) {
-        if (h[i].blocked > peak_blocked) { peak_blocked = h[i].blocked; peak_index = i; }
-    }
-    HBRUSH blue = CreateSolidBrush(C_BLUE);
-    HBRUSH red = CreateSolidBrush(C_RED);
-    HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
-    /*
-     * AUDIT W4-01: remember the brush that is currently selected so the two
-     * brushes below can be de-selected again before they are deleted.
-     * DeleteObject() on an object that is still selected into a DC fails, and
-     * the object then leaks on every repaint (this chart is redrawn by a 2 s
-     * timer) until the process runs out of its GDI quota.
-     */
-    HGDIOBJ obrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    for (int i = 0; i < count; i++) {
-        int bh1 = (int)((double)ah * (double)h[i].requests / (double)maxv);
-        int bh2 = (int)((double)ah * (double)h[i].blocked / (double)maxv);
-        int bx = ax + i * slotw;
-        if (bh1 > 1) {
-            SelectObject(hdc, blue);
-            RoundRect(hdc, S(bx + 1), S(ay + ah) - S(bh1),
-                      S(bx + 1 + barw), S(ay + ah), S(4), S(4));
+    const COLORREF colors[] = {RGB(40, 200, 126), RGB(183, 103, 234), RGB(74, 147, 246)};
+    const int series[] = {0, 1, 3};
+    for (int kind = 0; kind < 3; ++kind) {
+        POINT points[HIST_MAX];
+        for (int i = 0; i < count; ++i) {
+            double v = stats_trend_value(&history[i], series[kind]);
+            points[i].x = left + (int)((double)usable_w * i / (count - 1));
+            points[i].y = top + usable_h - (int)((double)usable_h * v / peak);
         }
-        if (bh2 > 1) {
-            SelectObject(hdc, red);
-            /* Blocked share of this period, stacked on the same column. */
-            RoundRect(hdc, S(bx + 1), S(ay + ah) - S(bh2),
-                      S(bx + 1 + barw), S(ay + ah), S(4), S(4));
-        }
-    }
-    SelectObject(hdc, obrush);   /* de-select before deleting (AUDIT W4-01) */
-    SelectObject(hdc, op);
-    DeleteObject(blue);
-    DeleteObject(red);
-
-    /* Baseline axis: without it the columns floated in the grid. */
-    HPEN axis = CreatePen(PS_SOLID, 1, g_pal.border);
-    HGDIOBJ aop = SelectObject(hdc, axis);
-    MoveToEx(hdc, S(ax), S(ay + ah), NULL);
-    LineTo(hdc, S(ax) + S(aw), S(ay + ah));
-    SelectObject(hdc, aop);
-    DeleteObject(axis);
-
-    /* Label the peak so the chart says something without a mouse-over. */
-    if (peak_blocked > 0) {
-        wchar_t pb[32];
-        swprintf(pb, 32, L"%lld", peak_blocked);
-        HFONT pf = mfont(10, FW_NORMAL);
-        HGDIOBJ pop = SelectObject(hdc, pf);
-        SetTextColor(hdc, C_RED);
-        int pbx = ax + peak_index * slotw + 1;   /* left edge of that column */
-        int pby = ay + ah - (int)((double)ah * (double)peak_blocked / (double)maxv) - 14;
-        if (pby < ay) pby = ay;
-        TextOutW(hdc, S(pbx), S(pby), pb, (int)wcslen(pb));
-        SelectObject(hdc, pop);
-        DeleteObject(pf);
+        HPEN trend = CreatePen(PS_SOLID, S(2) > 1 ? S(2) : 1, colors[kind]);
+        HGDIOBJ selected = SelectObject(hdc, trend);
+        Polyline(hdc, points, count);
+        SelectObject(hdc, selected);
+        DeleteObject(trend);
     }
 }
 
 static void draw_legend(HDC hdc, int x, int y) {
-    HBRUSH b = CreateSolidBrush(C_BLUE);
-    HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
-    HGDIOBJ ob = SelectObject(hdc, b);
-    Ellipse(hdc, S(x), S(y + 3), S(x + 8), S(y + 11));
-    SelectObject(hdc, op);
-    SelectObject(hdc, ob);
-    DeleteObject(b);
+    static const wchar_t *labels[] = {L"Web 请求", L"已拦截", L"未计为拦截"};
+    const COLORREF colors[] = {RGB(40, 200, 126), RGB(183, 103, 234), RGB(74, 147, 246)};
+    const int offsets[] = {0, 100, 196};
+    HFONT font = mfont(11, FW_NORMAL);
+    HGDIOBJ old_font = SelectObject(hdc, font);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(x + 14), S(y), L"请求", 2);
-    HBRUSH r = CreateSolidBrush(C_RED);
-    ob = SelectObject(hdc, r);
-    Ellipse(hdc, S(x + 76), S(y + 3), S(x + 84), S(y + 11));
-    SelectObject(hdc, ob);
-    DeleteObject(r);
-    TextOutW(hdc, S(x + 90), S(y), L"拦截", 2);
+    for (int i = 0; i < 3; ++i) {
+        HBRUSH dot = CreateSolidBrush(colors[i]);
+        HGDIOBJ old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
+        HGDIOBJ old_brush = SelectObject(hdc, dot);
+        Ellipse(hdc, S(x + offsets[i]), S(y + 4), S(x + offsets[i] + 8), S(y + 12));
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        DeleteObject(dot);
+        TextOutW(hdc, S(x + offsets[i] + 13), S(y), labels[i], (int)wcslen(labels[i]));
+    }
+    SelectObject(hdc, old_font);
+    DeleteObject(font);
 }
+
+/* The native service does NOT provide DNS A/AAAA/SRV or saved bytes. This
+ * panel therefore uses its real blocked policy-type counters, not fabricated
+ * DNS query types from an AdGuard Home mockup. */
+static void draw_stats_type_panel(HDC hdc, const struct snapshot *sn) {
+    const int x = 616, y = 165, width = 390, height = 266;
+    rounded_card(hdc, x, y, width, height, 12, g_pal.card, g_pal.border);
+    HFONT title_font = mfont(14, FW_SEMIBOLD);
+    HFONT row_font = mfont(11, FW_NORMAL);
+    HGDIOBJ old = SelectObject(hdc, title_font);
+    SetTextColor(hdc, g_pal.text);
+    SetBkMode(hdc, TRANSPARENT);
+    TextOutW(hdc, S(x + 16), S(y + 14), L"拦截类型分布", 6);
+    SelectObject(hdc, row_font);
+    SetTextColor(hdc, g_pal.muted);
+    TextOutW(hdc, S(x + 16), S(y + 41), L"本地 Web 拦截响应 · 非 DNS 记录", (int)wcslen(L"本地 Web 拦截响应 · 非 DNS 记录"));
+    long long total = 0, maximum = 1;
+    bool used[BLOCK_TYPE_COUNT] = {false};
+    int top[5]; int top_count = 0;
+    if (sn && sn->has_data) {
+        for (int i = 0; i < BLOCK_TYPE_COUNT; ++i)
+            if (sn->blocked_by_type[i] > 0) total += sn->blocked_by_type[i];
+        for (int n = 0; n < 5; ++n) {
+            int best = -1;
+            for (int i = 0; i < BLOCK_TYPE_COUNT; ++i) {
+                if (used[i] || sn->blocked_by_type[i] <= 0) continue;
+                if (best < 0 || sn->blocked_by_type[i] > sn->blocked_by_type[best]) best = i;
+            }
+            if (best < 0) break;
+            used[best] = true;
+            top[top_count++] = best;
+            if (sn->blocked_by_type[best] > maximum) maximum = sn->blocked_by_type[best];
+        }
+    }
+    if (top_count == 0) {
+        SetTextColor(hdc, g_pal.muted);
+        TextOutW(hdc, S(x + 18), S(y + 103), L"暂无可验证的拦截分类统计", 13);
+    } else {
+        const COLORREF accents[] = {RGB(183, 103, 234), RGB(40, 200, 126),
+                                    RGB(74, 147, 246), RGB(246, 192, 69),
+                                    RGB(241, 108, 130)};
+        for (int i = 0; i < top_count; ++i) {
+            int index = top[i], row_y = y + 74 + i * 31;
+            wchar_t count[40];
+            swprintf(count, 40, L"%lld", sn->blocked_by_type[index]);
+            SetTextColor(hdc, g_pal.text);
+            TextOutW(hdc, S(x + 16), S(row_y), kBlockTypes[index].label,
+                     (int)wcslen(kBlockTypes[index].label));
+            SetTextColor(hdc, g_pal.muted);
+            TextOutW(hdc, S(x + 296), S(row_y), count, (int)wcslen(count));
+            HBRUSH base = CreateSolidBrush(g_pal.gridline);
+            HBRUSH fill = CreateSolidBrush(accents[i]);
+            RECT bar = {S(x + 120), S(row_y + 6), S(x + 279), S(row_y + 14)};
+            FillRect(hdc, &bar, base);
+            int active = (int)(159.0 * (double)sn->blocked_by_type[index] / (double)maximum);
+            if (active > 0) {
+                bar.right = S(x + 120 + active);
+                FillRect(hdc, &bar, fill);
+            }
+            DeleteObject(base);
+            DeleteObject(fill);
+        }
+    }
+    wchar_t summary[120];
+    if (sn && sn->has_data)
+        swprintf(summary, 120, L"各类累计 %lld 次 · 仅展示最多的五类", total);
+    else
+        wcscpy(summary, L"等待服务端提供分类统计");
+    SetTextColor(hdc, g_pal.muted);
+    TextOutW(hdc, S(x + 16), S(y + 237), summary, (int)wcslen(summary));
+    SelectObject(hdc, old);
+    DeleteObject(title_font);
+    DeleteObject(row_font);
+}
+
 
 /* "监听状态" card: lists every socket the server reported through
  * /internal-stats so a port that failed to bind is visible inside the app
@@ -2696,11 +2755,57 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_FILTER, 710, 90, 158, 200, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
     { IDC_QLOG_LIST, 218, 132, 784, 290, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
     { IDC_QLOG_DETAILS, 218, 466, 784, 96, L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL },
+    { IDC_QLOG_DIAG, 686, 24, 160, 28, L"BUTTON", L"日志对接诊断", BS_PUSHBUTTON },
     { IDC_QLOG_APPS, 856, 24, 146, 28, L"BUTTON", L"查看应用统计", BS_PUSHBUTTON },
     { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
 };
 #define CL_LOG ((int)(sizeof(g_loglayout) / sizeof(g_loglayout[0])))
-static HWND s_ctrls[CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 1];
+static HWND s_ctrls[CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 2];
+
+/* Windows and AdGuard record different layers. Show measured facts and
+ * actionable differences without inventing a per-domain entry for a
+ * connection that never completed an HTTP request. */
+static void log_ingress_diagnostics(HWND hwnd) {
+    const struct snapshot *sn = g_sn;
+    wchar_t report[2100];
+    if (!sn || !sn->valid) {
+        swprintf(report, 2100,
+                 L"响应服务器统计目前不可用，不能判断是否收到 AdGuard 转来的请求。\n\n"
+                 L"当前设置：HTTP %d，HTTPS %d。请先在设置页确认监听器绑定正常，再检查对接路径。\n\n"
+                 L"AdGuard 的 DNS 重定向只返回 IP，不指定端口；使用自定义重定向时通常需在 80/443 监听。"
+                 L"直接由 AdGuard Windows 客户端拦截的请求，则不一定进入此程序。", g_http_port, g_https_port);
+    } else {
+        unsigned active = 0;
+        for (int i = 0; i < sn->listener_count; i++)
+            if (sn->listeners[i].bound) ++active;
+        wchar_t arrivals[80];
+        if (sn->response_tcp_accepts_reported)
+            swprintf(arrivals, 80, L"%lld", sn->response_tcp_accepts);
+        else
+            wcscpy(arrivals, L"服务端尚未提供");
+        swprintf(report, 2100,
+                 L"本地监听 HTTP %d / HTTPS %d\n"
+                 L"报告已绑定监听：%u 条；服务端绑定状态：%ls\n\n"
+                 L"响应端口接入的 TCP 连接：%ls（本次运行，不含管理端口）\n"
+                 L"真正收到的 Web 请求：%lld\n"
+                 L"服务端分类为本地拦截：%lld\n"
+                 L"HTTPS TLS 握手失败：%lld\n"
+                 L"本页 HTTP 历史：%d 条（当前页，非全部）\n\n"
+                 L"为何 AdGuard 有记录，但这里没有？\n"
+                 L"① AdGuard 可能直接完成拦截，请求未发到本服务。\n"
+                 L"② 若通过 DNS 自定义 IP 重定向，DNS 不包含端口；浏览器一般访问 80/443。\n"
+                 L"③ TLS 在 HTTP 请求前失败时，只会增加握手失败计数，不会出现 HTTP 域名记录。\n"
+                 L"④ 端口未绑定或浏览器绕过代理/使用其他协议也会造成缺口。\n\n"
+                 L"当前数据无法把单次 AdGuard 事件与本服务请求一一对应；不能据此判断漏拦。"
+                 L"请对照 AdGuard 事件时间、原始域名、实际协议及目标端口。", 
+                 g_http_port, g_https_port, active,
+                 sn->bind_ok ? L"已报告正常" : L"异常／待核对",
+                 arrivals, sn->total_requests, sn->total_blocked, sn->tls_failures,
+                 sn->qlog_count);
+    }
+    MessageBoxW(hwnd, report, L"AdGuard ↔ 本地请求日志 · 对接诊断",
+                MB_OK | MB_ICONINFORMATION);
+}
 
 static void log_list_refresh(HWND hwnd, bool force);
 static void log_details_refresh(HWND hwnd);
@@ -2900,6 +3005,7 @@ static void layout_controls(HWND hwnd) {
         SetWindowPos(GetDlgItem(hwnd, g_loglayout[i].id), NULL,
             S(g_loglayout[i].x), S(g_loglayout[i].y), S(g_loglayout[i].w), S(g_loglayout[i].h), SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),NULL,S(218),S(560),S(366),S(26),SWP_NOZORDER|SWP_NOACTIVATE);
+    SetWindowPos(GetDlgItem(hwnd,IDC_STATS_RANGE),NULL,S(456),S(175),S(132),S(26),SWP_NOZORDER|SWP_NOACTIVATE);
     subs_list_extent(hwnd);
 }
 
@@ -2920,6 +3026,7 @@ static void show_controls(HWND hwnd, int tab) {
         ShowWindow(GetDlgItem(hwnd, g_loglayout[i].id), tab == 1 ? SW_SHOW : SW_HIDE);
     log_controls_refresh(hwnd);
     ShowWindow(GetDlgItem(hwnd,IDC_TRANSPORT_PROBE),tab==5?SW_SHOW:SW_HIDE);
+    ShowWindow(GetDlgItem(hwnd,IDC_STATS_RANGE),tab==0?SW_SHOW:SW_HIDE);
     subs_controls_refresh(hwnd);
 }
 
@@ -4080,6 +4187,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SendDlgItemMessageW(hwnd, IDC_QLOG_FILTER, CB_SETCURSEL, 0, 0);
         s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"测试双栈转发与恢复",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
                 0,0,1,1,hwnd,(HMENU)(INT_PTR)IDC_TRANSPORT_PROBE,hinst,NULL);
+        s_ctrls[s_ctrl_count++] = CreateWindowExW(0,L"BUTTON",L"过去 24 小时",WS_CHILD|WS_TABSTOP|BS_PUSHBUTTON,
+                0,0,1,1,hwnd,(HMENU)(INT_PTR)IDC_STATS_RANGE,hinst,NULL);
         for (int i = 0; i < POLICY_COUNT; i++) {
             int cx = (i % 2 == 0) ? 218 : 610;
             int cy = 290 + (i / 2) * 28;
@@ -4234,7 +4343,14 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_COMMAND:
+        if(LOWORD(wp)==IDC_STATS_RANGE){
+            g_stats_show_month = !g_stats_show_month;
+            SetDlgItemTextW(hwnd, IDC_STATS_RANGE, g_stats_show_month ? L"过去 30 天" : L"过去 24 小时");
+            InvalidateRect(hwnd, NULL, FALSE);
+            return 0;
+        }
         if(LOWORD(wp)==IDC_QLOG_EXPORT){log_export_start(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_DIAG){log_ingress_diagnostics(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_UID&&HIWORD(wp)==EN_CHANGE){GetDlgItemTextW(hwnd,IDC_QLOG_UID,g_log_uid,24);log_filter_schedule(hwnd);return 0;}
         if (LOWORD(wp) == IDC_QLOG_SEARCH && HIWORD(wp) == EN_CHANGE) {
             GetDlgItemTextW(hwnd, IDC_QLOG_SEARCH, g_log_search, 512);
@@ -4726,43 +4842,87 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
 
-        /* statistics page */
+        /* Statistics page: compact AdGuard-inspired overview, but only for
+           data the local HTTP response server truly measures. */
         const struct snapshot *sn = g_sn;
         wchar_t val[64], txt[256];
         bool show_data = sn && sn->has_data;
-        long long req = sn && sn->has_data ? sn->total_requests : 0;
-        /* Lifetime counter (same window as 请求量): summing the ring history
-           only showed the current session, so the KPI contradicted the request
-           count right next to it. */
-        long long blk = (sn && sn->has_data) ? sn->total_blocked : 0;
-        fmt_num(val, 64, req);
-        draw_kpi(hdc, 210, 24, 120, 72, L"Web 请求", show_data ? val : L"—", C_BLUE);
-        fmt_num(val, 64, blk);
-        draw_kpi(hdc, 348, 24, 120, 72, L"本地拦截", show_data ? val : L"—", C_RED);
-        /* block_rate is ALREADY a percentage (0-100) in the JSON; the old code
-           multiplied it by 100 again, so a fully blocked device showed
-           "10000%". Clamp it and print one decimal. */
-        double rate = (sn && sn->has_data) ? sn->block_rate : 0.0;
-        if (rate < 0.0) rate = 0.0;
-        if (rate > 100.0) rate = 100.0;
-        swprintf(val, 64, L"%.1f%%", rate);
-        draw_kpi(hdc, 486, 24, 120, 72, L"本地比例", show_data ? val : L"—", C_ACCENT);
-        fmt_num(val, 64, sn && sn->has_data ? sn->total_connections : 0);
-        draw_kpi(hdc, 624, 24, 120, 72, L"连接数", show_data ? val : L"—", C_GREEN);
-        fmt_num(val, 64, sn && sn->has_data ? sn->sni_certs_issued : 0);
-        draw_kpi(hdc, 762, 24, 120, 72, L"签发证书", show_data ? val : L"—", RGB(139, 92, 246));
-        long long up = sn && sn->has_data ? sn->uptime_seconds : 0;
-        swprintf(val, 64, L"%lldh %lldm", up / 3600, (up % 3600) / 60);
-        draw_kpi(hdc, 900, 24, 120, 72, L"运行时长", show_data ? val : L"—", RGB(20, 184, 166));
+        long long req = show_data ? sn->total_requests : 0;
+        long long blk = show_data ? sn->total_blocked : 0;
+        struct wbr_result web_rate = show_data ? wbr_compute(req, blk)
+                                              : (struct wbr_result){0};
+        HFONT page_font = mfont(19, FW_SEMIBOLD);
+        HGDIOBJ old_page_font = SelectObject(hdc, page_font);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, g_pal.text);
+        TextOutW(hdc, S(210), S(12), L"概览", 2);
+        SelectObject(hdc, old_page_font);
+        DeleteObject(page_font);
+        HFONT subtitle_font = mfont(11, FW_NORMAL);
+        HGDIOBJ old_subtitle = SelectObject(hdc, subtitle_font);
+        SetTextColor(hdc, g_pal.muted);
+        TextOutW(hdc, S(290), S(20), L"Web 响应服务 · 非整机 DNS 统计", (int)wcslen(L"Web 响应服务 · 非整机 DNS 统计"));
+        if (show_data) {
+            wchar_t extra[100];
+            swprintf(extra, 100, L"签发证书 %lld · 运行 %lldh %lldm",
+                     sn->sni_certs_issued, sn->uptime_seconds / 3600,
+                     (sn->uptime_seconds % 3600) / 60);
+            RECT header_info = {S(735), S(17), S(1006), S(37)};
+            DrawTextW(hdc, extra, -1, &header_info,
+                      DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+        SelectObject(hdc, old_subtitle);
+        DeleteObject(subtitle_font);
 
-        RECT ph = {210, 120, 600, 430};
-        draw_chart(hdc, ph, L"最近 24 小时",
-                   sn ? sn->hist : NULL, sn ? sn->hist_count : 0);
-        RECT pd = {616, 120, 1006, 430};
-        draw_chart(hdc, pd, L"最近 30 天",
-                   sn ? sn->daily : NULL, sn ? sn->daily_count : 0);
-        draw_legend(hdc, 232, 398);
-        draw_legend(hdc, 638, 398);
+        const struct histogram *hourly = show_data ? sn->hist : NULL;
+        int hourly_count = show_data ? sn->hist_count : 0;
+        fmt_num(val, 64, req);
+        draw_kpi(hdc, 210, 54, 187, 94, L"Web 请求", show_data ? val : L"—",
+                 RGB(40, 200, 126), hourly, hourly_count, 0);
+        fmt_num(val, 64, blk);
+        draw_kpi(hdc, 413, 54, 187, 94, L"本地已拦截", show_data ? val : L"—",
+                 RGB(183, 103, 234), hourly, hourly_count, 1);
+        if (web_rate.valid)
+            swprintf(val, 64, L"%u.%u%%", web_rate.tenths_percent / 10,
+                     web_rate.tenths_percent % 10);
+        else
+            wcscpy(val, L"—");
+        draw_kpi(hdc, 616, 54, 187, 94, L"本地拦截占比", val,
+                 RGB(246, 192, 69), hourly, hourly_count, 2);
+        fmt_num(val, 64, show_data ? sn->total_connections : 0);
+        draw_kpi(hdc, 819, 54, 187, 94, L"本地 Web 连接", show_data ? val : L"—",
+                 RGB(74, 147, 246), NULL, 0, -1);
+
+        RECT trend_area = {210, 165, 600, 431};
+        draw_chart(hdc, trend_area, g_stats_show_month ? L"近 30 天趋势" : L"近 24 小时趋势",
+                   show_data ? (g_stats_show_month ? sn->daily : sn->hist) : NULL,
+                   show_data ? (g_stats_show_month ? sn->daily_count : sn->hist_count) : 0);
+        draw_legend(hdc, 226, 400);
+        draw_stats_type_panel(hdc, sn);
+
+        /* Make the unblocked portion visible; a non-100% local percentage
+           can include intentional allow/forward traffic and does not prove
+           an ad request escaped. Never change counters to target 100%. */
+        wchar_t coverage_note[256];
+        if (!show_data) {
+            wcscpy(coverage_note, L"等待本地 Web 请求统计；无法据此判断整机拦截覆盖率。");
+        } else if (req == 0 && blk == 0) {
+            wcscpy(coverage_note, L"暂无可统计请求，拦截比例不适用；此指标不代表整机流量覆盖率。");
+        } else if (!web_rate.valid) {
+            wcscpy(coverage_note, L"本地请求与拦截计数不一致；请导出诊断信息，勿据此判断拦截效果。");
+        } else {
+            swprintf(coverage_note, 256,
+                     L"未计为拦截的 Web 请求：%llu（含放行/转发等）；不代表漏拦或整机覆盖率。",
+                     (unsigned long long)web_rate.not_blocked);
+        }
+        HFONT coverage_font = mfont(12, FW_NORMAL);
+        HGDIOBJ coverage_old = SelectObject(hdc, coverage_font);
+        SetTextColor(hdc, g_pal.muted);
+        RECT coverage_rect = {S(210), S(438), S(1006), S(459)};
+        DrawTextW(hdc, coverage_note, -1, &coverage_rect,
+                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(hdc, coverage_old);
+        DeleteObject(coverage_font);
 
         char cert_path[1024];
         snprintf(cert_path, sizeof(cert_path), "%s/localhost-2410.crt", g_res);
