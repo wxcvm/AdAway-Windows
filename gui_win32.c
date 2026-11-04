@@ -3604,6 +3604,42 @@ static void draw_ranking_page(HDC hdc) {
     DeleteObject(lf);
 }
 
+/* These are counts of observed application rows, not of all running
+ * Windows processes. Keep unknown attribution visible instead of guessing. */
+static void draw_app_log_summary(HDC hdc, const struct snapshot *sn) {
+    int with_requests = 0, unknown = 0;
+    bool available = sn && sn->has_data;
+    if (available) for (int i = 0; i < sn->app_count; ++i) {
+        if (sn->apps[i].requests > 0) ++with_requests;
+        if (sn->apps[i].uid < 0) ++unknown;
+    }
+    const wchar_t *titles[] = {L"观测到的进程", L"有 Web 请求", L"未归属进程"};
+    int values[] = {available ? sn->app_count : 0, with_requests, unknown};
+    const COLORREF accents[] = {RGB(40, 200, 126), RGB(183, 103, 234), RGB(74, 147, 246)};
+    HFONT font = mfont(11, FW_SEMIBOLD);
+    HGDIOBJ old = SelectObject(hdc, font);
+    SetBkMode(hdc, TRANSPARENT);
+    for (int i = 0; i < 3; ++i) {
+        int x = 218 + i * 252;
+        rounded_card(hdc, x, 89, 244, 34, 9, g_pal.content_bg, g_pal.border);
+        HBRUSH mark = CreateSolidBrush(accents[i]);
+        RECT accent = {S(x + 8), S(98), S(x + 12), S(114)};
+        FillRect(hdc, &accent, mark);
+        DeleteObject(mark);
+        SetTextColor(hdc, g_pal.text);
+        TextOutW(hdc, S(x + 19), S(97), titles[i], (int)wcslen(titles[i]));
+        wchar_t value[20];
+        if (available) swprintf(value, 20, L"%d", values[i]);
+        else wcscpy(value, L"—");
+        SetTextColor(hdc, accents[i]);
+        RECT number = {S(x + 171), S(91), S(x + 232), S(119)};
+        DrawTextW(hdc, value, -1, &number,
+                  DT_SINGLELINE | DT_RIGHT | DT_VCENTER | DT_NOPREFIX);
+    }
+    SelectObject(hdc, old);
+    DeleteObject(font);
+}
+
 static void draw_activity_page(HDC hdc) {
     struct snapshot *sn = g_sn;
     rounded_card(hdc, 202, 12, 812, 608, 12, g_pal.card, g_pal.border);
@@ -3620,11 +3656,7 @@ static void draw_activity_page(HDC hdc) {
     DrawTextW(hdc, g_log_apps ? L"仅显示服务器观测到的进程；连接、HTTP 请求与拦截响应分别计数。" :
         L"Web 响应服务器活动 · 搜索与分类覆盖全部保留历史，不代表整机 DNS。", -1, &hint,
         DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-    if (g_log_apps) {
-        RECT app_scope = {S(218), S(90), S(1002), S(119)};
-        DrawTextW(hdc, L"按请求数排列，列表可滚动；选中进程查看完整计数。", -1, &app_scope,
-            DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-    }
+    if (g_log_apps) draw_app_log_summary(hdc, sn);
     wchar_t count[240];
     if (g_log_apps) {
         swprintf(count, 240, L"已观测 %d 个进程；未知 PID 不推断为系统或当前应用。", sn ? sn->app_count : 0);
