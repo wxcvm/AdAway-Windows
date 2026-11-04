@@ -549,6 +549,25 @@ def run(driver, exe, probe, evidence):
             gui.send(gui.main,0x111,(1<<16)|1215,imported)
             assert 'blocked.example.test' in gui.text(details)
             record('adguard-cancel-and-malformed-import-preserve-existing-snapshot')
+            # An oversized export must fail before raw JSON parsing and keep
+            # the previously accepted in-memory snapshot intact.
+            huge=gui.root/'adguard-over-limit.json'
+            with huge.open('wb') as stream:
+                stream.truncate(12*1024*1024+1)
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),
+                         'AdGuard oversized input Open dialog missing')
+            gui.choose(chooser,huge,initial_values=('',))
+            too_large=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 导入'),
+                           'oversized import did not show size validation dialog')
+            assert any('12 MiB' in label for _,kind,_,label in gui.messagebox_controls(too_large)
+                       if kind=='Static')
+            gui.click_text(too_large,'ok')
+            wait(lambda:not gui.find('#32770',gui.main,title='AdGuard 导入'),
+                 'oversized import result dialog did not close')
+            assert gui.send(imported,0x18B)==1
+            record('adguard-overlimit-import-does-not-replace-existing-snapshot')
+
 
             newer=dict(ProtocolVersion='1',LogRecords=[
                 dict(RequestArgId='10000000-0000-0000-0000-000000000099',
@@ -649,6 +668,10 @@ def run(driver, exe, probe, evidence):
         controlled.expired=False; controlled.count=0
         gui=Gui(driver,root/'reopened-gui',fixture.resources,(controlled.port,controlled.port,controlled.port))
         try:
+            assert gui.text(gui.child(gui.main,1221))=='AdGuard 诊断'
+            assert not u.IsWindowEnabled(gui.child(gui.main,1224)), (
+                'restarted process retained an AdGuard offline import snapshot')
+            record('adguard-import-is-memory-only-and-cleared-on-restart')
             target=gui.root/'empty.csv'; dialog=gui.dialog(); gui.choose(dialog,target)
             wait(target.exists,'zero-match export did not publish'); gui.ready()
             exported(target,0); assert not gui.stages()
