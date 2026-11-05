@@ -1,0 +1,153 @@
+/* Test-only: real production EXE control flow and stage allocator, real filesystem.
+ * Downloads, digests, dialogs and process launches are inert boundary doubles.
+ * No installer/helper or installed application is executed. All paths are below
+ * a caller-provided disposable fixture root. No production test switches. */
+#include "update_win32.h"
+#include <shellapi.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <wchar.h>
+#include <string.h>
+#define UPDATE_STATE_IDLE 0
+#define UPDATE_STATE_DOWNLOADING 2
+#define UPDATE_STATE_VERIFYING 3
+#define UPDATE_MODE_AUTO 0
+#define UPDATE_MODE_INSTALLER 1
+#define UPDATE_MODE_PORTABLE 2
+#define WM_APP_EXIT (WM_USER+2)
+static HWND s_update_hwnd;
+static volatile LONG s_update_state;
+static wchar_t s_resume_path[MAX_PATH],s_resume_url[1024];
+static wchar_t root[MAX_PATH],base[MAX_PATH],module[MAX_PATH],system_temp[MAX_PATH],last_stage[MAX_PATH];
+static int download_ok,verified,mode,shell_ok,shell_calls,reached_portable;
+#define CHECK(x) do { if(!(x)){fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x);return 1;} } while(0)
+static void path(wchar_t *out,const wchar_t *parent,const wchar_t *leaf) {
+    int n=swprintf(out,MAX_PATH,L"%ls\\%ls",parent,leaf);
+    if(n<0||n>=MAX_PATH){abort();}
+}
+static void seed(const wchar_t *file) {
+    FILE *f=_wfopen(file,L"wb");if(!f)abort();
+    if(fwrite("sentinel",1,8,f)!=8||fclose(f))abort();
+}
+static bool sentinel(const wchar_t *file) {
+    FILE *f=_wfopen(file,L"rb");if(!f)return false;char b[9]={0};
+    size_t n=fread(b,1,8,f);fclose(f);return n==8&&!strcmp(b,"sentinel");
+}
+static DWORD fixture_module(HMODULE m,LPWSTR out,DWORD cap) {
+    (void)m;if(wcslen(module)>=cap)abort();wcscpy(out,module);return (DWORD)wcslen(out);
+}
+static DWORD fixture_temp(DWORD cap,LPWSTR out) {
+    if(wcslen(system_temp)>=cap)abort();
+    wcscpy(out,system_temp);return (DWORD)wcslen(out);
+}
+static HINSTANCE fixture_shell(HWND hwnd,LPCWSTR op,LPCWSTR file,LPCWSTR args,LPCWSTR cwd,INT show) {
+    (void)hwnd;(void)op;(void)file;(void)args;(void)cwd;(void)show;
+    shell_calls++;return (HINSTANCE)(INT_PTR)(shell_ok?33:31);
+}
+static int fixture_message(HWND hwnd,LPCWSTR text,LPCWSTR title,UINT flags) {
+    (void)hwnd;(void)text;(void)title;(void)flags;return IDNO;
+}
+static void win32_log_line(const char *format,...) {(void)format;}
+static const char *narrow_path(const wchar_t *value) {(void)value;return "fixture";}
+static int update_mode_pref(void) {return mode;}
+static void update_fail_report(const wchar_t *stage,const wchar_t *detail,const wchar_t *diag) {
+    (void)stage;(void)detail;(void)diag;
+}
+static unsigned long long partial_size(const wchar_t *file) {(void)file;return 0;}
+static int http_download_to_file(const wchar_t *url,const wchar_t *file,const wchar_t *header) {
+    (void)url;(void)header;if(!download_ok)return 0;seed(file);return 1;
+}
+static int digest_matches(const wchar_t *file,const wchar_t *digest) {(void)file;(void)digest;return verified;}
+static int file_signature_trusted(const wchar_t *file) {(void)file;return 1;}
+#define GetModuleFileNameW fixture_module
+#define GetTempPathW fixture_temp
+#define ShellExecuteW fixture_shell
+#define MessageBoxW fixture_message
+@FILE_IS_EXE@
+@TEMP_FILE@
+@PREFIX@
+#if @HAS_STAGE@
+static int reserve_stage(const wchar_t *download) {
+    wchar_t temp[MAX_PATH],dir[MAX_PATH],bat[MAX_PATH];
+    DWORD pid=9,stamp=13;
+    struct update_info *info=calloc(1,sizeof(*info));if(!info)abort();
+    wcscpy(temp,download);
+@STAGE@
+    wcscpy(last_stage,dir);
+    /* Only remove the newly created, still empty test stage; never recurse. */
+    if(!RemoveDirectoryW(dir))abort();
+    free(info);
+    return 1;
+}
+#endif
+static int count_stages(const wchar_t *parent) {
+    wchar_t pattern[MAX_PATH];path(pattern,parent,L"adblock-update-*");
+    WIN32_FIND_DATAW data;HANDLE h=FindFirstFileW(pattern,&data);int count=0;
+    if(h==INVALID_HANDLE_VALUE)return 0;
+    do{if(data.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)count++;}while(FindNextFileW(h,&data));
+    FindClose(h);return count;
+}
+static void prepare(unsigned index) {
+    wchar_t name[80],app[MAX_PATH],resources[MAX_PATH];
+    swprintf(name,80,L"case-%u-中文 [space]&",index);path(root,base,name);
+    if(!CreateDirectoryW(root,NULL))abort();
+    path(app,root,L"application");if(!CreateDirectoryW(app,NULL))abort();
+    path(resources,app,L"resources");if(!CreateDirectoryW(resources,NULL))abort();
+    path(module,app,L"webserver.exe");seed(module);
+    path(system_temp,root,L"system-temp");if(!CreateDirectoryW(system_temp,NULL))abort();
+    wcscat(system_temp,L"\\");
+    s_resume_path[0]=0;s_resume_url[0]=0;
+    shell_calls=0;reached_portable=0;download_ok=1;verified=1;mode=UPDATE_MODE_AUTO;shell_ok=1;
+}
+int wmain(int argc,wchar_t **argv) {
+    CHECK(argc==2);
+    /* The only filesystem root comes from explicit workspace/CI fixture input. */
+    CHECK(GetTempFileNameW(argv[1],L"usr",0,base));
+    CHECK(DeleteFileW(base)&&CreateDirectoryW(base,NULL));
+    unsigned cases=0;
+    for(unsigned i=0;i<8;i++){
+        prepare(i);
+        struct update_info *info=calloc(1,sizeof(*info));CHECK(info);
+        wcscpy(info->url,i==7?L"https://fixture.invalid/package.zip":L"https://fixture.invalid/package.exe");
+        wcscpy(info->sha256,L"fixture-digest");
+        if(i==1)download_ok=0;
+        if(i==2)verified=0;
+        if(i==3)info->sha256[0]=0;
+        if(i==4){mode=UPDATE_MODE_INSTALLER;shell_ok=0;}
+        if(i==5)shell_ok=0;
+        if(i==6)mode=UPDATE_MODE_PORTABLE;
+        apply_thread(info);
+        CHECK(count_stages(root)==0&&count_stages(system_temp)==0);
+        CHECK(sentinel(module));
+        CHECK(reached_portable==(i==5||i==6||i==7));
+        CHECK(shell_calls==(i==0||i==4||i==5));
+        cases++;
+    }
+#if @HAS_STAGE@
+    for(unsigned i=0;i<5;i++){
+        prepare(8+i);
+        wchar_t downloads[MAX_PATH],preferred[MAX_PATH],fallback[MAX_PATH],foreign[MAX_PATH],other[MAX_PATH];
+        wcscpy(downloads,module);*wcsrchr(downloads,L'\\')=0;
+        wcscat(downloads,L"\\resources\\update\\");
+        path(preferred,root,L"adblock-update-9-13");
+        swprintf(fallback,MAX_PATH,L"%lsadblock-update-9-13",system_temp);
+        if(i==1||i==2){
+            CHECK(CreateDirectoryW(preferred,NULL));path(foreign,preferred,L"keep.txt");seed(foreign);
+        }
+        if(i==2){CHECK(CreateDirectoryW(fallback,NULL));path(other,fallback,L"keep.txt");seed(other);}
+        if(i==3)seed(preferred); /* A same-name ordinary file is not ours either. */
+        if(i==4)wcscpy(downloads,system_temp);
+        CHECK(reserve_stage(downloads)==(i!=2));
+        if(i==1||i==2)CHECK(sentinel(foreign));
+        if(i==2)CHECK(sentinel(other));
+        if(i==3)CHECK(sentinel(preferred));
+        if(i==0)CHECK(!_wcsicmp(last_stage,preferred));
+        if(i==1||i==3||i==4)CHECK(!_wcsicmp(last_stage,fallback));
+        CHECK(sentinel(module));
+        cases++;
+    }
+#endif
+    printf("PASS: %u updater residue cases, inert EXE boundaries + real exclusive stage filesystem\n",cases);
+    return 0;
+}

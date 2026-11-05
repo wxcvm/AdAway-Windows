@@ -1,5 +1,13 @@
 # Preview changes
 
+## Windows 1.93 — prevent empty update directories
+- EXE installation, failed downloads and rejected packages no longer create ZIP staging directories beside the installation.
+- Reserve a portable staging directory only after SHA-256, ZIP header and archive listing validation. Keep the existing same-volume preference and move/copy recovery.
+- A same-name existing file/directory is never claimed or deleted; use the existing temporary-folder fallback or report failure.
+- No background sweeping, historical installer deletion, network/certificate changes or automatic installation by the development agent.
+- The fix takes effect when the new updater is running. An older updater performing the transition still executes its old logic; pre-existing remnants are not silently removed.
+
+
 ## Windows 1.92 — precise AdGuard event types and loopback evidence
 - For imported AdGuard block rankings, show **DNS / TCP / other protocol event counts** separately. The sum is a source-event total, **not** a number of deduplicated end-user requests.
 - On imported records whose remote endpoint is a numeric loopback address with port 80 or 443, show a read-only hint with the actual local listener port.
