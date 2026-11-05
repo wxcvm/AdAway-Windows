@@ -45,6 +45,8 @@ int main(void){
     CHECK(import->blocked==2 && import->dns_events==1);
     CHECK(import->duplicates==1 && import->missing_host==1);
     CHECK(import->top_count==1 && import->top[0].count==2);
+    CHECK(import->top[0].dns_count==1 && import->top[0].tcp_count==1 &&
+          import->top[0].other_count==0);
     CHECK(import->events[0].log_type==0 && import->events[0].dns_type[0]=='A');
     CHECK(import->events[1].log_type==3);
     CHECK(import->events[2].timestamp_us==1793758224082230ULL);
@@ -54,6 +56,33 @@ int main(void){
     CHECK(!strcmp(import->events[2].app,"test-app.exe"));
     CHECK(!strstr(import->events[2].app,"synthetic"));
     ag_import_free(import);
+    /* Source-reported localhost endpoints are diagnostic clues only.
+       Strict parsing must not count public addresses or malformed ports. */
+    CHECK(ag_loopback_remote_port("127.0.0.2:443")==443);
+    CHECK(ag_loopback_remote_port("127.255.0.1:80")==80);
+    CHECK(ag_loopback_remote_port("[::1]:443")==443);
+    CHECK(ag_loopback_remote_port("127.0.0.2:8443")==8443);
+    CHECK(ag_loopback_remote_port("127.0.0.256:443")==0);
+    CHECK(ag_loopback_remote_port("127.0.0.2:65536")==0);
+    CHECK(ag_loopback_remote_port("127.0.0.2:443evil")==0);
+    CHECK(ag_loopback_remote_port("127.0.0.2.example:443")==0);
+    CHECK(ag_loopback_remote_port("128.0.0.2:443")==0);
+    CHECK(ag_loopback_remote_port("[::2]:443")==0);
+    CHECK(ag_loopback_remote_port(NULL)==0);
+    struct ag_event endpoints[]={
+        {.protocol="Tcp",.log_type=0,.remote_address="127.0.0.2:443"},
+        {.protocol="Tcp",.log_type=5,.remote_address="127.0.0.1:80"},
+        {.protocol="Quic",.log_type=0,.remote_address="[::1]:443"},
+        {.protocol="Dns",.log_type=0,.remote_address="127.0.0.1:443"},
+        {.protocol="Tcp",.log_type=0,.remote_address="203.0.113.5:443"},
+        {.protocol="Tcp",.log_type=3,.remote_address="127.0.0.2:8443"}
+    };
+    struct ag_import endpoint_snapshot={.events=endpoints,.count=6};
+    struct ag_loopback_evidence evidence=ag_count_loopback_endpoints(&endpoint_snapshot);
+    CHECK(evidence.http==1 && evidence.blocked_http==0);
+    CHECK(evidence.https==2 && evidence.blocked_https==2);
+    CHECK(evidence.other==1 && evidence.blocked_other==0);
+    CHECK(ag_count_loopback_endpoints(NULL).https==0);
     CHECK(ag_import_parse(body,strlen(body),&import)==AG_IMPORT_OK);
     ag_import_free(import);
     const char *unicode_body =
