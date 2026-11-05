@@ -1549,82 +1549,6 @@ static DWORD WINAPI apply_thread(LPVOID param) {
         wcsncpy(s_resume_url, info->url, (sizeof(s_resume_url) / sizeof(wchar_t)) - 1);
         s_resume_url[(sizeof(s_resume_url) / sizeof(wchar_t)) - 1] = 0;
     }
-    /* Unique staging paths as well (audit A6). A fixed "%TEMP%\adblock-update"
-       could be pre-created by another process, and it was never removed: the
-       batch script now deletes it after the file copy. */
-    /*
-     * ROOT CAUSE (2) of "更新成功了但版本号没变": the staging tree must be on the
-     * SAME VOLUME as the install directory.
-     *
-     * Fixing (1) by staging in %TEMP% moved the tree to C: while the install
-     * lives on D:, and cmd's move refuses to move a DIRECTORY across volumes
-     * ("Access is denied", exit code 1, nothing copied - reproduced on the
-     * affected machine). Step 2 therefore failed within 10 ms, the batch rolled
-     * back and the version never changed; the step log added for (1) is what
-     * made this visible.
-     *
-     * So the staging tree has exactly two constraints:
-     *   1. NOT inside the install directory (step 1 renames that whole directory
-     *      aside, which would drag a staged tree along with it and dangle the
-     *      recorded SRC path);
-     *   2. on the same volume (step 2 must be able to move it into place).
-     * A sibling directory of the install directory satisfies both. If that
-     * parent is not writable, %TEMP% is still used - the generated batch then
-     * falls back to xcopy for step 2, which does work across volumes.
-     *
-     * Downloads stay in the (writable) package folder.
-     */
-    wchar_t stage_parent[MAX_PATH];
-    {
-        wchar_t mod[MAX_PATH], appdir_now[MAX_PATH];
-        appdir_now[0] = 0;
-        if (GetModuleFileNameW(NULL, mod, MAX_PATH)) {
-            wchar_t *slash = wcsrchr(mod, L'\\');
-            if (slash != NULL) {
-                *slash = 0;
-                wcsncpy(appdir_now, mod, MAX_PATH - 1);
-                appdir_now[MAX_PATH - 1] = 0;
-            }
-        }
-        if (appdir_now[0] != 0 &&
-            _wcsnicmp(temp, appdir_now, wcslen(appdir_now)) == 0) {
-            wchar_t parent[MAX_PATH], probe[MAX_PATH];
-            parent[0] = 0;
-            wcsncpy(parent, appdir_now, MAX_PATH - 1);
-            parent[MAX_PATH - 1] = 0;
-            wchar_t *slash = wcsrchr(parent, L'\\');
-            if (slash != NULL && slash != parent) {
-                *(slash + 1) = 0;      /* "D:\ADBlock" -> "D:\" (keep the root) */
-            } else {
-                parent[0] = 0;
-            }
-            if (parent[0] != 0) {
-                swprintf(probe, MAX_PATH, L"%lsadblock-update-%lu-%lu", parent,
-                         (unsigned long) pid, (unsigned long) stamp);
-                /* Prove the parent is writable before committing to it. */
-                if (CreateDirectoryW(probe, NULL) ||
-                    GetLastError() == ERROR_ALREADY_EXISTS) {
-                    wcsncpy(stage_parent, parent, MAX_PATH - 1);
-                    stage_parent[MAX_PATH - 1] = 0;
-                    win32_log_line("update: staging beside the install directory (%s)",
-                                   narrow_path(stage_parent));
-                    goto stage_parent_ready;
-                }
-            }
-            GetTempPathW(MAX_PATH, stage_parent);
-            win32_log_line("update: staging in the system temp folder (%s) - the install "
-                           "folder's parent is not writable, the batch will xcopy",
-                           narrow_path(stage_parent));
-        } else {
-            wcsncpy(stage_parent, temp, MAX_PATH - 1);
-            stage_parent[MAX_PATH - 1] = 0;
-        }
-    }
-stage_parent_ready:
-    swprintf(dir, MAX_PATH, L"%lsadblock-update-%lu-%lu", stage_parent, (unsigned long) pid, (unsigned long) stamp);
-    swprintf(list, MAX_PATH, L"%lsadblock-update-%lu-%lu.list", stage_parent, (unsigned long) pid, (unsigned long) stamp);
-    swprintf(bat, MAX_PATH, L"%lsadblock-update-%lu-%lu.ps1", stage_parent, (unsigned long) pid, (unsigned long) stamp);
-
     /*
      * Chance 1: the package this machine normally wants (installer for an
      * installed copy, portable zip for a hand-extracted one), first via the
@@ -1855,8 +1779,12 @@ portable_fallback:
         return 0;
     }
     /* Audit A4: validate the archive listing before extracting a single byte. */
-    /* Digits verified: from here on the package is installed. */
+    /* Digest/header verified; validate the archive before reserving its stage. */
     InterlockedExchange(&s_update_state, UPDATE_STATE_INSTALLING);
+    /* Listing does not need an extraction directory. Keep it with the download
+     * until the archive is accepted, so rejected/cancelled work has no stage. */
+    swprintf(list, MAX_PATH, L"%lsadblock-update-%lu-%lu.list", temp,
+             (unsigned long)pid, (unsigned long)stamp);
     int listing = tar_listing_is_safe(zip, list);
     DeleteFileW(list);
     if (listing < 0) {
@@ -1874,10 +1802,70 @@ portable_fallback:
         free(info);
         return 0;
     }
-    swprintf(cmd, 4096, L"cmd.exe /c rmdir /S /Q \"%ls\"", dir);
-    run_and_wait(cmd);
-    swprintf(cmd, 4096, L"cmd.exe /c mkdir \"%ls\"", dir);
-    run_and_wait(cmd);
+    /* Reserve an exclusive stage only for a validated portable archive.
+     * EXE/download/verification/listing failures must never create this tree.
+     * Prefer a sibling on the install volume, outside the directory that the
+     * helper will rename. If unavailable, retain its system-temp copy fallback.
+     * Existing candidates are not ours: never reuse or remove them. */
+    wchar_t stage_parent[MAX_PATH] = {0};
+    bool stage_created = false;
+    {
+        wchar_t mod[MAX_PATH], appdir_now[MAX_PATH];
+        appdir_now[0] = 0;
+        if (GetModuleFileNameW(NULL, mod, MAX_PATH)) {
+            wchar_t *slash = wcsrchr(mod, L'\\');
+            if (slash != NULL) {
+                *slash = 0;
+                wcsncpy(appdir_now, mod, MAX_PATH - 1);
+                appdir_now[MAX_PATH - 1] = 0;
+            }
+        }
+        if (appdir_now[0] != 0 &&
+            _wcsnicmp(temp, appdir_now, wcslen(appdir_now)) == 0) {
+            wchar_t parent[MAX_PATH], probe[MAX_PATH];
+            parent[0] = 0;
+            wcsncpy(parent, appdir_now, MAX_PATH - 1);
+            parent[MAX_PATH - 1] = 0;
+            wchar_t *slash = wcsrchr(parent, L'\\');
+            if (slash != NULL && slash != parent) {
+                *(slash + 1) = 0;      /* "D:\ADBlock" -> "D:\" (keep the root) */
+            } else {
+                parent[0] = 0;
+            }
+            if (parent[0] != 0) {
+                swprintf(probe, MAX_PATH, L"%lsadblock-update-%lu-%lu", parent,
+                         (unsigned long) pid, (unsigned long) stamp);
+                /* Reserve the actual fresh stage, not a leaked writability probe. */
+                if (CreateDirectoryW(probe, NULL)) {
+                    stage_created = true;
+                    wcsncpy(stage_parent, parent, MAX_PATH - 1);
+                    stage_parent[MAX_PATH - 1] = 0;
+                    win32_log_line("update: staging beside the install directory (%s)",
+                                   narrow_path(stage_parent));
+                    goto stage_parent_ready;
+                }
+            }
+            GetTempPathW(MAX_PATH, stage_parent);
+            win32_log_line("update: sibling stage unavailable; using system temp (%s)",
+                           narrow_path(stage_parent));
+        } else {
+            wcsncpy(stage_parent, temp, MAX_PATH - 1);
+            stage_parent[MAX_PATH - 1] = 0;
+        }
+    }
+stage_parent_ready:
+    swprintf(dir, MAX_PATH, L"%lsadblock-update-%lu-%lu", stage_parent, (unsigned long) pid, (unsigned long) stamp);
+    swprintf(bat, MAX_PATH, L"%lsadblock-update-%lu-%lu.ps1", stage_parent, (unsigned long) pid, (unsigned long) stamp);
+
+    if (!stage_parent[0] || (!stage_created && !CreateDirectoryW(dir, NULL))) {
+        update_fail_report(L"创建便携更新暂存目录",
+                           L"无法创建新的独立暂存目录；已有目录未被复用或删除。",
+                           dir);
+        InterlockedExchange(&s_update_state, UPDATE_STATE_IDLE);
+        free(info);
+        return 0;
+    }
+
     /*
      * Extraction with a fallback chain - and, for the first time, diagnostics.
      * "解压更新包失败或包内缺少 webserver.exe" was the one stage that logged

@@ -26,7 +26,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.92
+      TAG: win11-webserver-v1.93
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -288,6 +288,24 @@ jobs:
             traffic_mode_policy.c traffic_mode_policy_test.c \
             -o traffic_mode_policy_test.exe
           ./traffic_mode_policy_test.exe
+
+      - name: Regress installer exits and exclusive portable staging
+        shell: msys2 {0}
+        run: |
+          python3 tools/update-stage-residue-fixture.py update_win32.c update-stage-regression.c
+          # Truncating at the portable handoff leaves original portable-only locals unused.
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-variable -Wno-unused-but-set-variable -pedantic -I. update-stage-regression.c -o update-stage-regression.exe -municode -lshell32
+          ./update-stage-regression.exe "$(cygpath -m "$RUNNER_TEMP")" | tee update-stage-regression.log
+
+      - name: Preserve updater residue regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-update-stage-regression
+          path: |
+            update-stage-regression.c
+            update-stage-regression.log
+          if-no-files-found: warn
 
       - name: Cache verified official OpenSSL static archives
         uses: actions/cache@v4
