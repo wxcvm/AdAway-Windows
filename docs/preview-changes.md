@@ -1,5 +1,12 @@
 # Preview changes
 
+## Windows log center — precise AdGuard event types and loopback evidence
+- For imported AdGuard block rankings, show **DNS / TCP / other protocol event counts** separately. The sum is a source-event total, **not** a number of deduplicated end-user requests.
+- On imported records whose remote endpoint is a numeric loopback address with port 80 or 443, show a read-only hint with the actual local listener port.
+- The original listener diagnostic now counts imported non-DNS loopback endpoint observations for ports 80, 443 and other ports, with independent block-event counts. It may flag a port mismatch for investigation, but **does not imply successful forwarding or a missing AdAway interception**.
+- No changes to packet interception, AdGuard settings, network routes, block decisions, persistence, or the separate source statistics. Synthetic tests cover strict numeric endpoint parsing, DNS/TCP split, and native GUI detail display.
+
+
 ## Windows 1.91 — AdGuard empty-import bugfix
 - A valid AdGuard ProtocolVersion 1 `LogRecords: []` export now clears the previous imported snapshot and shows zero rows; it is not treated as corruption.
 - A file containing embedded NUL bytes is correctly reported invalid. Failed/malformed imports preserve the previous snapshot, and local AdAway history remains independent.
