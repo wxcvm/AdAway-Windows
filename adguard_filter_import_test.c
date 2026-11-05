@@ -72,6 +72,60 @@ int main(void){
     char invalid[400];snprintf(invalid,sizeof invalid,
         "{\"ProtocolVersion\":\"2\",\"LogRecords\":[]}");
     CHECK(ag_import_parse(invalid,strlen(invalid),&import)==AG_IMPORT_UNSUPPORTED);
+    /* A time-window comparison uses UTC seconds, not the source's wall clock.
+       Only the visible AdAway history page is countable; never infer a match. */
+    struct ag_event event_rows[3] = {
+        {.unix_seconds=1000,.log_type=0},
+        {.unix_seconds=1030,.log_type=3},
+        {.unix_seconds=1100,.log_type=0}
+    };
+    struct ag_import source={0};
+    source.events=event_rows;source.count=3;
+    struct ag_source_compare window=ag_compare_window(&source,60);
+    CHECK(window.has_import && window.start_utc==1040 && window.end_utc==1100);
+    CHECK(window.adguard_events==1 && window.adguard_blocked==1);
+    ag_compare_local_page_row(&window,1040,1);
+    ag_compare_local_page_row(&window,1041,1);
+    ag_compare_local_page_row(&window,1100,2);
+    ag_compare_local_page_row(&window,1101,1);
+    CHECK(window.local_events==2 && window.local_blocked==1);
+    CHECK(!ag_compare_window(NULL,3600).has_import);
+    CHECK(!ag_compare_window(&source,0).has_import);
+    window=ag_compare_window(&source,120);
+    CHECK(window.adguard_events==3 && window.adguard_blocked==2);
+
+    /* Failures must return NO snapshot and retain no partially parsed rows. */
+    const char *malformed_cases[] = {
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[]}",
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":{}}",
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{}]}",
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{\"Host\":\"example.test\"}]}",
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{\"RequestArgId\":\"broken\","
+        "\"Time\":\"2026-11-04T10:10:24+08:00\",\"Host\":\"x.test\"}]}",
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{\"RequestArgId\":\"00000000-0000-0000-0000-000000000006\","
+        "\"Time\":\"2026-11-04T10:10:24+08:00\",\"Host\":\"x.test\","
+        "\"ProtocolType\":\"Tcp\",\"LogRecordType\":0,\"ProcessId\":1,"
+        "\"FiredFilterId\":1,\"StatusCode\":0,\"AppPath\":\"\\uD800\"}]}",
+    };
+    for(size_t i=0;i<sizeof malformed_cases/sizeof malformed_cases[0];i++) {
+        import=NULL;
+        CHECK(ag_import_parse(malformed_cases[i],strlen(malformed_cases[i]),&import)==AG_IMPORT_INVALID);
+        CHECK(import==NULL);
+    }
+    char very_long_host[400];
+    memset(very_long_host,'x',sizeof very_long_host-1);
+    very_long_host[sizeof very_long_host-1]=0;
+    char long_body[900];
+    snprintf(long_body,sizeof long_body,
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{"
+        "\"RequestArgId\":\"00000000-0000-0000-0000-000000000007\","
+        "\"Time\":\"2026-11-04T10:10:24+08:00\",\"Host\":\"%s\","
+        "\"ProtocolType\":\"Dns\",\"LogRecordType\":0,"
+        "\"ProcessId\":1,\"FiredFilterId\":1,\"StatusCode\":0}]}",very_long_host);
+    CHECK(ag_import_parse(long_body,strlen(long_body),&import)==AG_IMPORT_INVALID);
+    CHECK(import==NULL);
+    CHECK(ag_import_parse(body,AG_IMPORT_MAX_BYTES+1,&import)==AG_IMPORT_TOO_LARGE);
+    CHECK(import==NULL);
     puts("PASS: AdGuard v1 synthetic JSON, UTC offset, independent DNS/TCP events, dedup, privacy, ranking");
     return 0;
 }
