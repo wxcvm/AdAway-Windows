@@ -26,7 +26,7 @@ jobs:
       # Single source of truth for the release tag: the installer attach step
       # used to hardcode the tag, so every version bump uploaded the new
       # installer onto the PREVIOUS release and the new one shipped zip-only.
-      TAG: win11-webserver-v1.91
+      TAG: win11-webserver-v1.92
       # User-approved temporary release policy: unsigned Windows distributions.
       # Switch to '0' only after trusted Authenticode release signing is ready.
       WINDOWS_UNSIGNED_RELEASE: '1'
@@ -1356,6 +1356,7 @@ jobs:
           - 统一日志中心：本地请求、进程活动和域名拦截排行使用同一界面，保留本地来源统计。
           - 可手动导入 AdGuard Filtering Log ProtocolVersion 1 JSON；导入结果与 AdAway 本地记录分开显示和计数，支持原始时间/时区、远程地址与匹配规则详情。此功能为离线快照，不提供实时同步。
           - v1.91 修复：合法的空 AdGuard 日志可清除旧导入快照；损坏文件不再被误报为超限，原有快照仍保留。
+          - v1.92 增强：AdGuard 拦截排行显示 DNS／TCP／其他协议的独立事件数；回环地址端口诊断提示对照本地监听端口，不代表已接收该连接。
           - 日志按时间排序；导入时不保存 Cookie、完整应用路径、请求头、完整网址或原始导出文件。
           - 导入后可选 15 分钟／1 小时／24 小时来源对照；仅与当前页本地 HTTP 历史比较，不从不同来源推断全机覆盖率、请求匹配或同步延迟。
           - 保留本地 CSV 导出、监听器、安装/覆盖升级及已支持的设置。
