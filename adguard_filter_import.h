@@ -300,8 +300,9 @@ static inline enum ag_import_error ag_import_parse(
     const char *text, size_t length, struct ag_import **output) {
     if(!output)return AG_IMPORT_INVALID;
     *output=NULL;
-    if(!text || !length || memchr(text,'\0',length))return AG_IMPORT_INVALID;
+    if(!text || !length)return AG_IMPORT_INVALID;
     if(length>AG_IMPORT_MAX_BYTES)return AG_IMPORT_TOO_LARGE;
+    if(memchr(text,'\0',length))return AG_IMPORT_INVALID;
     struct mg_str json={(char *)text,length}; /* Mongoose scans read-only bytes */
     char version[12];
     if(!dashboard_json_object(json) ||
