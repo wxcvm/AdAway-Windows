@@ -69,6 +69,18 @@ int main(void){
     CHECK(!strcmp(import->events[0].protocol,"Quic"));
     CHECK(!strcmp(import->events[0].app,"\xe6\xb5\x8b\xe8\xaf\x95\xe5\xba\x94\xe7\x94\xa8.exe"));
     ag_import_free(import);
+    /* A valid zero-row export must replace stale imported observations. */
+    const char *empty="{\"ProtocolVersion\":\"1\",\"LogRecords\":[]}";
+    CHECK(ag_import_parse(empty,strlen(empty),&import)==AG_IMPORT_OK);
+    CHECK(import && import->count==0 && import->scanned==0 &&
+          import->blocked==0 && import->top_count==0);
+    CHECK(!ag_compare_window(import,900).has_import);
+    ag_import_free(import);
+    import=NULL;
+    const char nul_input[]="{\"ProtocolVersion\":\"1\"}\0trailer";
+    CHECK(ag_import_parse(nul_input,sizeof nul_input-1,&import)==AG_IMPORT_INVALID);
+    CHECK(import==NULL);
+    CHECK(ag_import_parse(NULL,0,&import)==AG_IMPORT_INVALID && import==NULL);
     char invalid[400];snprintf(invalid,sizeof invalid,
         "{\"ProtocolVersion\":\"2\",\"LogRecords\":[]}");
     CHECK(ag_import_parse(invalid,strlen(invalid),&import)==AG_IMPORT_UNSUPPORTED);
@@ -96,7 +108,6 @@ int main(void){
 
     /* Failures must return NO snapshot and retain no partially parsed rows. */
     const char *malformed_cases[] = {
-        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[]}",
         "{\"ProtocolVersion\":\"1\",\"LogRecords\":{}}",
         "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{}]}",
         "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{\"Host\":\"example.test\"}]}",
