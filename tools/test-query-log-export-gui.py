@@ -606,6 +606,25 @@ def run(driver, exe, probe, evidence):
             wait(lambda:u.IsWindowVisible(gui.button) and u.IsWindowEnabled(gui.button),
                  'AdAway export unavailable after switching imported source off')
             record('adguard-v1-open-import-time-provenance-private-details-and-source-toggle')
+            # A new valid empty snapshot must clear the older imported rows
+            # without changing or deleting independent local HTTP history.
+            empty_export=gui.root/'adguard-empty-snapshot.json'
+            empty_export.write_text(json.dumps(dict(ProtocolVersion='1',LogRecords=[])),
+                                    encoding='utf8')
+            gui.click(gui.main,1225)
+            chooser=wait(lambda:gui.find('#32770',gui.main,title='Open'),
+                         'empty AdGuard export chooser missing')
+            gui.choose(chooser,empty_export,initial_values=('',))
+            success=wait(lambda:gui.find('#32770',gui.main,title='AdGuard 离线导入完成'),
+                         'valid zero-row AdGuard import rejected')
+            gui.confirm_messagebox(success)
+            wait(lambda:gui.send(imported,0x18B)==0,
+                 'zero-row import did not clear stale AdGuard records')
+            assert gui.text(gui.child(gui.main,1224))=='来源：AdGuard'
+            gui.click(gui.main,1224)
+            wait(lambda:gui.text(gui.child(gui.main,1224))=='来源：AdAway',
+                 'local request source not restored after empty AdGuard import')
+            record('adguard-empty-import-clears-previous-snapshot')
             # Real native log-center tab: skip phantom/zero hosts, then sort
             # the valid local block counts. Click into details and back.
             gui.click(gui.main, 1223)
