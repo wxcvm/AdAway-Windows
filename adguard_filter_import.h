@@ -31,13 +31,71 @@ struct ag_event {
     int process_id, status, filter_id, log_type, request_type;
     uint32_t stealth_options;
 };
-struct ag_rank { char host[192]; uint32_t count; };
+/* The rank is a count of source events, not unique user requests. */
+struct ag_rank {
+    char host[192];
+    uint32_t count, dns_count, tcp_count, other_count;
+};
 struct ag_import {
     struct ag_event *events;
     size_t count, scanned, missing_host, duplicates, blocked, dns_events;
     struct ag_rank top[AG_IMPORT_TOP];
     size_t top_count;
 };
+
+/* These are AdGuard-reported remote endpoints, not proof that an AdAway
+ * listener accepted a connection. Only accept numeric loopback addresses;
+ * never guess from hostnames or similarly prefixed public addresses. */
+struct ag_loopback_evidence {
+    size_t http, https, other;
+    size_t blocked_http, blocked_https, blocked_other;
+};
+static inline unsigned ag_loopback_remote_port(const char *address) {
+    if(!address)return 0;
+    const char *p=address;
+    if(strncmp(p,"[::1]:",6)==0) {
+        p+=6;
+    } else if(strncmp(p,"127.",4)==0) {
+        p+=4;
+        for(int part=0;part<3;part++) {
+            unsigned octet=0, digits=0;
+            while(*p>='0' && *p<='9' && digits<3) {
+                octet=octet*10u+(unsigned)(*p++-'0');
+                digits++;
+            }
+            if(!digits || octet>255u)return 0;
+            if(*p!=(part<2?'.':':'))return 0;
+            ++p;
+        }
+    } else return 0;
+    if(*p<'0'||*p>'9')return 0;
+    unsigned port=0;
+    for(;*p;p++) {
+        if(*p<'0'||*p>'9')return 0;
+        port=port*10u+(unsigned)(*p-'0');
+        if(port>65535u)return 0;
+    }
+    return port;
+}
+static inline struct ag_loopback_evidence ag_count_loopback_endpoints(
+    const struct ag_import *snapshot) {
+    struct ag_loopback_evidence out={0};
+    if(!snapshot)return out;
+    for(size_t i=0;i<snapshot->count;i++) {
+        const struct ag_event *event=&snapshot->events[i];
+        if(strcmp(event->protocol,"Dns")==0)continue;
+        unsigned port=ag_loopback_remote_port(event->remote_address);
+        if(!port)continue;
+        size_t *all=port==80u?&out.http:port==443u?&out.https:&out.other;
+        ++*all;
+        if(event->log_type==0) {
+            size_t *blocks=port==80u?&out.blocked_http:
+                port==443u?&out.blocked_https:&out.blocked_other;
+            ++*blocks;
+        }
+    }
+    return out;
+}
 /* Side-by-side source totals in a user-selected UTC time window, anchored
  * to the newest imported AdGuard event. Local counts are supplied ONLY from
  * the currently available AdAway HTTP history page, never from global stats.
@@ -353,6 +411,9 @@ static inline enum ag_import_error ag_import_parse(
             ++ranks;
         }
         ++all[j].count;
+        if(strcmp(event->protocol,"Dns")==0) ++all[j].dns_count;
+        else if(strcmp(event->protocol,"Tcp")==0) ++all[j].tcp_count;
+        else ++all[j].other_count;
     }
     qsort(all,ranks,sizeof(*all),ag_cmp_rank);
     result->top_count=ranks<AG_IMPORT_TOP?ranks:AG_IMPORT_TOP;

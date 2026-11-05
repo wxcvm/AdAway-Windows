@@ -520,6 +520,8 @@ def run(driver, exe, probe, evidence):
             assert gui.send(imported,0x186,0,0)==0
             gui.send(gui.main,0x111,(1<<16)|1215,imported)
             wait(lambda:'2 条' in gui.text(details),'AdGuard DNS and TCP block events were lost')
+            assert 'DNS 1 条 / TCP 1 条 / 其他协议 0 条' in gui.text(details), (
+                'AdGuard ranking must expose separate DNS/TCP source-event counts')
             gui.capture('imported-adguard-rank')
             # Cancel, malformed JSON and a subsequent valid re-import must be
             # transactional: neither failure nor cancellation clears old data.
@@ -572,7 +574,8 @@ def run(driver, exe, probe, evidence):
             newer=dict(ProtocolVersion='1',LogRecords=[
                 dict(RequestArgId='10000000-0000-0000-0000-000000000099',
                      Time='2026-11-04T10:11:01.000+08:00',
-                     Host='new.example.test',ProtocolType='Dns',
+                     Host='new.example.test',ProtocolType='Tcp',
+                     RemoteIpAddress='127.0.0.2:443',
                      LogRecordType=0,ProcessId=0,FiredFilterId=1,StatusCode=0)])
             replacement=gui.root/'adguard-new-snapshot.json'
             replacement.write_text(json.dumps(newer),encoding='utf8')
@@ -589,6 +592,8 @@ def run(driver, exe, probe, evidence):
             gui.send(gui.main,0x111,(1<<16)|1215,imported)
             assert 'new.example.test' in gui.text(details)
             assert 'blocked.example.test' not in gui.text(details)
+            assert '回环端口线索' in gui.text(details) and '443' in gui.text(details)
+            assert '不能证明连接到达 AdAway' in gui.text(details)
             record('adguard-valid-reimport-replaces-prior-memory-only-snapshot')
             # A successful import intentionally resets to Requests; explicitly
             # return to Ranking before asserting independent source rankings.
