@@ -1,10 +1,15 @@
 # Preview changes
 
+## Windows 1.91 — AdGuard empty-import bugfix
+- A valid AdGuard ProtocolVersion 1 `LogRecords: []` export now clears the previous imported snapshot and shows zero rows; it is not treated as corruption.
+- A file containing embedded NUL bytes is correctly reported invalid. Failed/malformed imports preserve the previous snapshot, and local AdAway history remains independent.
+- Parser tests and actual Windows GUI acceptance verify the replacement and source switch. No live AdGuard synchronization or global capture was added.
+
 ## Windows 1.90 — source time-window comparison and import hardening
 - After importing a Filtering Log JSON, choose **来源对照／诊断** for a 15-minute, 1-hour or 24-hour UTC window anchored to the newest imported event. The popup presents the imported AdGuard event/block counts next to **only the currently loaded AdAway HTTP history page** in that same absolute time window.
 - Show when the local page is unavailable; label search and pagination boundaries, rather than treating zero observations as a full-machine zero.
 - Do not infer one-to-one request matching, coverage percentage, leak rate, end-to-end latency, or all-source block totals. The two sources have no verified shared request identifier.
-- Validate native cancel, malformed input, oversized files, replacement on re-import and volatile snapshot clearing after a full process restart; parser tests also cover empty exports, invalid UTF-16 escapes and long hostnames. A valid `LogRecords: []` import now replaces the previous snapshot with zero rows; malformed files retain the previous snapshot.
+- Validate native cancel, malformed input, oversized files, replacement on re-import and volatile snapshot clearing after a full process restart; parser tests also cover invalid UTF-16 escapes and long hostnames.
 - This remains a manual, privacy-reduced import. There is no AdGuard live-log API integration or silent traffic collection.
 
 ## Windows 1.90 — unified log center and AdGuard offline import
