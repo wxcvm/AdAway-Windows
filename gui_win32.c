@@ -2835,9 +2835,9 @@ static HWND s_ctrls[CL_MAIN + CL_SUB + CL_LOG + POLICY_COUNT + 2];
  * connection that never completed an HTTP request. */
 static void log_ingress_diagnostics(HWND hwnd) {
     const struct snapshot *sn = g_sn;
-    wchar_t report[2100];
+    wchar_t report[2600];
     if (!sn || !sn->valid) {
-        swprintf(report, 2100,
+        swprintf(report, 2600,
                  L"响应服务器统计目前不可用，不能判断是否收到 AdGuard 转来的请求。\n\n"
                  L"当前设置：HTTP %d，HTTPS %d。请先在设置页确认监听器绑定正常，再检查对接路径。\n\n"
                  L"AdGuard 的 DNS 重定向只返回 IP，不指定端口；使用自定义重定向时通常需在 80/443 监听。"
@@ -2851,7 +2851,7 @@ static void log_ingress_diagnostics(HWND hwnd) {
             swprintf(arrivals, 80, L"%lld", sn->response_tcp_accepts);
         else
             wcscpy(arrivals, L"服务端尚未提供");
-        swprintf(report, 2100,
+        swprintf(report, 2600,
                  L"本地监听 HTTP %d / HTTPS %d\n"
                  L"报告已绑定监听：%u 条；服务端绑定状态：%ls\n\n"
                  L"响应端口接入的 TCP 连接：%ls（本次运行，不含管理端口）\n"
@@ -2870,6 +2870,27 @@ static void log_ingress_diagnostics(HWND hwnd) {
                  sn->bind_ok ? L"已报告正常" : L"异常／待核对",
                  arrivals, sn->total_requests, sn->total_blocked, sn->tls_failures,
                  sn->qlog_count);
+    }
+    /* The imported remote endpoint is only an AdGuard observation, never a
+     * confirmed arrival at the response server. Count it separately. */
+    if(g_ag_import && g_ag_import->count) {
+        struct ag_loopback_evidence ev=ag_count_loopback_endpoints(g_ag_import);
+        if(ev.http || ev.https || ev.other) {
+            const wchar_t *mismatch=(ev.http && g_http_port!=80) ||
+                                     (ev.https && g_https_port!=443) ?
+                L"监听端口与部分导入记录显示的端口不同；先检查实际转发路径和监听器配置。" :
+                L"目前监听端口与上述标准端口相符，仍需检查流量是否真的到达。";
+            size_t used=wcslen(report);
+            if(used<2599)swprintf(report+used,2600-used,
+                L"\n\n── 导入记录的回环地址线索（整份导入，不限当前页）──\n"
+                L"AdGuard 非 DNS 事件的远程端点：本机 80 有 %u 条（拦截 %u），"
+                L"本机 443 有 %u 条（拦截 %u），其他本机端口 %u 条。\n"
+                L"本服务当前 HTTP %d / HTTPS %d。%ls\n"
+                L"注意：这是 AdGuard 记录的远程端点，不证明 AdAway 接收到连接或存在漏拦。",
+                (unsigned)ev.http,(unsigned)ev.blocked_http,
+                (unsigned)ev.https,(unsigned)ev.blocked_https,
+                (unsigned)ev.other,g_http_port,g_https_port,mismatch);
+        }
     }
     MessageBoxW(hwnd, report, L"AdGuard ↔ 本地请求日志 · 对接诊断",
                 MB_OK | MB_ICONINFORMATION);
@@ -3290,9 +3311,11 @@ static void log_details_refresh(HWND hwnd) {
             utf8_to_wide(rank->host, domain, 192);
             swprintf(text, 2400,
                 L"来源：AdGuard 过滤日志（用户手动导入）\r\n"
-                L"域名：%ls\r\n拦截事件：%u 条\r\n"
-                L"DNS / TCP 分别计数；一条记录不必然对应一次独立请求。",
-                domain, (unsigned)rank->count);
+                L"域名：%ls\r\n拦截事件总计：%u 条\r\n"
+                L"DNS %u 条 / TCP %u 条 / 其他协议 %u 条。\r\n"
+                L"各协议分别计数；不等于独立用户请求次数。",
+                domain, (unsigned)rank->count,(unsigned)rank->dns_count,
+                (unsigned)rank->tcp_count,(unsigned)rank->other_count);
         } else {
             const struct ag_event *event = &g_ag_import->events[index];
             wchar_t domain[192], process[96], rule[192], at[48], proto[16], dns[16], remote[160], stealth[96];
@@ -3303,6 +3326,15 @@ static void log_details_refresh(HWND hwnd) {
             utf8_to_wide(event->protocol,proto,16);
             utf8_to_wide(event->dns_type,dns,16);
             utf8_to_wide(event->remote_address,remote,160);
+            wchar_t endpoint_hint[240]=L"";
+            unsigned loop_port=ag_loopback_remote_port(event->remote_address);
+            if(loop_port==80u || loop_port==443u) {
+                int configured=loop_port==80u?g_http_port:g_https_port;
+                swprintf(endpoint_hint,240,
+                    L"回环端口线索：AdGuard 远程地址显示 %u；本服务%ls监听 %d。"
+                    L"仅供核对，不能证明连接到达 AdAway。\r\n",
+                    loop_port,loop_port==80u?L" HTTP ":L" HTTPS ",configured);
+            }
             if(event->stealth_options&16384u)wcscpy(stealth,L"Protection from DPI was applied");
             else if(event->stealth_options)swprintf(stealth,96,L"已应用（选项码 %u）",event->stealth_options);
             else wcscpy(stealth,L"未应用");
@@ -3318,11 +3350,12 @@ static void log_details_refresh(HWND hwnd) {
                 L"结果：%ls    状态码：%d\r\n"
                 L"匹配规则：%ls    过滤器 ID：%d\r\n"
                 L"事件类型：%d（仅类型 0 计入导入拦截排行）\r\n"
-                L"离线快照，不代表 AdAway 已收到此连接或自动同步。",
+                L"%ls离线快照，不代表 AdAway 已收到此连接或自动同步。",
                 at,domain,remote[0]?remote:L"未提供",adguard_remote_family(event),
                 process[0]?process:L"未知",event->process_id,stealth,
                 proto,dns[0]?dns:L"不适用",adguard_request_type(event),
-                outcome,event->status,rule[0]?rule:L"未提供",event->filter_id,event->log_type);
+                outcome,event->status,rule[0]?rule:L"未提供",event->filter_id,event->log_type,
+                endpoint_hint);
         }
         SetDlgItemTextW(hwnd, IDC_QLOG_DETAILS, text);
         return;
@@ -3405,8 +3438,10 @@ static void log_list_refresh(HWND hwnd, bool force) {
             if(g_log_ranking) {
                 const struct ag_rank *rank=&g_ag_import->top[i];
                 utf8_to_wide(rank->host,host,192);
-                swprintf(line,512,L"%02u    %ls    ·    AdGuard 拦截事件 %u 条",
-                    (unsigned)(i+1),host,(unsigned)rank->count);
+                swprintf(line,512,L"%02u    %ls    ·    AdGuard 拦截 %u（DNS %u / TCP %u / 其他 %u）",
+                    (unsigned)(i+1),host,(unsigned)rank->count,
+                    (unsigned)rank->dns_count,(unsigned)rank->tcp_count,
+                    (unsigned)rank->other_count);
             }else{
                 const struct ag_event *event=&g_ag_import->events[i];
                 utf8_to_wide(event->host,host,192);
