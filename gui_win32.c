@@ -4745,7 +4745,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if(LOWORD(wp)==IDC_QLOG_CLEAR) {
             if(!g_ag_import)return 0;
             if(MessageBoxW(hwnd,
-                L"确定清空当前导入的 AdGuard 离线快照吗？\\r\\n"
+                L"确定清空当前导入的 AdGuard 离线快照吗？\r\n"
                 L"仅清除本进程内存中的导入记录，不影响 AdAway 本地历史或原始 JSON 文件。",
                 L"清空 AdGuard 快照",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)!=IDYES)
                 return 0;
