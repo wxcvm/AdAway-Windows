@@ -602,6 +602,17 @@ def run(driver, exe, probe, evidence):
                  'successful re-import did not return to the AdGuard ranking view')
             wait(lambda:gui.send(imported,0x18B)==1,
                  'new AdGuard snapshot did not populate its independent ranking')
+            clear_button=gui.child(gui.main,1226)
+            assert u.IsWindowEnabled(clear_button)
+            gui.click(gui.main,1226)
+            confirm=wait(lambda:gui.find('#32770',gui.main,title='清空 AdGuard 快照'),
+                         'clear-snapshot confirmation did not appear')
+            gui.click_text(confirm,'no')
+            wait(lambda:not gui.find('#32770',gui.main,title='清空 AdGuard 快照'),
+                 'cancelled clear dialog did not close')
+            assert gui.send(imported,0x18B)==1
+            assert gui.text(gui.child(gui.main,1224))=='来源：AdGuard'
+            record('cancel-clear-preserves-imported-adguard-snapshot')
             gui.click(gui.main,1224)
             wait(lambda:gui.text(gui.child(gui.main,1224))=='来源：AdAway',
                  'source switch did not complete after native posted button click')
@@ -630,6 +641,21 @@ def run(driver, exe, probe, evidence):
             wait(lambda:gui.text(gui.child(gui.main,1224))=='来源：AdAway',
                  'local request source not restored after empty AdGuard import')
             record('adguard-empty-import-clears-previous-snapshot')
+            # Explicitly dismiss the imported snapshot. AdAway local history
+            # remains available and the source toggle becomes disabled.
+            clear_button=gui.child(gui.main,1226)
+            gui.click(gui.main,1226)
+            confirm=wait(lambda:gui.find('#32770',gui.main,title='清空 AdGuard 快照'),
+                         'clear-snapshot confirmation did not appear')
+            gui.click_text(confirm,'yes')
+            wait(lambda:not gui.find('#32770',gui.main,title='清空 AdGuard 快照'),
+                 'clear dialog did not close')
+            wait(lambda:not u.IsWindowVisible(clear_button),
+                 'clear button remained visible after snapshot was freed')
+            assert gui.text(gui.child(gui.main,1224))=='来源：AdAway'
+            assert not u.IsWindowEnabled(gui.child(gui.main,1224))
+            assert u.IsWindowVisible(gui.button) and u.IsWindowEnabled(gui.button)
+            record('confirmed-clear-erases-imported-source-preserves-local-history')
             # Real native log-center tab: skip phantom/zero hosts, then sort
             # the valid local block counts. Click into details and back.
             gui.click(gui.main, 1223)

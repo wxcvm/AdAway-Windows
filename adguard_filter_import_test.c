@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #define CHECK(x) do { if(!(x)){fprintf(stderr,"FAIL %d: %s\n",__LINE__,#x);exit(1);} }while(0)
 int main(void){
+    unsigned char sensitive[]={0x41,0x00,0xff,0x7f};
+    ag_import_clear_bytes(sensitive,sizeof sensitive);
+    for(size_t i=0;i<sizeof sensitive;i++)CHECK(sensitive[i]==0);
     uint64_t micros=0; int64_t sec=0;
     CHECK(ag_parse_timestamp("2026-11-04T10:10:24.0822308+08:00",&micros,&sec));
     CHECK(micros==1793758224082230ULL && sec==1793758224LL);

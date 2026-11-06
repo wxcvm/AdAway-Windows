@@ -1153,6 +1153,7 @@ static void *stats_poll_thread(void *arg) {
 #define IDC_QLOG_UID 1220
 #define IDC_STATS_RANGE 1320
 #define IDC_QLOG_DIAG 1221
+#define IDC_QLOG_CLEAR 1226
 #define IDC_POL0      1110
 #define IDC_SUBRELOAD 1130
 #define IDC_POLDEF    1131   /* 恢复推荐默认 */
@@ -2823,6 +2824,7 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_APPS, 618, 24, 110, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
     { IDC_QLOG_RANKING, 734, 24, 110, 28, L"BUTTON", L"拦截排行", BS_PUSHBUTTON },
     { IDC_QLOG_DIAG, 850, 24, 152, 28, L"BUTTON", L"AdGuard 诊断", BS_PUSHBUTTON },
+    { IDC_QLOG_CLEAR, 590, 56, 138, 27, L"BUTTON", L"清空导入快照", BS_PUSHBUTTON },
     { IDC_QLOG_SOURCE, 736, 56, 126, 27, L"BUTTON", L"来源：AdAway", BS_PUSHBUTTON },
     { IDC_QLOG_IMPORT, 870, 56, 132, 27, L"BUTTON", L"导入 AdGuard...", BS_PUSHBUTTON },
     { IDC_QLOG_LIVE, 880, 90, 122, 28, L"BUTTON", L"暂停刷新", BS_PUSHBUTTON },
@@ -3015,8 +3017,9 @@ static void log_controls_refresh(HWND hwnd) {
         bool shared = id == IDC_QLOG_LIST || id == IDC_QLOG_DETAILS ||
             id == IDC_QLOG_APPS || id == IDC_QLOG_REQUESTS ||
             id == IDC_QLOG_RANKING || id == IDC_QLOG_DIAG ||
-            id == IDC_QLOG_SOURCE || id == IDC_QLOG_IMPORT;
+            id == IDC_QLOG_SOURCE || id == IDC_QLOG_IMPORT || id == IDC_QLOG_CLEAR;
         bool visible = g_tab == 1 && (shared || (!imported && !g_log_ranking && !g_log_apps));
+        if(id==IDC_QLOG_CLEAR)visible=visible && g_ag_import!=NULL;
         ShowWindow(GetDlgItem(hwnd, id), visible ? SW_SHOW : SW_HIDE);
     }
     SetDlgItemTextW(hwnd, IDC_QLOG_REQUESTS,
@@ -3026,6 +3029,7 @@ static void log_controls_refresh(HWND hwnd) {
     SetDlgItemTextW(hwnd, IDC_QLOG_SOURCE,
         imported ? L"来源：AdGuard" : L"来源：AdAway");
     EnableWindow(GetDlgItem(hwnd, IDC_QLOG_SOURCE), !g_log_apps && g_ag_import != NULL);
+    EnableWindow(GetDlgItem(hwnd, IDC_QLOG_CLEAR), g_ag_import != NULL);
     SetDlgItemTextW(hwnd, IDC_QLOG_DIAG, g_ag_import ? L"来源对照／诊断" : L"AdGuard 诊断");
     SetDlgItemTextW(hwnd, IDC_QLOG_LIVE,
         g_log_nav.request.generation[0] ? L"恢复实时" : L"暂停刷新");
@@ -3952,7 +3956,7 @@ static void draw_activity_page(HDC hdc) {
     DrawTextW(hdc, L"日志中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, body_font);
     SetTextColor(hdc, g_pal.muted);
-    RECT hint = {S(218), S(60), S(728), S(82)};
+    RECT hint = {S(218), S(60), S(g_ag_import ? 580 : 728), S(82)};
     const wchar_t *log_hint = g_log_external && !g_log_apps ?
         L"AdGuard 离线快照 · 不自动同步" :
         (g_log_ranking ? L"AdAway 本地拦截排行 · 非全机 DNS" :
@@ -4738,6 +4742,25 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if(LOWORD(wp)==IDC_QLOG_EXPORT){log_export_start(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_DIAG){log_source_compare(hwnd);return 0;}
         if(LOWORD(wp)==IDC_QLOG_IMPORT){log_import_adguard(hwnd);return 0;}
+        if(LOWORD(wp)==IDC_QLOG_CLEAR) {
+            if(!g_ag_import)return 0;
+            if(MessageBoxW(hwnd,
+                L"确定清空当前导入的 AdGuard 离线快照吗？\r\n"
+                L"仅清除本进程内存中的导入记录，不影响 AdAway 本地历史或原始 JSON 文件。",
+                L"清空 AdGuard 快照",MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2)!=IDYES)
+                return 0;
+            ag_import_free(g_ag_import);
+            g_ag_import=NULL;
+            g_log_external=false;
+            g_log_apps=false;
+            g_log_ranking=false;
+            g_log_render_hash=0;
+            g_log_render_view_seen=false;
+            SendDlgItemMessageW(hwnd,IDC_QLOG_LIST,LB_SETCURSEL,(WPARAM)-1,0);
+            log_controls_refresh(hwnd);
+            InvalidateRect(hwnd,NULL,FALSE);
+            return 0;
+        }
         if(LOWORD(wp)==IDC_QLOG_SOURCE) {
             if(g_ag_import && !g_log_apps) {
                 g_log_external=!g_log_external;

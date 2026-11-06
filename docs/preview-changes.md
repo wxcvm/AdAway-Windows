@@ -1,5 +1,12 @@
 # Preview changes
 
+## Windows 1.94 — explicit AdGuard snapshot dismissal
+- Add a visible **清空导入快照** button whenever an AdGuard Filtering Log snapshot is loaded, including a valid zero-event snapshot. Ask for confirmation; cancelling leaves the imported source and selection unchanged.
+- Confirming discards only the in-memory imported source and returns to the independent AdAway local request view. It does not delete the chosen source JSON or touch local HTTP history, filtering, rankings, or export.
+- Clear the privacy-reduced AdGuard event and ranking buffers before freeing them on explicit dismissal, successful replacement and normal process exit. Raw import bytes were already cleared after parsing.
+- The native Windows GUI acceptance suite verifies cancel/confirm behavior and access to the local request export after dismissal; the C parser test verifies the erase helper.
+- This is still a **user-selected offline snapshot**, not AdGuard real-time monitoring, all-machine capture, or correlated end-to-end event matching.
+
 ## Windows 1.93 — prevent empty update directories
 - EXE installation, failed downloads and rejected packages no longer create ZIP staging directories beside the installation.
 - Reserve a portable staging directory only after SHA-256, ZIP header and archive listing validation. Keep the existing same-volume preference and move/copy recovery.
