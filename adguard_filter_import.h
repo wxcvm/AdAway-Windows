@@ -137,8 +137,21 @@ enum ag_import_error {
     AG_IMPORT_OK=0, AG_IMPORT_INVALID, AG_IMPORT_TOO_LARGE,
     AG_IMPORT_UNSUPPORTED, AG_IMPORT_NO_MEMORY
 };
+/* Erase the privacy-reduced event snapshot too, before replacement,
+ * explicit dismissal or process exit. Volatile stores avoid dead-store
+ * elimination in the portable parser shared by the native test runner. */
+static inline void ag_import_clear_bytes(void *pointer, size_t bytes) {
+    volatile unsigned char *p=(volatile unsigned char *)pointer;
+    while (bytes--) *p++=0;
+}
 static inline void ag_import_free(struct ag_import *state) {
-    if (state) { free(state->events); free(state); }
+    if (!state) return;
+    if (state->events) {
+        ag_import_clear_bytes(state->events,state->count*sizeof(*state->events));
+        free(state->events);
+    }
+    ag_import_clear_bytes(state,sizeof(*state));
+    free(state);
 }
 static inline int ag_date_number(const char *s, size_t length) {
     int out = 0;
