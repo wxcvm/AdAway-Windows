@@ -12,6 +12,13 @@ import time
 from pathlib import Path
 
 
+def retryable_pair_bind_error(error):
+    # Windows can report WSAEACCES (10013) when a TCP-selected ephemeral
+    # port is excluded for UDP, not only WSAEADDRINUSE (10048).
+    return (error.errno in (errno.EADDRINUSE, errno.EACCES) or
+            getattr(error, 'winerror', None) in (10048, 10013))
+
+
 def exact(stream, size):
     result = b''
     while len(result) < size:
@@ -47,7 +54,7 @@ class Fixture:
                 self.tcp.close()
                 if self.udp is not None:
                     self.udp.close()
-                if (error.errno != errno.EADDRINUSE and getattr(error, 'winerror', None) != 10048) or attempt == 15:
+                if not retryable_pair_bind_error(error) or attempt == 15:
                     raise
         self.tcp.settimeout(.1); self.udp.settimeout(.1)
         self.peers = []
@@ -217,6 +224,14 @@ def run(executable, policy_vectors, ip_version):
 
 
 if __name__ == '__main__':
+    # Deterministically exercise the WinError 10013 branch even on hosts
+    # whose real ephemeral ports never collide during this test run.
+    class BindError:
+        def __init__(self, winerror):
+            self.errno, self.winerror = None, winerror
+    assert retryable_pair_bind_error(BindError(10013))
+    assert retryable_pair_bind_error(BindError(10048))
+    assert not retryable_pair_bind_error(BindError(10022))
     executable = Path(sys.argv[1]).resolve()
     vectors = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).resolve().parents[1] / 'dns-contract' / 'diagnostic_dns_policy_vectors.tsv'
     records = run(executable,vectors,4) + run(executable,vectors,6)
