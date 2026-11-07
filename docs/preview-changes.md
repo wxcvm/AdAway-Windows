@@ -1,5 +1,11 @@
 # Preview changes
 
+## Unreleased — AdGuard managed-listener endpoint diagnostics
+- Count imported non-DNS remote endpoints that exactly match the **started** IPv4/IPv6 listener address, including a managed IPv6 ULA such as `fd6b:2a91:84f0::2`, alongside numeric loopback endpoints. Count each event once even when both rules match.
+- Show an explicit address-match hint on imported TCP/other-protocol event details; preserve independent source totals and avoid adding imported events to the local HTTP ranking or block-rate numerator.
+- Ignore wildcard addresses, nonnumeric/invalid endpoint strings and DNS events in the endpoint evidence. A DNS AAAA blocking answer alone is not evidence that a TCP connection was attempted or accepted.
+- This is still manual offline AdGuard import, not live log capture, a shared event ID, interception or proof of traffic coverage.
+
 ## Windows 1.95 — long AdGuard application path import fix
 - Decode only the final `AppPath` basename while importing a user-selected AdGuard Filtering Log v1 JSON file; long parent directories no longer reject otherwise valid records.
 - Keep the existing bounded basename and UTF-8 checks, and recognize `/`, escaped backslash and Unicode-escaped path separators. No full application path is retained in the log snapshot.
