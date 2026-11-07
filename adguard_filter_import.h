@@ -4,6 +4,7 @@
  * No Url, headers, cookies, redirect chain, DNS answer, user path or raw
  * document is retained. Imported events never modify local Web counters. */
 #include "query_log_page.h"
+#include "listen_address.h"
 #include <limits.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -77,24 +78,77 @@ static inline unsigned ag_loopback_remote_port(const char *address) {
     }
     return port;
 }
-static inline struct ag_loopback_evidence ag_count_loopback_endpoints(
-    const struct ag_import *snapshot) {
+/* A non-DNS AdGuard endpoint may target an explicitly configured listener
+ * address rather than 127/8 or ::1 (for example a managed IPv6 ULA).
+ * Compare strict numeric IP literals only: neither a DNS answer nor a
+ * destination reported by AdGuard proves that our listener accepted it. */
+static inline unsigned ag_configured_remote_port(
+    const char *endpoint, const char *ipv4, const char *ipv6) {
+    if (!endpoint) return 0;
+    char address[64], normalized[64], configured[64];
+    const char *port_text=NULL, *listen=NULL;
+    size_t length=0;
+    int family=0;
+    if (*endpoint=='[') {
+        const char *close=strchr(endpoint+1,']');
+        if (!close || close[1]!=':') return 0;
+        length=(size_t)(close-endpoint-1);
+        port_text=close+2;
+        family=6;
+        listen=ipv6;
+        if (!length || length>=sizeof(address)) return 0;
+        memcpy(address,endpoint+1,length);
+    } else {
+        const char *colon=strrchr(endpoint,':');
+        if (!colon) return 0;
+        length=(size_t)(colon-endpoint);
+        port_text=colon+1;
+        family=4;
+        listen=ipv4;
+        if (!length || length>=sizeof(address)) return 0;
+        memcpy(address,endpoint,length);
+    }
+    address[length]=0;
+    if (!listen || !*listen ||
+        la_normalize(address,normalized)!=family ||
+        la_normalize(listen,configured)!=family ||
+        !strcmp(configured,family==4 ? "0.0.0.0" : "::") ||
+        strcmp(normalized,configured)) return 0;
+    if (!*port_text) return 0;
+    unsigned port=0;
+    for (const char *p=port_text;*p;p++) {
+        if (*p<'0' || *p>'9') return 0;
+        port=port*10u+(unsigned)(*p-'0');
+        if (port>65535u) return 0;
+    }
+    return port;
+}
+
+/* Union of observed loopback endpoints and exact startup listener IPs.
+ * An event matching both is counted once; DNS events are never included. */
+static inline struct ag_loopback_evidence ag_count_local_endpoints(
+    const struct ag_import *snapshot, const char *ipv4, const char *ipv6) {
     struct ag_loopback_evidence out={0};
-    if(!snapshot)return out;
-    for(size_t i=0;i<snapshot->count;i++) {
+    if (!snapshot) return out;
+    for (size_t i=0;i<snapshot->count;i++) {
         const struct ag_event *event=&snapshot->events[i];
-        if(strcmp(event->protocol,"Dns")==0)continue;
+        if (strcmp(event->protocol,"Dns")==0) continue;
         unsigned port=ag_loopback_remote_port(event->remote_address);
-        if(!port)continue;
+        if (!port) port=ag_configured_remote_port(event->remote_address,ipv4,ipv6);
+        if (!port) continue;
         size_t *all=port==80u?&out.http:port==443u?&out.https:&out.other;
         ++*all;
-        if(event->log_type==0) {
+        if (event->log_type==0) {
             size_t *blocks=port==80u?&out.blocked_http:
                 port==443u?&out.blocked_https:&out.blocked_other;
             ++*blocks;
         }
     }
     return out;
+}
+static inline struct ag_loopback_evidence ag_count_loopback_endpoints(
+    const struct ag_import *snapshot) {
+    return ag_count_local_endpoints(snapshot,NULL,NULL);
 }
 /* Side-by-side source totals in a user-selected UTC time window, anchored
  * to the newest imported AdGuard event. Local counts are supplied ONLY from
