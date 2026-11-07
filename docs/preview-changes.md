@@ -1,5 +1,11 @@
 # Preview changes
 
+## Windows 1.95 — long AdGuard application path import fix
+- Decode only the final `AppPath` basename while importing a user-selected AdGuard Filtering Log v1 JSON file; long parent directories no longer reject otherwise valid records.
+- Keep the existing bounded basename and UTF-8 checks, and recognize `/`, escaped backslash and Unicode-escaped path separators. No full application path is retained in the log snapshot.
+- Cover a synthetic path exceeding 2 KiB, Unicode escaping and an oversized basename in Windows native C tests. Original import privacy guarantees and source-separated counts remain unchanged.
+- This remains manual offline import, not live AdGuard filtering-log integration or a machine-wide interception claim.
+
 ## Windows 1.94 — explicit AdGuard snapshot dismissal
 - Add a visible **清空导入快照** button whenever an AdGuard Filtering Log snapshot is loaded, including a valid zero-event snapshot. Ask for confirmation; cancelling leaves the imported source and selection unchanged.
 - Confirming discards only the in-memory imported source and returns to the independent AdAway local request view. It does not delete the chosen source JSON or touch local HTTP history, filtering, rankings, or export.
