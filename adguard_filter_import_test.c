@@ -72,6 +72,16 @@ int main(void){
     CHECK(ag_loopback_remote_port("128.0.0.2:443")==0);
     CHECK(ag_loopback_remote_port("[::2]:443")==0);
     CHECK(ag_loopback_remote_port(NULL)==0);
+    /* The actual HTTP/HTTPS listener port takes precedence over standard
+       ports; standard 80/443 remain mismatch diagnostics. */
+    CHECK(ag_tcp_listener_hint_role(8080,8080,8443)==1);
+    CHECK(ag_tcp_listener_hint_role(8443,8080,8443)==2);
+    CHECK(ag_tcp_listener_hint_role(80,8080,8443)==1);
+    CHECK(ag_tcp_listener_hint_role(443,8080,8443)==2);
+    CHECK(ag_tcp_listener_hint_role(443,443,80)==1);
+    CHECK(ag_tcp_listener_hint_role(80,443,80)==2);
+    CHECK(ag_tcp_listener_hint_role(5353,8080,8443)==0);
+    CHECK(ag_tcp_listener_hint_role(0,8080,8443)==0);
     /* A managed ULA is not loopback, but it can be the explicitly started
        listener. Compare IP literals exactly; never treat DNS as TCP arrival. */
     CHECK(ag_configured_remote_port("127.0.0.2:80",

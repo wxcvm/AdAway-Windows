@@ -3338,13 +3338,15 @@ static void log_details_refresh(HWND hwnd) {
             unsigned loop_port=endpoint_event ?
                 (configured_port ? configured_port :
                  ag_loopback_remote_port(event->remote_address)) : 0;
-            if(loop_port==80u || loop_port==443u) {
-                int configured=loop_port==80u?g_http_port:g_https_port;
+            int role=ag_tcp_listener_hint_role(loop_port,
+                (unsigned)g_http_port,(unsigned)g_https_port);
+            if(role) {
+                int configured=role==1?g_http_port:g_https_port;
                 swprintf(endpoint_hint,240,
-                    L"%ls：AdGuard 远程地址显示 %u；本服务%ls监听 %d。"
+                    L"%ls：AdGuard TCP 远程端口 %u；本服务%ls监听 %d。"
                     L"仅供核对，不能证明连接到达 AdAway。\r\n",
                     configured_port?L"启动监听 IP 精确匹配":L"回环端口线索",
-                    loop_port,loop_port==80u?L" HTTP ":L" HTTPS ",configured);
+                    loop_port,role==1?L" HTTP ":L" HTTPS ",configured);
             }
             if(event->stealth_options&16384u)wcscpy(stealth,L"Protection from DPI was applied");
             else if(event->stealth_options)swprintf(stealth,96,L"已应用（选项码 %u）",event->stealth_options);
