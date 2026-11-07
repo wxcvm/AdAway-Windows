@@ -169,6 +169,35 @@ int main(void){
     CHECK(import==NULL);
     CHECK(ag_import_parse(body,AG_IMPORT_MAX_BYTES+1,&import)==AG_IMPORT_TOO_LARGE);
     CHECK(import==NULL);
+    /* Long Windows directory paths must not cause an entire valid export to
+       fail when only the short basename is retained. */
+    char directory[2049], long_doc[4096];
+    memset(directory,'x',2048);
+    directory[2048]=0;
+    int length=snprintf(long_doc,sizeof(long_doc),
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{"
+        "\"RequestArgId\":\"00000000-0000-0000-0000-000000000008\","
+        "\"Time\":\"2026-11-04T10:10:24+08:00\","
+        "\"Host\":\"longpath.example.test\",\"ProtocolType\":\"Tcp\","
+        "\"LogRecordType\":0,\"ProcessId\":1,\"FiredFilterId\":1,"
+        "\"StatusCode\":0,\"AppPath\":\"C:/%s/worker.exe\"}]}",
+        directory);
+    CHECK(length>1024 && (size_t)length<sizeof long_doc);
+    CHECK(ag_import_parse(long_doc,(size_t)length,&import)==AG_IMPORT_OK);
+    CHECK(import && import->count==1);
+    CHECK(!strcmp(import->events[0].app,"worker.exe"));
+    ag_import_free(import);
+    import=NULL;
+    /* Mixed JSON-escaped slash, Unicode backslash and Unicode basename. */
+    struct mg_str escaped=mg_str("{\"AppPath\":\"C:\\u005cUsers\\/\\u6d4b\\u8bd5.exe\"}");
+    char decoded_basename[96]={0};
+    CHECK(ag_json_basename(escaped,"$.AppPath",decoded_basename,sizeof decoded_basename));
+    CHECK(!strcmp(decoded_basename,"\xe6\xb5\x8b\xe8\xaf\x95.exe"));
+    /* A basename that itself exceeds the privacy-reduced bound still fails. */
+    length=snprintf(long_doc,sizeof(long_doc),
+        "{\"AppPath\":\"C:/%s\"}",directory);
+    CHECK(length>0 && (size_t)length<sizeof long_doc);
+    CHECK(!ag_json_basename(mg_str(long_doc),"$.AppPath",decoded_basename,sizeof decoded_basename));
     puts("PASS: AdGuard v1 synthetic JSON, UTC offset, independent DNS/TCP events, dedup, privacy, ranking");
     return 0;
 }
