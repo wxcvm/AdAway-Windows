@@ -78,6 +78,17 @@ static inline unsigned ag_loopback_remote_port(const char *address) {
     }
     return port;
 }
+/* Choose an HTTP/HTTPS diagnostic label by the active listener ports
+ * first. Retain 80/443 as standard-port mismatch clues; a custom listener
+ * on 8080/8443 must not disappear from imported TCP event details. */
+static inline int ag_tcp_listener_hint_role(unsigned observed, unsigned http, unsigned https) {
+    if (!observed) return 0;
+    if (observed == http) return 1;
+    if (observed == https) return 2;
+    if (observed == 80u) return 1;
+    if (observed == 443u) return 2;
+    return 0;
+}
 /* A non-DNS AdGuard endpoint may target an explicitly configured listener
  * address rather than 127/8 or ::1 (for example a managed IPv6 ULA).
  * Compare strict numeric IP literals only: neither a DNS answer nor a
