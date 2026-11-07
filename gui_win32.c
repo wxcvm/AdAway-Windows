@@ -2876,7 +2876,8 @@ static void log_ingress_diagnostics(HWND hwnd) {
     /* The imported remote endpoint is only an AdGuard observation, never a
      * confirmed arrival at the response server. Count it separately. */
     if(g_ag_import && g_ag_import->count) {
-        struct ag_loopback_evidence ev=ag_count_loopback_endpoints(g_ag_import);
+        struct ag_loopback_evidence ev=ag_count_local_endpoints(
+            g_ag_import,g_active_arrival.ip,g_active_arrival.ipv6);
         if(ev.http || ev.https || ev.other) {
             const wchar_t *mismatch=(ev.http && g_http_port!=80) ||
                                      (ev.https && g_https_port!=443) ?
@@ -2884,11 +2885,11 @@ static void log_ingress_diagnostics(HWND hwnd) {
                 L"目前监听端口与上述标准端口相符，仍需检查流量是否真的到达。";
             size_t used=wcslen(report);
             if(used<2599)swprintf(report+used,2600-used,
-                L"\n\n── 导入记录的回环地址线索（整份导入，不限当前页）──\n"
-                L"AdGuard 非 DNS 事件的远程端点：本机 80 有 %u 条（拦截 %u），"
-                L"本机 443 有 %u 条（拦截 %u），其他本机端口 %u 条。\n"
+                L"\n\n── 导入记录的回环及启动监听 IP 线索（整份导入，不限当前页）──\n"
+                L"AdGuard 非 DNS 远程端点：本机候选 80 有 %u 条（拦截 %u），"
+                L"443 有 %u 条（拦截 %u），其他本机候选端口 %u 条。\n"
                 L"本服务当前 HTTP %d / HTTPS %d。%ls\n"
-                L"注意：这是 AdGuard 记录的远程端点，不证明 AdAway 接收到连接或存在漏拦。",
+                L"仅计回环或与启动监听 IP 精确匹配的远程地址，且每事件最多一次；不含 DNS 回应。不能据此证明 AdAway 收到连接或存在漏拦。",
                 (unsigned)ev.http,(unsigned)ev.blocked_http,
                 (unsigned)ev.https,(unsigned)ev.blocked_https,
                 (unsigned)ev.other,g_http_port,g_https_port,mismatch);
@@ -3331,12 +3332,16 @@ static void log_details_refresh(HWND hwnd) {
             utf8_to_wide(event->dns_type,dns,16);
             utf8_to_wide(event->remote_address,remote,160);
             wchar_t endpoint_hint[240]=L"";
-            unsigned loop_port=ag_loopback_remote_port(event->remote_address);
+            unsigned configured_port=ag_configured_remote_port(event->remote_address,
+                g_active_arrival.ip,g_active_arrival.ipv6);
+            unsigned loop_port=configured_port ? configured_port :
+                ag_loopback_remote_port(event->remote_address);
             if(loop_port==80u || loop_port==443u) {
                 int configured=loop_port==80u?g_http_port:g_https_port;
                 swprintf(endpoint_hint,240,
-                    L"回环端口线索：AdGuard 远程地址显示 %u；本服务%ls监听 %d。"
+                    L"%ls：AdGuard 远程地址显示 %u；本服务%ls监听 %d。"
                     L"仅供核对，不能证明连接到达 AdAway。\r\n",
+                    configured_port?L"启动监听 IP 精确匹配":L"回环端口线索",
                     loop_port,loop_port==80u?L" HTTP ":L" HTTPS ",configured);
             }
             if(event->stealth_options&16384u)wcscpy(stealth,L"Protection from DPI was applied");
