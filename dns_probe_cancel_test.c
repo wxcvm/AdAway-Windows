@@ -64,7 +64,7 @@ int main(void) {
                 closesocket(f.udp);
                 closesocket(f.tcp);
                 if (error!=WSAEADDRINUSE && error!=WSAEACCES) {
-                    fprintf(stderr,"Unexpected UDP pair bind failure: %d\\n",error);
+                    fprintf(stderr,"Unexpected UDP pair bind failure: %d\n",error);
                     break;
                 }
             }
