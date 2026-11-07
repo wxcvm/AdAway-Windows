@@ -3332,10 +3332,12 @@ static void log_details_refresh(HWND hwnd) {
             utf8_to_wide(event->dns_type,dns,16);
             utf8_to_wide(event->remote_address,remote,160);
             wchar_t endpoint_hint[240]=L"";
-            unsigned configured_port=ag_configured_remote_port(event->remote_address,
-                g_active_arrival.ip,g_active_arrival.ipv6);
-            unsigned loop_port=configured_port ? configured_port :
-                ag_loopback_remote_port(event->remote_address);
+            bool endpoint_event=strcmp(event->protocol,"Dns")!=0;
+            unsigned configured_port=endpoint_event ? ag_configured_remote_port(
+                event->remote_address,g_active_arrival.ip,g_active_arrival.ipv6) : 0;
+            unsigned loop_port=endpoint_event ?
+                (configured_port ? configured_port :
+                 ag_loopback_remote_port(event->remote_address)) : 0;
             if(loop_port==80u || loop_port==443u) {
                 int configured=loop_port==80u?g_http_port:g_https_port;
                 swprintf(endpoint_hint,240,
