@@ -262,8 +262,9 @@ static inline bool ag_json_append_utf8(char *out,size_t capacity,size_t *used,ui
 /* Decode JSON strings including UTF-16 surrogate pairs. AdGuard's serializer
  * may escape non-ASCII process names as \\uXXXX; Mongoose's generic unescaper
  * intentionally supports only byte-sized Unicode escapes. */
-static inline bool ag_json_string(struct mg_str row, const char *key,
-                                   char *out, size_t capacity, bool optional) {
+static inline bool ag_json_string_decode(struct mg_str row, const char *key,
+                                          char *out, size_t capacity,
+                                          bool optional, bool basename_only) {
     if(!out||!capacity)return false;
     out[0]=0;
     struct mg_str tok=mg_json_get_tok(row,key);
@@ -271,6 +272,7 @@ static inline bool ag_json_string(struct mg_str row, const char *key,
     if(tok.len==4&&tok.buf&&memcmp(tok.buf,"null",4)==0)return optional;
     if(!tok.buf||tok.len<2||tok.buf[0]!='"'||tok.buf[tok.len-1]!='"')return false;
     size_t n=0;
+    bool overflow=false; /* a long directory prefix is never retained */
     for(size_t i=1;i+1<tok.len;i++) {
         unsigned char ch=(unsigned char)tok.buf[i];
         if(ch=='\\') {
@@ -297,16 +299,38 @@ static inline bool ag_json_string(struct mg_str row, const char *key,
                     break;
                 default:return false;
             }
-            if(!ag_json_append_utf8(out,capacity,&n,cp))return false;
+            if(basename_only && (cp==0 || cp<0x20 || cp==0x7f))return false;
+            if(basename_only && (cp=='/' || cp=='\\')) {
+                n=0;overflow=false; /* decoded path separator */
+            } else if(!overflow && !ag_json_append_utf8(out,capacity,&n,cp)) {
+                if(!basename_only)return false;
+                overflow=true;
+            }
         }else{
-            if(ch=='"'||ch<0x20||n+1>=capacity)return false;
-            out[n++]=(char)ch;
+            if(ch=='"'||ch<0x20||ch==0x7f)return false;
+            if(basename_only && ch=='/') {
+                n=0;overflow=false;
+            } else if(!overflow) {
+                if(n+1>=capacity) {
+                    if(!basename_only)return false;
+                    overflow=true;
+                } else out[n++]=(char)ch;
+            }
         }
     }
+    if(overflow)return false; /* only the final basename length is bounded */
     out[n]=0;
     if(memchr(out,'\0',n))return false;
     if(!n)return optional;
     return qlp_utf8_host((const unsigned char *)out,n);
+}
+static inline bool ag_json_string(struct mg_str row,const char *key,
+                                   char *out,size_t capacity,bool optional) {
+    return ag_json_string_decode(row,key,out,capacity,optional,false);
+}
+static inline bool ag_json_basename(struct mg_str row,const char *key,
+                                    char *out,size_t capacity) {
+    return ag_json_string_decode(row,key,out,capacity,true,true);
 }
 static inline bool ag_uuid(const char *id) {
     if (!id || strlen(id)!=36)return false;
@@ -321,7 +345,7 @@ static inline bool ag_uuid(const char *id) {
 static inline bool ag_row_parse(struct mg_str json, struct ag_event *out) {
     if(!out || !dashboard_json_object(json))return false;
     struct ag_event row={0};
-    char time[64], full_path[1024];
+    char time[64];
     if(!ag_json_string(json,"$.RequestArgId",row.id,sizeof row.id,false)||
        !ag_uuid(row.id)||
        !ag_json_string(json,"$.Time",time,sizeof time,false)||
@@ -332,13 +356,8 @@ static inline bool ag_row_parse(struct mg_str json, struct ag_event *out) {
        !ag_json_string(json,"$.ProtocolType",row.protocol,sizeof row.protocol,false)||
        !ag_json_string(json,"$.DnsType",row.dns_type,sizeof row.dns_type,true)||
        !ag_json_string(json,"$.Rule",row.rule,sizeof row.rule,true)||
-       !ag_json_string(json,"$.AppPath",full_path,sizeof full_path,true))return false;
+       !ag_json_basename(json,"$.AppPath",row.app,sizeof row.app))return false;
     memcpy(row.observed_time,time,strlen(time)+1);
-    const char *base=full_path;
-    for(const char *p=full_path;*p;++p)
-        if(*p=='/'||*p=='\\')base=p+1;
-    if(strlen(base)>=sizeof row.app)return false;
-    memcpy(row.app,base,strlen(base)+1);
     uint64_t value=0;
     if(mg_json_get_tok(json,"$.Type").len) {
         if(!qlp_json_uint(json,"$.Type",&value)||value>INT_MAX)return false;
