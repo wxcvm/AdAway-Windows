@@ -97,11 +97,13 @@ int main(void){
         {.protocol="Tcp", .log_type=0, .remote_address="127.0.0.2:80"},
         {.protocol="Tcp", .log_type=0, .remote_address="[fd6b:2a91:84f0::2]:443"},
         {.protocol="Quic",.log_type=5, .remote_address="[fd6b:2a91:84f0::2]:8443"},
+        {.protocol="Quic",.log_type=0, .remote_address="[fd6b:2a91:84f0::2]:443"},
+        {.protocol="Tcp", .log_type=3, .remote_address="[fd6b:2a91:84f0::2]:8443"},
         {.protocol="Dns", .log_type=0, .remote_address="[fd6b:2a91:84f0::2]:443"},
         {.protocol="Tcp", .log_type=0, .remote_address="[fd6b:2a91:84f0::3]:443"},
         {.protocol="Tcp", .log_type=0, .remote_address="203.0.113.5:443"}
     };
-    struct ag_import managed_snapshot={.events=managed_events,.count=6};
+    struct ag_import managed_snapshot={.events=managed_events,.count=8};
     struct ag_loopback_evidence managed=ag_count_local_endpoints(
         &managed_snapshot,"127.0.0.2","fd6b:2a91:84f0::2");
     CHECK(managed.http==1 && managed.blocked_http==1);
@@ -119,7 +121,7 @@ int main(void){
     struct ag_import endpoint_snapshot={.events=endpoints,.count=6};
     struct ag_loopback_evidence evidence=ag_count_loopback_endpoints(&endpoint_snapshot);
     CHECK(evidence.http==1 && evidence.blocked_http==0);
-    CHECK(evidence.https==2 && evidence.blocked_https==2);
+    CHECK(evidence.https==1 && evidence.blocked_https==1);
     CHECK(evidence.other==1 && evidence.blocked_other==0);
     CHECK(ag_count_loopback_endpoints(NULL).https==0);
     CHECK(ag_import_parse(body,strlen(body),&import)==AG_IMPORT_OK);

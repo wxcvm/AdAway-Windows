@@ -124,15 +124,16 @@ static inline unsigned ag_configured_remote_port(
     return port;
 }
 
-/* Union of observed loopback endpoints and exact startup listener IPs.
- * An event matching both is counted once; DNS events are never included. */
+/* TCP endpoint candidates only: QUIC/UDP cannot reach our HTTP(S) TCP
+ * listeners, even on ports 80/443. Match loopback or exact startup IP;
+ * count each source event at most once, never infer an accepted connection. */
 static inline struct ag_loopback_evidence ag_count_local_endpoints(
     const struct ag_import *snapshot, const char *ipv4, const char *ipv6) {
     struct ag_loopback_evidence out={0};
     if (!snapshot) return out;
     for (size_t i=0;i<snapshot->count;i++) {
         const struct ag_event *event=&snapshot->events[i];
-        if (strcmp(event->protocol,"Dns")==0) continue;
+        if (strcmp(event->protocol,"Tcp")!=0) continue;
         unsigned port=ag_loopback_remote_port(event->remote_address);
         if (!port) port=ag_configured_remote_port(event->remote_address,ipv4,ipv6);
         if (!port) continue;

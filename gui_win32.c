@@ -2886,10 +2886,10 @@ static void log_ingress_diagnostics(HWND hwnd) {
             size_t used=wcslen(report);
             if(used<2599)swprintf(report+used,2600-used,
                 L"\n\n── 导入记录的回环及启动监听 IP 线索（整份导入，不限当前页）──\n"
-                L"AdGuard 非 DNS 远程端点：本机候选 80 有 %u 条（拦截 %u），"
+                L"AdGuard TCP 远程端点：本机候选 80 有 %u 条（拦截 %u），"
                 L"443 有 %u 条（拦截 %u），其他本机候选端口 %u 条。\n"
                 L"本服务当前 HTTP %d / HTTPS %d。%ls\n"
-                L"仅计回环或与启动监听 IP 精确匹配的远程地址，且每事件最多一次；不含 DNS 回应。不能据此证明 AdAway 收到连接或存在漏拦。",
+                L"仅统计回环或启动监听 IP 精确匹配的 TCP 事件；DNS、QUIC/UDP 不计入 TCP 监听候选。不能据此证明 AdAway 收到连接或存在漏拦。",
                 (unsigned)ev.http,(unsigned)ev.blocked_http,
                 (unsigned)ev.https,(unsigned)ev.blocked_https,
                 (unsigned)ev.other,g_http_port,g_https_port,mismatch);
@@ -3332,7 +3332,7 @@ static void log_details_refresh(HWND hwnd) {
             utf8_to_wide(event->dns_type,dns,16);
             utf8_to_wide(event->remote_address,remote,160);
             wchar_t endpoint_hint[240]=L"";
-            bool endpoint_event=strcmp(event->protocol,"Dns")!=0;
+            bool endpoint_event=strcmp(event->protocol,"Tcp")==0;
             unsigned configured_port=endpoint_event ? ag_configured_remote_port(
                 event->remote_address,g_active_arrival.ip,g_active_arrival.ipv6) : 0;
             unsigned loop_port=endpoint_event ?
