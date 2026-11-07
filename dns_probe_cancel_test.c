@@ -29,22 +29,47 @@ int main(void) {
         struct fixture f; memset(&f,0,sizeof(f));
         enum dns_probe_ip_version ip_version = (attempt / 2) % 2 ? DNS_PROBE_IPV6 : DNS_PROBE_IPV4;
         int family = ip_version == DNS_PROBE_IPV6 ? AF_INET6 : AF_INET;
-        f.tcp = socket(family,SOCK_STREAM,IPPROTO_TCP); assert(f.tcp != INVALID_SOCKET);
+        /* TCP's kernel-selected ephemeral port may be excluded or already
+         * in use for UDP on Windows CI. Retry only expected UDP port
+         * collisions; keep both real transports on the same loopback port. */
         union { struct sockaddr_in v4; struct sockaddr_in6 v6; } address;
-        memset(&address,0,sizeof(address)); int length;
-        if (ip_version == DNS_PROBE_IPV6) {
-            address.v6.sin6_family=AF_INET6; ((uint8_t *)&address.v6.sin6_addr)[15]=1; length=sizeof(address.v6);
-            DWORD only=1; assert(!setsockopt(f.tcp,IPPROTO_IPV6,IPV6_V6ONLY,(const char *)&only,sizeof(only)));
-        } else {
-            address.v4.sin_family=AF_INET; address.v4.sin_addr.s_addr=htonl(INADDR_LOOPBACK); length=sizeof(address.v4);
+        int paired=0;
+        for (unsigned bind_attempt=0;bind_attempt<32 && !paired;bind_attempt++) {
+            int length;
+            memset(&address,0,sizeof(address));
+            f.tcp=socket(family,SOCK_STREAM,IPPROTO_TCP); assert(f.tcp!=INVALID_SOCKET);
+            if (ip_version == DNS_PROBE_IPV6) {
+                address.v6.sin6_family=AF_INET6;
+                ((uint8_t *)&address.v6.sin6_addr)[15]=1;
+                length=sizeof(address.v6);
+                DWORD only=1;
+                assert(!setsockopt(f.tcp,IPPROTO_IPV6,IPV6_V6ONLY,(const char *)&only,sizeof(only)));
+            } else {
+                address.v4.sin_family=AF_INET;
+                address.v4.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+                length=sizeof(address.v4);
+            }
+            assert(!bind(f.tcp,(struct sockaddr *)&address,length));
+            assert(!listen(f.tcp,1));
+            assert(!getsockname(f.tcp,(struct sockaddr *)&address,&length));
+            f.udp=socket(family,SOCK_DGRAM,IPPROTO_UDP); assert(f.udp!=INVALID_SOCKET);
+            if (ip_version == DNS_PROBE_IPV6) {
+                DWORD only=1;
+                assert(!setsockopt(f.udp,IPPROTO_IPV6,IPV6_V6ONLY,(const char *)&only,sizeof(only)));
+            }
+            if (!bind(f.udp,(struct sockaddr *)&address,length)) {
+                paired=1;
+            } else {
+                int error=WSAGetLastError();
+                closesocket(f.udp);
+                closesocket(f.tcp);
+                if (error!=WSAEADDRINUSE && error!=WSAEACCES) {
+                    fprintf(stderr,"Unexpected UDP pair bind failure: %d\\n",error);
+                    break;
+                }
+            }
         }
-        assert(!bind(f.tcp,(struct sockaddr *)&address,length)); assert(!listen(f.tcp,1));
-        assert(!getsockname(f.tcp,(struct sockaddr *)&address,&length));
-        f.udp=socket(family,SOCK_DGRAM,IPPROTO_UDP); assert(f.udp != INVALID_SOCKET);
-        if (ip_version == DNS_PROBE_IPV6) {
-            DWORD only=1; assert(!setsockopt(f.udp,IPPROTO_IPV6,IPV6_V6ONLY,(const char *)&only,sizeof(only)));
-        }
-        assert(!bind(f.udp,(struct sockaddr *)&address,length));
+        assert(paired);
         DWORD timeout=1500; assert(!setsockopt(f.udp,SOL_SOCKET,SO_RCVTIMEO,(const char *)&timeout,sizeof(timeout)));
         f.cancel=CreateEventW(NULL,TRUE,FALSE,NULL); assert(f.cancel);
         HANDLE thread=CreateThread(NULL,0,serve,&f,0,NULL); assert(thread);
