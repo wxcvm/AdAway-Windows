@@ -72,6 +72,42 @@ int main(void){
     CHECK(ag_loopback_remote_port("128.0.0.2:443")==0);
     CHECK(ag_loopback_remote_port("[::2]:443")==0);
     CHECK(ag_loopback_remote_port(NULL)==0);
+    /* A managed ULA is not loopback, but it can be the explicitly started
+       listener. Compare IP literals exactly; never treat DNS as TCP arrival. */
+    CHECK(ag_configured_remote_port("127.0.0.2:80",
+        "127.0.0.2","fd6b:2a91:84f0::2")==80);
+    CHECK(ag_configured_remote_port("[fd6b:2a91:84f0::2]:443",
+        "127.0.0.2","fd6b:2a91:84f0::2")==443);
+    CHECK(ag_configured_remote_port("[FD6B:2A91:84F0::2]:8443",
+        "127.0.0.2","fd6b:2a91:84f0::2")==8443);
+    CHECK(!ag_configured_remote_port("[fd6b:2a91:84f0::3]:443",
+        "127.0.0.2","fd6b:2a91:84f0::2"));
+    CHECK(!ag_configured_remote_port("127.0.0.20:80",
+        "127.0.0.2","fd6b:2a91:84f0::2"));
+    CHECK(!ag_configured_remote_port("[fd6b:2a91:84f0::2]:443garbage",
+        "127.0.0.2","fd6b:2a91:84f0::2"));
+    CHECK(!ag_configured_remote_port("[fd6b:2a91:84f0::2]:65536",
+        "127.0.0.2","fd6b:2a91:84f0::2"));
+    CHECK(!ag_configured_remote_port("[fd6b:2a91:84f0::2]:443",
+        "127.0.0.2","::"));
+    CHECK(!ag_configured_remote_port("127.0.0.2:80","0.0.0.0",""));
+    CHECK(!ag_configured_remote_port("fd6b:2a91:84f0::2:443",
+        "127.0.0.2","fd6b:2a91:84f0::2"));
+    struct ag_event managed_events[]={
+        {.protocol="Tcp", .log_type=0, .remote_address="127.0.0.2:80"},
+        {.protocol="Tcp", .log_type=0, .remote_address="[fd6b:2a91:84f0::2]:443"},
+        {.protocol="Quic",.log_type=5, .remote_address="[fd6b:2a91:84f0::2]:8443"},
+        {.protocol="Dns", .log_type=0, .remote_address="[fd6b:2a91:84f0::2]:443"},
+        {.protocol="Tcp", .log_type=0, .remote_address="[fd6b:2a91:84f0::3]:443"},
+        {.protocol="Tcp", .log_type=0, .remote_address="203.0.113.5:443"}
+    };
+    struct ag_import managed_snapshot={.events=managed_events,.count=6};
+    struct ag_loopback_evidence managed=ag_count_local_endpoints(
+        &managed_snapshot,"127.0.0.2","fd6b:2a91:84f0::2");
+    CHECK(managed.http==1 && managed.blocked_http==1);
+    CHECK(managed.https==1 && managed.blocked_https==1);
+    CHECK(managed.other==1 && managed.blocked_other==0);
+    CHECK(ag_count_loopback_endpoints(&managed_snapshot).https==0);
     struct ag_event endpoints[]={
         {.protocol="Tcp",.log_type=0,.remote_address="127.0.0.2:443"},
         {.protocol="Tcp",.log_type=5,.remote_address="127.0.0.1:80"},
