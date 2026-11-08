@@ -69,9 +69,14 @@ int main(void){
         "\"Time\":\"2026-11-04T10:10:24+08:00\","
         "\"Host\":null,\"ProtocolType\":\"Tcp\","
         "\"LogRecordType\":0,\"ProcessId\":1,\"FiredFilterId\":1,"
+        "\"StatusCode\":0},{"
+        "\"RequestArgId\":\"00000000-0000-0000-0000-000000000009\","
+        "\"Time\":\"2026-11-04T10:10:24+08:00\","
+        "\"Host\":null,\"ProtocolType\":\"Tcp\","
+        "\"LogRecordType\":0,\"ProcessId\":1,\"FiredFilterId\":1,"
         "\"StatusCode\":0}]}";
     CHECK(ag_import_parse(hostless_block,strlen(hostless_block),&import)==AG_IMPORT_OK);
-    CHECK(import->count==1 && import->scanned==1 && import->missing_host==1);
+    CHECK(import->count==1 && import->scanned==2 && import->missing_host==1 && import->duplicates==1);
     CHECK(import->blocked==1 && import->top_count==0);
     CHECK(!import->events[0].host[0] && import->events[0].log_type==0);
     ag_import_free(import);
