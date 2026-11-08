@@ -2868,7 +2868,7 @@ static void log_ingress_diagnostics(HWND hwnd) {
                  L"④ 端口未绑定或浏览器绕过代理/使用其他协议也会造成缺口。\n\n"
                  L"当前数据无法把单次 AdGuard 事件与本服务请求一一对应；不能据此判断漏拦。"
                  L"请对照 AdGuard 事件时间、原始域名、实际协议及目标端口。", 
-                 g_http_port, g_https_port, active,
+                 g_active_arrival.http, g_active_arrival.https, active,
                  sn->bind_ok ? L"已报告正常" : L"异常／待核对",
                  arrivals, sn->total_requests, sn->total_blocked, sn->tls_failures,
                  sn->qlog_count);
@@ -2876,23 +2876,25 @@ static void log_ingress_diagnostics(HWND hwnd) {
     /* The imported remote endpoint is only an AdGuard observation, never a
      * confirmed arrival at the response server. Count it separately. */
     if(g_ag_import && g_ag_import->count) {
-        struct ag_loopback_evidence ev=ag_count_local_endpoints(
-            g_ag_import,g_active_arrival.ip,g_active_arrival.ipv6);
+        const unsigned active_http=(unsigned)g_active_arrival.http;
+        const unsigned active_https=(unsigned)g_active_arrival.https;
+        struct ag_loopback_evidence ev=ag_count_local_endpoints_ports(
+            g_ag_import,g_active_arrival.ip,g_active_arrival.ipv6,
+            active_http,active_https);
         if(ev.http || ev.https || ev.other) {
-            const wchar_t *mismatch=(ev.http && g_http_port!=80) ||
-                                     (ev.https && g_https_port!=443) ?
-                L"监听端口与部分导入记录显示的端口不同；先检查实际转发路径和监听器配置。" :
-                L"目前监听端口与上述标准端口相符，仍需检查流量是否真的到达。";
+            const wchar_t *interpretation=ev.http || ev.https ?
+                L"已观察到目标端口与本次监听配置相同的 TCP 事件；不代表本服务已接收。" :
+                L"导入记录中没有与本次监听端口一致的 TCP 候选；请核对目标端口和流量路径。";
             size_t used=wcslen(report);
             if(used<2599)swprintf(report+used,2600-used,
                 L"\n\n── 导入记录的回环及启动监听 IP 线索（整份导入，不限当前页）──\n"
-                L"AdGuard TCP 远程端点：本机候选 80 有 %u 条（拦截 %u），"
-                L"443 有 %u 条（拦截 %u），其他本机候选端口 %u 条。\n"
-                L"本服务当前 HTTP %d / HTTPS %d。%ls\n"
+                L"AdGuard TCP 远程端点：HTTP %u 有 %u 条（拦截 %u），"
+                L"HTTPS %u 有 %u 条（拦截 %u），其他候选端口 %u 条。\n"
+                L"%ls\n"
                 L"仅统计回环或启动监听 IP 精确匹配的 TCP 事件；DNS、QUIC/UDP 不计入 TCP 监听候选。不能据此证明 AdAway 收到连接或存在漏拦。",
-                (unsigned)ev.http,(unsigned)ev.blocked_http,
-                (unsigned)ev.https,(unsigned)ev.blocked_https,
-                (unsigned)ev.other,g_http_port,g_https_port,mismatch);
+                active_http,(unsigned)ev.http,(unsigned)ev.blocked_http,
+                active_https,(unsigned)ev.https,(unsigned)ev.blocked_https,
+                (unsigned)ev.other,interpretation);
         }
     }
     MessageBoxW(hwnd, report, L"AdGuard ↔ 本地请求日志 · 对接诊断",
@@ -3339,9 +3341,9 @@ static void log_details_refresh(HWND hwnd) {
                 (configured_port ? configured_port :
                  ag_loopback_remote_port(event->remote_address)) : 0;
             int role=ag_tcp_listener_hint_role(loop_port,
-                (unsigned)g_http_port,(unsigned)g_https_port);
+                (unsigned)g_active_arrival.http,(unsigned)g_active_arrival.https);
             if(role) {
-                int configured=role==1?g_http_port:g_https_port;
+                int configured=role==1?g_active_arrival.http:g_active_arrival.https;
                 swprintf(endpoint_hint,240,
                     L"%ls：AdGuard TCP 远程端口 %u；本服务%ls监听 %d。"
                     L"仅供核对，不能证明连接到达 AdAway。\r\n",
