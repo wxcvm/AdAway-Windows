@@ -44,21 +44,38 @@ int main(void){
        "\"ProcessId\":0,\"FiredFilterId\":0,\"StatusCode\":0}]}";
     struct ag_import *import=NULL;
     CHECK(ag_import_parse(body,strlen(body),&import)==AG_IMPORT_OK);
-    CHECK(import && import->scanned==5 && import->count==3);
+    CHECK(import && import->scanned==5 && import->count==4);
     CHECK(import->blocked==2 && import->dns_events==1);
     CHECK(import->duplicates==1 && import->missing_host==1);
     CHECK(import->top_count==1 && import->top[0].count==2);
     CHECK(import->top[0].dns_count==1 && import->top[0].tcp_count==1 &&
           import->top[0].other_count==0);
     CHECK(import->events[0].log_type==0 && import->events[0].dns_type[0]=='A');
-    CHECK(import->events[1].log_type==3);
-    CHECK(import->events[2].timestamp_us==1793758224082230ULL);
-    CHECK(!strcmp(import->events[2].remote_address,"192.0.2.10:443"));
-    CHECK(import->events[2].request_type==2048);
-    CHECK(import->events[2].stealth_options==16384u);
-    CHECK(!strcmp(import->events[2].app,"test-app.exe"));
-    CHECK(!strstr(import->events[2].app,"synthetic"));
+    CHECK(import->events[1].log_type==5 && !import->events[1].host[0]);
+    CHECK(import->events[2].log_type==3);
+    CHECK(import->events[3].timestamp_us==1793758224082230ULL);
+    CHECK(!strcmp(import->events[3].remote_address,"192.0.2.10:443"));
+    CHECK(import->events[3].request_type==2048);
+    CHECK(import->events[3].stealth_options==16384u);
+    CHECK(!strcmp(import->events[3].app,"test-app.exe"));
+    CHECK(!strstr(import->events[3].app,"synthetic"));
     ag_import_free(import);
+    import=NULL;
+    /* A hostless *blocked* observation still belongs to imported totals,
+       but cannot become a blank domain in the block ranking. */
+    const char *hostless_block =
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[{"
+        "\"RequestArgId\":\"00000000-0000-0000-0000-000000000009\","
+        "\"Time\":\"2026-11-04T10:10:24+08:00\","
+        "\"Host\":null,\"ProtocolType\":\"Tcp\","
+        "\"LogRecordType\":0,\"ProcessId\":1,\"FiredFilterId\":1,"
+        "\"StatusCode\":0}]}";
+    CHECK(ag_import_parse(hostless_block,strlen(hostless_block),&import)==AG_IMPORT_OK);
+    CHECK(import->count==1 && import->scanned==1 && import->missing_host==1);
+    CHECK(import->blocked==1 && import->top_count==0);
+    CHECK(!import->events[0].host[0] && import->events[0].log_type==0);
+    ag_import_free(import);
+    import=NULL;
     /* Source-reported localhost endpoints are diagnostic clues only.
        Strict parsing must not count public addresses or malformed ports. */
     CHECK(ag_loopback_remote_port("127.0.0.2:443")==443);
