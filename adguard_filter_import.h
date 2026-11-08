@@ -138,8 +138,9 @@ static inline unsigned ag_configured_remote_port(
 /* TCP endpoint candidates only: QUIC/UDP cannot reach our HTTP(S) TCP
  * listeners, even on ports 80/443. Match loopback or exact startup IP;
  * count each source event at most once, never infer an accepted connection. */
-static inline struct ag_loopback_evidence ag_count_local_endpoints(
-    const struct ag_import *snapshot, const char *ipv4, const char *ipv6) {
+static inline struct ag_loopback_evidence ag_count_local_endpoints_ports(
+    const struct ag_import *snapshot, const char *ipv4, const char *ipv6,
+    unsigned http_port, unsigned https_port) {
     struct ag_loopback_evidence out={0};
     if (!snapshot) return out;
     for (size_t i=0;i<snapshot->count;i++) {
@@ -148,15 +149,21 @@ static inline struct ag_loopback_evidence ag_count_local_endpoints(
         unsigned port=ag_loopback_remote_port(event->remote_address);
         if (!port) port=ag_configured_remote_port(event->remote_address,ipv4,ipv6);
         if (!port) continue;
-        size_t *all=port==80u?&out.http:port==443u?&out.https:&out.other;
+        size_t *all=http_port && port==http_port?&out.http:
+            https_port && port==https_port?&out.https:&out.other;
         ++*all;
         if (event->log_type==0) {
-            size_t *blocks=port==80u?&out.blocked_http:
-                port==443u?&out.blocked_https:&out.blocked_other;
+            size_t *blocks=http_port && port==http_port?&out.blocked_http:
+                https_port && port==https_port?&out.blocked_https:&out.blocked_other;
             ++*blocks;
         }
     }
     return out;
+}
+/* Preserve the default-port diagnostic helpers for callers and fixtures. */
+static inline struct ag_loopback_evidence ag_count_local_endpoints(
+    const struct ag_import *snapshot, const char *ipv4, const char *ipv6) {
+    return ag_count_local_endpoints_ports(snapshot,ipv4,ipv6,80u,443u);
 }
 static inline struct ag_loopback_evidence ag_count_loopback_endpoints(
     const struct ag_import *snapshot) {

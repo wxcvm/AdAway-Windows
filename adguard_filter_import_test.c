@@ -120,6 +120,33 @@ int main(void){
     CHECK(managed.https==1 && managed.blocked_https==1);
     CHECK(managed.other==1 && managed.blocked_other==0);
     CHECK(ag_count_loopback_endpoints(&managed_snapshot).https==0);
+    /* Summary counts follow the ports actually started, not standard
+       defaults or a newly saved draft. Exclude DNS/QUIC and public IPs. */
+    struct ag_event port_events[]={
+        {.protocol="Tcp", .log_type=0, .remote_address="127.0.0.2:8080"},
+        {.protocol="Tcp", .log_type=0, .remote_address="[fd6b:2a91:84f0::2]:8443"},
+        {.protocol="Tcp", .log_type=3, .remote_address="127.0.0.2:80"},
+        {.protocol="Tcp", .log_type=5, .remote_address="[fd6b:2a91:84f0::2]:443"},
+        {.protocol="Dns", .log_type=0, .remote_address="127.0.0.2:8080"},
+        {.protocol="Quic",.log_type=0, .remote_address="[fd6b:2a91:84f0::2]:8443"},
+        {.protocol="Tcp", .log_type=0, .remote_address="203.0.113.10:8443"}
+    };
+    struct ag_import port_snapshot={.events=port_events,.count=7};
+    struct ag_loopback_evidence custom=ag_count_local_endpoints_ports(
+        &port_snapshot,"127.0.0.2","fd6b:2a91:84f0::2",8080,8443);
+    CHECK(custom.http==1 && custom.blocked_http==1);
+    CHECK(custom.https==1 && custom.blocked_https==1);
+    CHECK(custom.other==2 && custom.blocked_other==0);
+    custom=ag_count_local_endpoints_ports(&port_snapshot,
+        "127.0.0.2","fd6b:2a91:84f0::2",80,443);
+    CHECK(custom.http==1 && custom.blocked_http==0);
+    CHECK(custom.https==1 && custom.blocked_https==0);
+    CHECK(custom.other==2 && custom.blocked_other==2);
+    custom=ag_count_local_endpoints_ports(&port_snapshot,
+        "127.0.0.2","fd6b:2a91:84f0::2",8443,8080);
+    CHECK(custom.http==1 && custom.blocked_http==1);
+    CHECK(custom.https==1 && custom.blocked_https==1);
+    CHECK(custom.other==2 && custom.blocked_other==0);
     struct ag_event endpoints[]={
         {.protocol="Tcp",.log_type=0,.remote_address="127.0.0.2:443"},
         {.protocol="Tcp",.log_type=5,.remote_address="127.0.0.1:80"},
