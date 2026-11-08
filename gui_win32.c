@@ -3364,9 +3364,9 @@ static void log_details_refresh(HWND hwnd) {
                 L"协议：%ls    DNS 查询类型：%ls    请求类型：%ls\r\n"
                 L"结果：%ls    状态码：%d\r\n"
                 L"匹配规则：%ls    过滤器 ID：%d\r\n"
-                L"事件类型：%d（仅类型 0 计入导入拦截排行）\r\n"
+                L"事件类型：%d（仅类型 0 且有域名的事件计入拦截排行）\r\n"
                 L"%ls离线快照，不代表 AdAway 已收到此连接或自动同步。",
-                at,domain,remote[0]?remote:L"未提供",adguard_remote_family(event),
+                at,domain[0]?domain:L"未提供（仅连接观测）",remote[0]?remote:L"未提供",adguard_remote_family(event),
                 process[0]?process:L"未知",event->process_id,stealth,
                 proto,dns[0]?dns:L"不适用",adguard_request_type(event),
                 outcome,event->status,rule[0]?rule:L"未提供",event->filter_id,event->log_type,
@@ -3468,7 +3468,7 @@ static void log_list_refresh(HWND hwnd, bool force) {
                     event->log_type==5 ? L"其他观测" : L"未知事件";
                 swprintf(line,512,L"%ls    [AdGuard · %ls · %hs · %ls · %ls]    %ls",
                     clock,adguard_remote_family(event),event->protocol,label,
-                    adguard_request_type(event),host);
+                    adguard_request_type(event),host[0]?host:L"未提供域名");
             }
             LRESULT item=SendMessageW(list,LB_ADDSTRING,0,(LPARAM)line);
             if(item==LB_ERR||item==LB_ERRSPACE)break;
@@ -3655,7 +3655,7 @@ static void log_import_adguard(HWND hwnd) {
     InvalidateRect(hwnd,NULL,FALSE);
     wchar_t message[400];
     swprintf(message,400,
-        L"已导入 %u 条 AdGuard 事件（读取 %u 条，缺少域名 %u 条，重复标识 %u 条）。\r\n"
+        L"已导入 %u 条 AdGuard 事件（读取 %u 条，其中无域名 %u 条已保留，重复标识 %u 条）。\r\n"
         L"拦截事件 %u 条 · DNS 事件 %u 条。\r\n"
         L"数据只保留在当前进程内存中；不包含原始 Cookie、请求头及完整路径。"
         L"\r\n这是离线快照，不会自动同步最新过滤活动。",
