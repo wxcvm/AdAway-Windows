@@ -3364,7 +3364,7 @@ static void log_details_refresh(HWND hwnd) {
                 L"协议：%ls    DNS 查询类型：%ls    请求类型：%ls\r\n"
                 L"结果：%ls    状态码：%d\r\n"
                 L"匹配规则：%ls    过滤器 ID：%d\r\n"
-                L"事件类型：%d（仅类型 0 计入导入拦截排行）\r\n"
+                L"事件类型：%d（仅类型 0 且有域名的事件计入拦截排行）\r\n"
                 L"%ls离线快照，不代表 AdAway 已收到此连接或自动同步。",
                 at,domain[0]?domain:L"未提供（仅连接观测）",remote[0]?remote:L"未提供",adguard_remote_family(event),
                 process[0]?process:L"未知",event->process_id,stealth,
