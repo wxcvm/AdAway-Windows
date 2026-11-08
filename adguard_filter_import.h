@@ -44,6 +44,37 @@ struct ag_import {
     size_t top_count;
 };
 
+/* Compare two explicitly imported offline snapshots by AdGuard's own
+ * RequestArgId. A row absent from one export is not evidence of live capture,
+ * a missed interception or a global event count. */
+struct ag_import_delta {
+    bool comparable;
+    size_t only_current, only_current_blocked, only_previous;
+};
+static inline bool ag_snapshot_has_id(const struct ag_import *snapshot,
+                                     const char *id) {
+    if (!snapshot || !id) return false;
+    for (size_t i=0;i<snapshot->count;i++)
+        if (strcmp(snapshot->events[i].id,id)==0) return true;
+    return false;
+}
+static inline struct ag_import_delta ag_compare_import_ids(
+    const struct ag_import *previous, const struct ag_import *current) {
+    struct ag_import_delta delta={0};
+    if (!previous || !current) return delta;
+    delta.comparable=true;
+    for (size_t i=0;i<current->count;i++) {
+        const struct ag_event *event=&current->events[i];
+        if (!ag_snapshot_has_id(previous,event->id)) {
+            ++delta.only_current;
+            if (event->log_type==0) ++delta.only_current_blocked;
+        }
+    }
+    for (size_t i=0;i<previous->count;i++)
+        if (!ag_snapshot_has_id(current,previous->events[i].id))
+            ++delta.only_previous;
+    return delta;
+}
 /* These are AdGuard-reported remote endpoints, not proof that an AdAway
  * listener accepted a connection. Only accept numeric loopback addresses;
  * never guess from hostnames or similarly prefixed public addresses. */

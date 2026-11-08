@@ -3644,6 +3644,7 @@ static void log_import_adguard(HWND hwnd) {
         return;
     }
     struct ag_import *previous=g_ag_import;
+    struct ag_import_delta delta=ag_compare_import_ids(previous,staged);
     g_ag_import=staged;
     ag_import_free(previous);
     g_log_external=true;
@@ -3653,15 +3654,25 @@ static void log_import_adguard(HWND hwnd) {
     SendDlgItemMessageW(hwnd,IDC_QLOG_LIST,LB_SETCURSEL,(WPARAM)-1,0);
     log_controls_refresh(hwnd);
     InvalidateRect(hwnd,NULL,FALSE);
-    wchar_t message[400];
-    swprintf(message,400,
+    wchar_t comparison[240];
+    if(delta.comparable)
+        swprintf(comparison,240,
+            L"与上次导入相比：本次独有事件 ID %u 条（其中 AdGuard 拦截 %u），"
+            L"上次独有事件 ID %u 条。\r\n"
+            L"只比较两份离线快照，不代表实时新增或漏拦。\r\n",
+            (unsigned)delta.only_current,(unsigned)delta.only_current_blocked,
+            (unsigned)delta.only_previous);
+    else wcscpy(comparison,L"首次导入，没有上次快照可对照。\r\n");
+    wchar_t message[680];
+    swprintf(message,680,
         L"已导入 %u 条 AdGuard 事件（读取 %u 条，其中无域名 %u 条已保留，重复标识 %u 条）。\r\n"
         L"拦截事件 %u 条 · DNS 事件 %u 条。\r\n"
+        L"%ls"
         L"数据只保留在当前进程内存中；不包含原始 Cookie、请求头及完整路径。"
         L"\r\n这是离线快照，不会自动同步最新过滤活动。",
         (unsigned)staged->count,(unsigned)staged->scanned,
         (unsigned)staged->missing_host,(unsigned)staged->duplicates,
-        (unsigned)staged->blocked,(unsigned)staged->dns_events);
+        (unsigned)staged->blocked,(unsigned)staged->dns_events,comparison);
     MessageBoxW(hwnd,message,L"AdGuard 离线导入完成",MB_OK|MB_ICONINFORMATION);
 }
 
