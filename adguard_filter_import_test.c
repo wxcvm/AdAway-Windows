@@ -185,6 +185,36 @@ int main(void){
     CHECK(ag_count_loopback_endpoints(NULL).https==0);
     CHECK(ag_import_parse(body,strlen(body),&import)==AG_IMPORT_OK);
     ag_import_free(import);
+    /* Successive user-selected exports can overlap, shrink, or contain
+       previously unseen events. Compare source IDs, never host/time guesses. */
+    struct ag_event old_rows[]={
+        {.id="00000000-0000-0000-0000-000000000011",.log_type=0},
+        {.id="00000000-0000-0000-0000-000000000012",.log_type=3}
+    };
+    struct ag_event new_rows[]={
+        {.id="00000000-0000-0000-0000-000000000012",.log_type=3},
+        {.id="00000000-0000-0000-0000-000000000013",.log_type=0},
+        {.id="00000000-0000-0000-0000-000000000014",.log_type=5}
+    };
+    struct ag_import old_snapshot={.events=old_rows,.count=2};
+    struct ag_import new_snapshot={.events=new_rows,.count=3};
+    struct ag_import_delta id_delta=ag_compare_import_ids(&old_snapshot,&new_snapshot);
+    CHECK(id_delta.comparable && id_delta.only_current==2 &&
+          id_delta.only_current_blocked==1 && id_delta.only_previous==1);
+    id_delta=ag_compare_import_ids(&new_snapshot,&old_snapshot);
+    CHECK(id_delta.comparable && id_delta.only_current==1 &&
+          id_delta.only_current_blocked==1 && id_delta.only_previous==2);
+    id_delta=ag_compare_import_ids(&old_snapshot,&old_snapshot);
+    CHECK(id_delta.comparable && id_delta.only_current==0 &&
+          id_delta.only_current_blocked==0 && id_delta.only_previous==0);
+    CHECK(!ag_compare_import_ids(NULL,&new_snapshot).comparable);
+    struct ag_import empty_snapshot={0};
+    id_delta=ag_compare_import_ids(&empty_snapshot,&new_snapshot);
+    CHECK(id_delta.comparable && id_delta.only_current==3 &&
+          id_delta.only_current_blocked==1 && id_delta.only_previous==0);
+    id_delta=ag_compare_import_ids(&old_snapshot,&empty_snapshot);
+    CHECK(id_delta.comparable && id_delta.only_current==0 &&
+          id_delta.only_previous==2);
     const char *unicode_body =
        "{\"ProtocolVersion\":\"1\",\"LogRecords\":["
        "{\"RequestArgId\":\"00000000-0000-0000-0000-000000000005\","
