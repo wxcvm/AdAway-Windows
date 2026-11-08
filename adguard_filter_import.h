@@ -51,28 +51,45 @@ struct ag_import_delta {
     bool comparable;
     size_t only_current, only_current_blocked, only_previous;
 };
-static inline bool ag_snapshot_has_id(const struct ag_import *snapshot,
-                                     const char *id) {
-    if (!snapshot || !id) return false;
-    for (size_t i=0;i<snapshot->count;i++)
-        if (strcmp(snapshot->events[i].id,id)==0) return true;
-    return false;
+/* Sort temporary event pointers; keep the original timeline in UTC order.
+ * A merge walk compares each ID once after sorting, avoiding the O(n²)
+ * cost on the GUI thread when each exported snapshot has 5,000 rows. */
+static inline int ag_compare_id_ptr(const void *left,const void *right) {
+    const struct ag_event *const *a=left;
+    const struct ag_event *const *b=right;
+    return strcmp((*a)->id,(*b)->id);
 }
 static inline struct ag_import_delta ag_compare_import_ids(
     const struct ag_import *previous, const struct ag_import *current) {
     struct ag_import_delta delta={0};
-    if (!previous || !current) return delta;
-    delta.comparable=true;
-    for (size_t i=0;i<current->count;i++) {
-        const struct ag_event *event=&current->events[i];
-        if (!ag_snapshot_has_id(previous,event->id)) {
+    if(!previous || !current)return delta;
+    size_t old_count=previous->count,new_count=current->count;
+    size_t total=old_count+new_count;
+    const struct ag_event **ids=malloc((total?total:1)*sizeof(*ids));
+    if(!ids)return delta; /* no comparison: caller reports unavailable */
+    for(size_t i=0;i<old_count;i++)ids[i]=&previous->events[i];
+    for(size_t i=0;i<new_count;i++)ids[old_count+i]=&current->events[i];
+    qsort(ids,old_count,sizeof(*ids),ag_compare_id_ptr);
+    qsort(ids+old_count,new_count,sizeof(*ids),ag_compare_id_ptr);
+    size_t old_at=0,new_at=old_count;
+    while(old_at<old_count && new_at<total) {
+        int cmp=strcmp(ids[old_at]->id,ids[new_at]->id);
+        if(!cmp){++old_at;++new_at;}
+        else if(cmp<0){++delta.only_previous;++old_at;}
+        else {
             ++delta.only_current;
-            if (event->log_type==0) ++delta.only_current_blocked;
+            if(ids[new_at]->log_type==0)++delta.only_current_blocked;
+            ++new_at;
         }
     }
-    for (size_t i=0;i<previous->count;i++)
-        if (!ag_snapshot_has_id(current,previous->events[i].id))
-            ++delta.only_previous;
+    delta.only_previous+=old_count-old_at;
+    while(new_at<total) {
+        ++delta.only_current;
+        if(ids[new_at]->log_type==0)++delta.only_current_blocked;
+        ++new_at;
+    }
+    free(ids);
+    delta.comparable=true;
     return delta;
 }
 /* These are AdGuard-reported remote endpoints, not proof that an AdAway
