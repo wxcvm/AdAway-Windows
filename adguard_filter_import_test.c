@@ -208,6 +208,35 @@ int main(void){
     CHECK(id_delta.comparable && id_delta.only_current==0 &&
           id_delta.only_current_blocked==0 && id_delta.only_previous==0);
     CHECK(!ag_compare_import_ids(NULL,&new_snapshot).comparable);
+
+    /* Maximum supported export size: unchanged sort order and exact counts
+       with 2,500 shared / 2,500 distinct IDs on each side. */
+    enum { MAX_IMPORT_ROWS=5000 };
+    struct ag_event *bulk_old=calloc(MAX_IMPORT_ROWS,sizeof(*bulk_old));
+    struct ag_event *bulk_new=calloc(MAX_IMPORT_ROWS,sizeof(*bulk_new));
+    CHECK(bulk_old && bulk_new);
+    for(int i=0;i<MAX_IMPORT_ROWS;i++) {
+        snprintf(bulk_old[i].id,sizeof bulk_old[i].id,
+                 "00000000-0000-0000-0000-%012x",(unsigned)i);
+        snprintf(bulk_new[i].id,sizeof bulk_new[i].id,
+                 "00000000-0000-0000-0000-%012x",(unsigned)(i+2500));
+        bulk_old[i].log_type=3;
+        bulk_new[i].log_type=0;
+    }
+    struct ag_import bulk_old_snapshot={.events=bulk_old,.count=MAX_IMPORT_ROWS};
+    struct ag_import bulk_new_snapshot={.events=bulk_new,.count=MAX_IMPORT_ROWS};
+    id_delta=ag_compare_import_ids(&bulk_old_snapshot,&bulk_new_snapshot);
+    CHECK(id_delta.comparable && id_delta.only_current==2500 &&
+          id_delta.only_current_blocked==2500 && id_delta.only_previous==2500);
+    /* Sorting must not mutate the imported UTC timeline / ID order. */
+    CHECK(!strcmp(bulk_old[0].id,"00000000-0000-0000-0000-000000000000"));
+    CHECK(!strcmp(bulk_new[0].id,"00000000-0000-0000-0000-0000000009c4"));
+    id_delta=ag_compare_import_ids(&bulk_new_snapshot,&bulk_old_snapshot);
+    CHECK(id_delta.comparable && id_delta.only_current==2500 &&
+          id_delta.only_current_blocked==0 && id_delta.only_previous==2500);
+    free(bulk_old);
+    free(bulk_new);
+
     struct ag_import empty_snapshot={0};
     id_delta=ag_compare_import_ids(&empty_snapshot,&new_snapshot);
     CHECK(id_delta.comparable && id_delta.only_current==3 &&
