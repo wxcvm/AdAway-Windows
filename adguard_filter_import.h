@@ -493,7 +493,9 @@ static inline enum ag_import_error ag_import_parse(
         if(!ag_row_parse(row,&item)){
             ag_import_free(result);return AG_IMPORT_INVALID;
         }
-        if(!item.host[0]){result->missing_host++;continue;}
+        /* Host-less transport observations are still source events. Keep
+         * them in the timeline and totals, but not the domain ranking. */
+        if(!item.host[0])result->missing_host++;
         bool duplicate=false;
         for(size_t i=0;i<result->count;i++)
             if(strcmp(result->events[i].id,item.id)==0){duplicate=true;break;}
@@ -508,7 +510,7 @@ static inline enum ag_import_error ag_import_parse(
     size_t ranks=0;
     for(size_t i=0;i<result->count;i++){
         const struct ag_event *event=&result->events[i];
-        if(event->log_type!=0)continue; /* explicit AdGuard block event */
+        if(event->log_type!=0 || !event->host[0])continue; /* domain ranking only */
         size_t j=0;
         while(j<ranks && strcmp(all[j].host,event->host))++j;
         if(j==ranks) {
