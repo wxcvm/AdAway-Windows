@@ -3644,6 +3644,7 @@ static void log_import_adguard(HWND hwnd) {
         return;
     }
     struct ag_import *previous=g_ag_import;
+    bool had_previous=previous!=NULL;
     struct ag_import_delta delta=ag_compare_import_ids(previous,staged);
     g_ag_import=staged;
     ag_import_free(previous);
@@ -3662,7 +3663,7 @@ static void log_import_adguard(HWND hwnd) {
             L"只比较两份离线快照，不代表实时新增或漏拦。\r\n",
             (unsigned)delta.only_current,(unsigned)delta.only_current_blocked,
             (unsigned)delta.only_previous);
-    else if(previous)wcscpy(comparison,L"快照对照内存不足；本次导入仍已完成。\r\n");
+    else if(had_previous)wcscpy(comparison,L"快照对照内存不足；本次导入仍已完成。\r\n");
     else wcscpy(comparison,L"首次导入，没有上次快照可对照。\r\n");
     wchar_t message[680];
     swprintf(message,680,
