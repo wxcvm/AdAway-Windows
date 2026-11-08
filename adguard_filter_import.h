@@ -493,13 +493,13 @@ static inline enum ag_import_error ag_import_parse(
         if(!ag_row_parse(row,&item)){
             ag_import_free(result);return AG_IMPORT_INVALID;
         }
-        /* Host-less transport observations are still source events. Keep
-         * them in the timeline and totals, but not the domain ranking. */
-        if(!item.host[0])result->missing_host++;
+        /* Host-less transport observations remain in the timeline,
+         * including source totals, but never enter the domain ranking. */
         bool duplicate=false;
         for(size_t i=0;i<result->count;i++)
             if(strcmp(result->events[i].id,item.id)==0){duplicate=true;break;}
         if(duplicate){result->duplicates++;continue;}
+        if(!item.host[0])result->missing_host++; /* retained unique events only */
         item.position=(uint32_t)(result->scanned-1);
         result->events[result->count++]=item;
         if(item.log_type==0)result->blocked++;
