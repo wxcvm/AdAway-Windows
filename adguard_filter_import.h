@@ -506,6 +506,19 @@ static inline int ag_cmp_event(const void *a,const void *b) {
         return x->timestamp_us>y->timestamp_us?-1:1;
     return x->position<y->position?-1:x->position>y->position?1:0;
 }
+/* ID ties retain the first source row, regardless of timestamp. */
+static inline int ag_cmp_import_id_position(const void *a,const void *b) {
+    struct ag_event *const *x=a;
+    struct ag_event *const *y=b;
+    int cmp=strcmp((*x)->id,(*y)->id);
+    if(cmp)return cmp;
+    return (*x)->position<(*y)->position?-1:(*x)->position>(*y)->position?1:0;
+}
+static inline int ag_cmp_import_host(const void *a,const void *b) {
+    struct ag_event *const *x=a;
+    struct ag_event *const *y=b;
+    return strcmp((*x)->host,(*y)->host);
+}
 static inline int ag_cmp_rank(const void *a,const void *b) {
     const struct ag_rank *x=a,*y=b;
     if(x->count!=y->count)return x->count>y->count?-1:1;
@@ -541,35 +554,57 @@ static inline enum ag_import_error ag_import_parse(
         if(!ag_row_parse(row,&item)){
             ag_import_free(result);return AG_IMPORT_INVALID;
         }
-        /* Host-less transport observations remain in the timeline,
-         * including source totals, but never enter the domain ranking. */
-        bool duplicate=false;
-        for(size_t i=0;i<result->count;i++)
-            if(strcmp(result->events[i].id,item.id)==0){duplicate=true;break;}
-        if(duplicate){result->duplicates++;continue;}
-        if(!item.host[0])result->missing_host++; /* retained unique events only */
         item.position=(uint32_t)(result->scanned-1);
         result->events[result->count++]=item;
-        if(item.log_type==0)result->blocked++;
-        if(strcmp(item.protocol,"Dns")==0)result->dns_events++;
     }
-    struct ag_rank *all=calloc(result->count?result->count:1,sizeof(*all));
-    if(!all){ag_import_free(result);return AG_IMPORT_NO_MEMORY;}
+    /* Sort lightweight pointers, not entire event records. Mark later
+     * occurrences, then compact in source order before calculating totals. */
+    size_t parsed=result->count;
+    struct ag_event **index=malloc((parsed?parsed:1)*sizeof(*index));
+    if(!index){ag_import_free(result);return AG_IMPORT_NO_MEMORY;}
+    for(size_t i=0;i<parsed;i++)index[i]=&result->events[i];
+    qsort(index,parsed,sizeof(*index),ag_cmp_import_id_position);
+    const struct ag_event *first=NULL;
+    for(size_t i=0;i<parsed;i++){
+        struct ag_event *event=index[i];
+        if(first && !strcmp(first->id,event->id)) {
+            event->id[0]='\0';
+            ++result->duplicates;
+        } else first=event;
+    }
+    size_t retained=0,rank_rows=0;
+    for(size_t i=0;i<parsed;i++){
+        struct ag_event *event=&result->events[i];
+        if(!event->id[0])continue;
+        if(!event->host[0])++result->missing_host;
+        if(event->log_type==0)++result->blocked;
+        if(!strcmp(event->protocol,"Dns"))++result->dns_events;
+        if(retained!=i)result->events[retained]=*event;
+        if(event->log_type==0 && event->host[0])
+            index[rank_rows++]=&result->events[retained];
+        ++retained;
+    }
+    ag_import_clear_bytes(result->events+retained,
+                          (parsed-retained)*sizeof(*result->events));
+    result->count=retained;
+    /* Group equal hosts in one pass after sorting the blocked rows. */
+    qsort(index,rank_rows,sizeof(*index),ag_cmp_import_host);
+    struct ag_rank *all=calloc(rank_rows?rank_rows:1,sizeof(*all));
+    if(!all){free(index);ag_import_free(result);return AG_IMPORT_NO_MEMORY;}
     size_t ranks=0;
-    for(size_t i=0;i<result->count;i++){
-        const struct ag_event *event=&result->events[i];
-        if(event->log_type!=0 || !event->host[0])continue; /* domain ranking only */
-        size_t j=0;
-        while(j<ranks && strcmp(all[j].host,event->host))++j;
-        if(j==ranks) {
-            memcpy(all[j].host,event->host,sizeof all[j].host);
+    for(size_t i=0;i<rank_rows;i++){
+        const struct ag_event *event=index[i];
+        if(!ranks || strcmp(all[ranks-1].host,event->host)) {
+            memcpy(all[ranks].host,event->host,sizeof all[ranks].host);
             ++ranks;
         }
-        ++all[j].count;
-        if(strcmp(event->protocol,"Dns")==0) ++all[j].dns_count;
-        else if(strcmp(event->protocol,"Tcp")==0) ++all[j].tcp_count;
-        else ++all[j].other_count;
+        struct ag_rank *rank=&all[ranks-1];
+        ++rank->count;
+        if(!strcmp(event->protocol,"Dns"))++rank->dns_count;
+        else if(!strcmp(event->protocol,"Tcp"))++rank->tcp_count;
+        else ++rank->other_count;
     }
+    free(index);
     qsort(all,ranks,sizeof(*all),ag_cmp_rank);
     result->top_count=ranks<AG_IMPORT_TOP?ranks:AG_IMPORT_TOP;
     memcpy(result->top,all,result->top_count*sizeof(*all));
