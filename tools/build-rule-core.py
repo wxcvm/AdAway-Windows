@@ -273,7 +273,7 @@ static void ws_push_flush(struct settings *s, uint64_t now) {
     }
 }""" + source[right:]
     listener_hook("            if (n > 0) mg_ws_send(c, body, (size_t)n, WEBSOCKET_OP_TEXT);",
-                  "            if (n > 0 && !ws_send_snapshot(c, body, (size_t)n))\\n"
+                  "            if (n > 0 && !ws_send_snapshot(c, body, (size_t)n))\n"
                   "                c->is_closing = 1; /* initial snapshot cannot be silently lost */")
     listener_hook("        mg_mgr_poll(mgr, 1000);\n        uint64_t now_ms = mg_millis();",
                   "        mg_mgr_poll(mgr, 1000);\n        uint64_t now_ms = mg_millis();\n        ws_push_flush(s, now_ms);")
