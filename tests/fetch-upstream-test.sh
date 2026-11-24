@@ -33,9 +33,10 @@ case "$1" in
  checkout)
   mkdir -p "$directory/webserver/jni/mongoose" "$directory/app/src/main/assets"
   if [ "$(cat "$directory/.fetch-pin")" = "$ADBLOCK_TEST_MONGOOSE_PIN" ]; then
-    [ "$*" = 'checkout FETCH_HEAD -- webserver/jni/mongoose/mongoose.c webserver/jni/mongoose/mongoose.h' ]
+    [ "$*" = 'checkout FETCH_HEAD -- webserver/jni/mongoose/mongoose.c webserver/jni/mongoose/mongoose.h webserver/jni/mongoose_tls_ctx_test.c' ]
     printf 'mongoose 7.24\n' > "$directory/webserver/jni/mongoose/mongoose.c"
     printf '#define MG_VERSION "7.24"\n' > "$directory/webserver/jni/mongoose/mongoose.h"
+    printf 'manager tls fixture\n' > "$directory/webserver/jni/mongoose_tls_ctx_test.c"
   else
     [ "$(cat "$directory/.fetch-pin")" = "$ADBLOCK_TEST_EXPECTED_PIN" ]
     printf 'core\n' > "$directory/webserver/jni/webserver.c"
@@ -54,6 +55,7 @@ bash fetch-upstream.sh
 grep -Fx 'core' jni/webserver.c
 grep -Fx 'mongoose 7.24' jni/mongoose/mongoose.c
 grep -Fx '#define MG_VERSION "7.24"' jni/mongoose/mongoose.h
+grep -Fx 'manager tls fixture' jni/mongoose_tls_ctx_test.c
 printf 'local edit\n' >> jni/webserver.c
 if bash fetch-upstream.sh; then echo 'modified cache was accepted' >&2; exit 1; fi
 test "$(tail -1 jni/webserver.c)" = 'local edit'
