@@ -83,7 +83,7 @@ Rows preserve actual observed family, bounded path without query/fragment, queue
 
 The existing worker handles immutable filter revisions and full fixed-snapshot CSV export with progress/cancel. It writes a unique staging file and atomically publishes only a complete snapshot; failed, expired or cancelled exports do not become apparently complete outputs. New request counters are attributed before proxy/exemption returns and SNI excludes management polling. Connection counts mean connections carrying observed Web traffic, not all accepted sockets.
 
-Shared query-log source is pinned independently toc1533839fe5b8cd814d3a0b8653859a4bba05b58 with exact file hashes. Production portable core4470606366e614abdb308fdfe94734d28167439c remains unchanged; count-checked overlays add response metadata and filtered history. Windows memory/persistence4096, summary400 and page49152-byte limits are unchanged. No user host DNS/Hosts/trust/AdGuard changes.
+Shared query-log source is pinned independently to `e44b195f962a1a2918ea61ef912c8f9fbc0e4da1` with exact file hashes. Production portable core4470606366e614abdb308fdfe94734d28167439c remains unchanged; count-checked overlays add response metadata and filtered history. Windows memory/persistence4096, summary400 and page49152-byte limits are unchanged. No user host DNS/Hosts/trust/AdGuard changes.
 
 ## Export task value boundary (1.90 preview)
 
@@ -103,3 +103,7 @@ interval, then mutates source objects after worker copy. It is not a claim that
 the parent window is interactable during a native modal Save dialog. Existing
 real-GUI tests continue to cover that dialog, history expiry, cancellation and
 file outcomes using disposable CI, not the daily host.
+
+## Dirty-log persistence
+
+The shared log contract now writes only when dirty during the existing 15-second statistics persistence cadence, and clears its dirty flag only after a successful atomic publication. Manual flush, clear and orderly shutdown still save immediately. A failed write is retried at the next eligible persistence opportunity. The log is written directly from up to two spans of the circular buffer, preserving the existing on-disk layout and removing the duplicate persistence staging array. Windows keeps its frozen portable service source and adapts the atomic-write result through the count-checked overlay. The listener, filtering and TLS implementations are unchanged.
