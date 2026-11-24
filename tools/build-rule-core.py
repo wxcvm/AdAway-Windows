@@ -46,7 +46,7 @@ def prepare(source):
 static struct da_repository s_domain_allow_repository = DA_REPOSITORY_INITIALIZER;
 static bool domain_is_allowed(const char *host, const char *resource_dir) {
     struct da_result result = da_lookup(&s_domain_allow_repository, host, resource_dir);
-    if (!result.update_valid) LOG_WARN("Domain exemption update rejected; retaining previous rules");
+    if (!result.update_valid && result.refresh_attempted) LOG_WARN("Domain exemption update rejected; retaining previous rules");
     return result.allowed;
 }''' + source[end:]
     start = source.index("/* ── blocked-host table")
