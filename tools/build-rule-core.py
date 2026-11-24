@@ -224,6 +224,52 @@ static void block_set_load(const char *resource_dir) {
     }""")
     listener_hook("    if (ev != MG_EV_HTTP_MSG) return;",
                   "    if (ev != MG_EV_HTTP_MSG) return;\n    listener_touch(c, mg_millis());")
+    # Coalesce stats pushes on the listener loop. A pending bit belongs to
+    # a subscriber slot; close clears it before that slot can be reused.
+    listener_hook("static struct mg_connection *ws_clients[WS_PUSH_MAX] = {0};",
+                  "static struct mg_connection *ws_clients[WS_PUSH_MAX] = {0};\n"
+                  "static uint32_t s_ws_pending;\n"
+                  "static uint64_t s_ws_last_push_ms;")
+    listener_hook("if (ws_clients[i] == c) { ws_clients[i] = NULL; break; }",
+                  "if (ws_clients[i] == c) { ws_clients[i] = NULL; s_ws_pending &= ~(UINT32_C(1) << i); break; }")
+    left, right = function_span(source, "static void ws_push_broadcast(")
+    source = source[:left] + """static void ws_push_broadcast(struct settings *s) {
+    if (!s || !s->init) return;
+    for (int i = 0; i < WS_PUSH_MAX; ++i)
+        if (ws_clients[i] && !ws_clients[i]->is_closing && !ws_clients[i]->is_draining)
+            s_ws_pending |= UINT32_C(1) << i;
+}
+
+/* Event-loop owned; no queue of historical snapshots. Retry slow subscribers
+   after their existing output drains, and build at most one snapshot per second. */
+static void ws_push_flush(struct settings *s, uint64_t now) {
+    if (!s_ws_pending || (s_ws_last_push_ms && now - s_ws_last_push_ms < 1000)) return;
+    uint32_t ready = 0;
+    for (int i = 0; i < WS_PUSH_MAX; ++i) {
+        uint32_t bit = UINT32_C(1) << i;
+        if (!(s_ws_pending & bit)) continue;
+        struct mg_connection *cl = ws_clients[i];
+        if (!cl || cl->is_closing || cl->is_draining) s_ws_pending &= ~bit;
+        else if (cl->send.len == 0) ready |= bit;
+    }
+    if (!ready) return;
+    s_ws_last_push_ms = now;
+    char body[STATS_JSON_BUF];
+    int n = build_stats_json(s, body, sizeof(body));
+    if (n <= 0) return;
+    for (int i = 0; i < WS_PUSH_MAX; ++i) {
+        uint32_t bit = UINT32_C(1) << i;
+        if (!(ready & bit)) continue;
+        struct mg_connection *cl = ws_clients[i];
+        size_t len = (size_t)n;
+        size_t expected = len + (len < 126 ? 2 : len <= 65535 ? 4 : 10);
+        size_t sent = mg_ws_send(cl, body, len, WEBSOCKET_OP_TEXT);
+        if (sent == expected) s_ws_pending &= ~bit;
+        else if (sent != 0) cl->is_closing = 1; /* incomplete frame */
+    }
+}""" + source[right:]
+    listener_hook("        mg_mgr_poll(mgr, 1000);\n        uint64_t now_ms = mg_millis();",
+                  "        mg_mgr_poll(mgr, 1000);\n        uint64_t now_ms = mg_millis();\n        ws_push_flush(s, now_ms);")
     return source
 
 
