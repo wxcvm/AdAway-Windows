@@ -1925,6 +1925,7 @@ static bool g_log_apps = false;
 static bool g_log_ranking = false; /* third subview in the same log center */
 static bool g_log_external = false; /* explicitly imported AdGuard snapshot */
 static struct ag_import *g_ag_import = NULL;
+static bool g_ag_render_dirty = true;
 static bool g_log_rendering = false;
 static int g_log_shown = 0;
 static uint64_t g_log_render_hash;
@@ -3427,20 +3428,13 @@ static void log_list_refresh(HWND hwnd, bool force) {
         struct qlv_view view={0};
         view.external=true;
         view.ranking=g_log_ranking;
-        uint64_t hash=UINT64_C(14695981039346656037);
-        hash=log_hash_bytes(hash,&view,sizeof(view));
+        const struct qlv_view *previous_view =
+            g_log_render_view_seen ? &g_log_render_view : NULL;
+        if (qlv_reuse_external(previous_view,&view,g_ag_render_dirty,force)) return;
         const size_t count=g_ag_import ?
             (g_log_ranking ? g_ag_import->top_count : g_ag_import->count) : 0;
-        hash=log_hash_bytes(hash,&count,sizeof(count));
-        if (g_ag_import && count) {
-            hash=log_hash_bytes(hash,g_log_ranking ?
-                (const void *)g_ag_import->top : (const void *)g_ag_import->events,
-                count*(g_log_ranking ? sizeof(struct ag_rank) : sizeof(struct ag_event)));
-        }
-        bool same_view=g_log_render_view_seen &&
-            qlv_same_view(&g_log_render_view,&view);
-        if (!force && hash==g_log_render_hash) return;
-        g_log_render_hash=hash;
+        bool same_view=qlv_same_view(previous_view,&view);
+        g_log_render_hash=0; /* local row hashes are only valid for local views */
         g_log_render_view=view;
         g_log_render_view_seen=true;
         LRESULT top=SendMessageW(list,LB_GETTOPINDEX,0,0);
@@ -3480,6 +3474,7 @@ static void log_list_refresh(HWND hwnd, bool force) {
         SendMessageW(list,WM_SETREDRAW,TRUE,0);
         InvalidateRect(list,NULL,TRUE);
         g_log_rendering=false;
+        g_ag_render_dirty=(size_t)g_log_shown!=count;
         log_details_refresh(hwnd);
         return;
     }
@@ -3504,7 +3499,7 @@ static void log_list_refresh(HWND hwnd, bool force) {
     size_t row_size = g_log_ranking ? sizeof(struct top_row) :
         (g_log_apps ? sizeof(struct app_row) : sizeof(struct qlog_row));
     hash = log_hash_bytes(hash, rows, (size_t)count * row_size);
-    if (!force && hash == g_log_render_hash) return;
+    if (!force && same_view && hash == g_log_render_hash) return;
     g_log_render_hash = hash;
     g_log_render_view = view;
     g_log_render_view_seen = true;
@@ -3647,6 +3642,7 @@ static void log_import_adguard(HWND hwnd) {
     bool had_previous=previous!=NULL;
     struct ag_import_delta delta=ag_compare_import_ids(previous,staged);
     g_ag_import=staged;
+    g_ag_render_dirty=true;
     ag_import_free(previous);
     g_log_external=true;
     g_log_apps=false;
@@ -4775,6 +4771,7 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 return 0;
             ag_import_free(g_ag_import);
             g_ag_import=NULL;
+            g_ag_render_dirty=true;
             g_log_external=false;
             g_log_apps=false;
             g_log_ranking=false;
