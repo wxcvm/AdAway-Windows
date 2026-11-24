@@ -44,15 +44,17 @@ static FILE *open_atomic_write(const char *path, char *tmp, size_t capacity) {
     return file;
 }
 
-static void finish_atomic_write(FILE *file, const char *path, const char *tmp) {
+static bool finish_atomic_write(FILE *file, const char *path, const char *tmp) {
     wchar_t final_path[PATH_MAX], staged_path[PATH_MAX];
-    bool valid = fflush(file) == 0;
+    bool valid = !ferror(file);
+    if (fflush(file) != 0) valid = false;
     if (valid) valid = _commit(_fileno(file)) == 0;
     if (fclose(file) != 0) valid = false;
     bool staged_valid = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp, -1, staged_path, PATH_MAX) != 0;
     valid = valid && staged_valid &&
         MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, final_path, PATH_MAX) != 0;
-    if (valid && MoveFileExW(staged_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return;
+    if (valid && MoveFileExW(staged_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
     if (staged_valid) DeleteFileW(staged_path);
+    return false;
 }
 #endif
