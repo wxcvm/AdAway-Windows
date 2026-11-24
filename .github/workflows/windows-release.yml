@@ -461,6 +461,8 @@ jobs:
           ./sni_cache_slot_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -Wall -Wextra -Werror -pedantic -Ijni listener_activity_test.c -o listener_activity_test.exe
           ./listener_activity_test.exe
+          gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni listener_buffer_test.c dashboard_mongoose.o -o listener_buffer_test.exe -lws2_32 -lbcrypt
+          ./listener_buffer_test.exe
           gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni -Ilog-contract log-contract/query_log_store_test.c dashboard_mongoose.o -o query_log_store_test.exe -lws2_32 -lbcrypt
           ./query_log_store_test.exe "$(cygpath -m "$RUNNER_TEMP")"
           python3 tools/build-rule-core.py jni/webserver.c .build-core/stats-bounds-core.c
