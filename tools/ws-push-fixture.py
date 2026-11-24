@@ -21,11 +21,14 @@ prefix = r'''
 struct settings { bool init; };
 struct mg_connection { bool is_closing, is_draining; struct { size_t len; } send; };
 static unsigned built, sent;
+static size_t forced_result = (size_t)-1;
 static int build_stats_json(struct settings *s, char *out, size_t cap) {
     (void)s; (void)out; (void)cap; ++built; return 8;
 }
 static size_t mg_ws_send(struct mg_connection *c, const void *p, size_t n, int op) {
-    (void)p; (void)op; ++sent; c->send.len += n; return n;
+    (void)p; (void)op; ++sent;
+    size_t result = forced_result == (size_t)-1 ? n + 2 : forced_result;
+    c->send.len += result; return result;
 }
 '''
 suffix = r'''
@@ -51,7 +54,15 @@ int main(void) {
     assert(built == 3 && sent == 3 && s_ws_pending == 0);
     ws_push_flush(&s, 4000);
     assert(built == 3 && sent == 3);
-    puts("PASS: no subscribers, coalescing, slow client and trailing delivery");
+    fast.send.len = 0; ws_clients[1] = NULL;
+    ws_push_broadcast(&s);
+    forced_result = 0;
+    ws_push_flush(&s, 4100);
+    assert(!fast.is_closing && s_ws_pending == 1);
+    forced_result = 2;
+    ws_push_flush(&s, 5100);
+    assert(fast.is_closing);
+    puts("PASS: coalescing, slow client, trailing delivery and partial frame handling");
     return 0;
 }
 '''
