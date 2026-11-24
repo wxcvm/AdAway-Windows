@@ -175,7 +175,55 @@ static void block_set_load(const char *resource_dir) {
     spec = importlib.util.spec_from_file_location("logs_overlay", pathlib.Path(__file__).with_name("logs-core-overlay.py"))
     logs = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(logs)
-    return logs.prepare_logs(source)
+    source = logs.prepare_logs(source)
+    # Shared listener lifetime policy, applied after listener/log overlays.
+    def listener_hook(old, new):
+        nonlocal source
+        if source.count(old) != 1:
+            raise ValueError("listener activity hook changed: " + old[:80])
+        source = source.replace(old, new, 1)
+    listener_hook('#include "mongoose/mongoose.h"',
+                  '#include "mongoose/mongoose.h"\n#include "listener_activity.h"')
+    listener_hook("""        uint64_t t = mg_millis();
+        memcpy(c->data, &t, sizeof(t));
+        c->data[sizeof(t)] = 1;""", """        listener_touch(c, mg_millis());
+        c->data[sizeof(uint64_t)] = 1;""")
+    listener_hook("""        proxy_drop_for_client(c);
+        /* Unregister from the WS push list. */
+        pthread_mutex_lock(&s_sni_mutex);
+        for (int i = 0; i < WS_PUSH_MAX; i++) {
+            if (ws_clients[i] == c) { ws_clients[i] = NULL; break; }
+        }
+        pthread_mutex_unlock(&s_sni_mutex);""", """        if (s_proxy_active) proxy_drop_for_client(c);
+        if (c->is_websocket) {
+            pthread_mutex_lock(&s_sni_mutex);
+            for (int i = 0; i < WS_PUSH_MAX; i++) {
+                if (ws_clients[i] == c) { ws_clients[i] = NULL; break; }
+            }
+            pthread_mutex_unlock(&s_sni_mutex);
+        }""")
+    listener_hook("""    /* Idle-timeout enforcement */
+    if (ev == MG_EV_POLL && c->data[sizeof(uint64_t)]) {
+        /* A transparent-proxy request may legitimately take longer than the
+           idle timeout, so it is exempt while it is in flight. */
+        if (proxy_busy(c)) return;
+        uint64_t accepted_at; memcpy(&accepted_at, c->data, sizeof(accepted_at));
+        if (mg_millis() - accepted_at > IDLE_TIMEOUT_MS) {
+            c->is_draining = 1; return;
+        }
+    }""", """    if (ev == MG_EV_POLL) {
+        if (listener_idle_due(c, *(const uint64_t *)ev_data, IDLE_TIMEOUT_MS) &&
+            !proxy_busy(c)) c->is_draining = 1;
+        return;
+    }
+    if (ev == MG_EV_WRITE) {
+        if (c->data[sizeof(uint64_t)] && *(const long *)ev_data > 0)
+            listener_touch(c, mg_millis());
+        return;
+    }""")
+    listener_hook("    if (ev != MG_EV_HTTP_MSG) return;",
+                  "    if (ev != MG_EV_HTTP_MSG) return;\n    listener_touch(c, mg_millis());")
+    return source
 
 
 if __name__ == "__main__":
