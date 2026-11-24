@@ -464,6 +464,9 @@ jobs:
           gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni -Ilog-contract log-contract/query_log_store_test.c dashboard_mongoose.o -o query_log_store_test.exe -lws2_32 -lbcrypt
           ./query_log_store_test.exe "$(cygpath -m "$RUNNER_TEMP")"
           python3 tools/build-rule-core.py jni/webserver.c .build-core/stats-bounds-core.c
+          python3 tools/ws-push-fixture.py .build-core/stats-bounds-core.c .build-core/ws-push-test.c
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic .build-core/ws-push-test.c -o ws-push-test.exe
+          ./ws-push-test.exe
           python3 log-contract/stats-json-bounds-fixture.py .build-core/stats-bounds-core.c .build-core/stats-bounds-test.c
           gcc -std=c11 -O2 -DMG_TLS=0 -DMG_ENABLE_IPV6=1 -Wall -Wextra -Werror -pedantic -Ijni .build-core/stats-bounds-test.c dashboard_mongoose.o -o stats-bounds-test.exe -lws2_32 -lbcrypt
           ./stats-bounds-test.exe
