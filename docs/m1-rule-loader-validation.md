@@ -71,3 +71,7 @@ Failure rollback keeps the previous subscription file and live rule snapshot;
 staging files are removed on normal failure and never replayed on startup.
 Unreferenced staging files after a hard process kill are not recovery intents.
 No decrypted model or CI result authorizes capture or a system network change.
+
+## Shared domain exemption cache
+
+The shared rule contract now includes the Android file-fingerprint cache with Win32 file identity and full FILETIME values (AdAway #116/#120). An unchanged rule file no longer needs to be reopened for parsing; a same-size atomic replacement is detected by file identity, even when creation and write timestamps match. Invalid rule versions preserve the last valid snapshot for that resource directory. The production overlay warns only on attempted reload failures. The portable service source, Mongoose/OpenSSL, rule syntax and decision semantics remain unchanged. The shared native fixture covers cache hits, deletion, invalid-file retention and identical-timestamp replacement; Windows CI must validate the updated pin before merge.
