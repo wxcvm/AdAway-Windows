@@ -214,6 +214,7 @@ static void block_set_load(const char *resource_dir) {
     }""", """    if (ev == MG_EV_POLL) {
         if (listener_idle_due(c, *(const uint64_t *)ev_data, IDLE_TIMEOUT_MS) &&
             !proxy_busy(c)) c->is_draining = 1;
+        else listener_trim_idle(c, *(const uint64_t *)ev_data);
         return;
     }
     if (ev == MG_EV_WRITE) {
