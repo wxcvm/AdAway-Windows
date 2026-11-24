@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
     FILE *file = open_atomic_write(path, tmp, sizeof(tmp));
     CHECK(file != NULL);
     CHECK(fwrite("previous", 1, 8, file) == 8);
-    finish_atomic_write(file, path, tmp);
+    CHECK(finish_atomic_write(file, path, tmp));
     contents(path, "previous");
     wchar_t wide[PATH_MAX];
     CHECK(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide, PATH_MAX) > 0);
@@ -28,14 +28,14 @@ int main(int argc, char **argv) {
     file = open_atomic_write(path, tmp, sizeof(tmp));
     CHECK(file != NULL);
     CHECK(fwrite("new", 1, 3, file) == 3);
-    finish_atomic_write(file, path, tmp); /* Replacement denied; previous file stays. */
+    CHECK(!finish_atomic_write(file, path, tmp)); /* Replacement denied; previous file stays. */
     CHECK(CloseHandle(locked));
     contents(path, "previous");
     CHECK(qlog_fopen_utf8(tmp, "rb") == NULL);
     file = open_atomic_write(path, tmp, sizeof(tmp));
     CHECK(file != NULL);
     CHECK(fwrite("new", 1, 3, file) == 3);
-    finish_atomic_write(file, path, tmp);
+    CHECK(finish_atomic_write(file, path, tmp));
     contents(path, "new");
     CHECK(qlog_remove_utf8(path) == 0);
     CHECK(open_atomic_write(path, tmp, 4) == NULL);
