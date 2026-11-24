@@ -39,6 +39,42 @@ def function_span(source, signature):
 def prepare(source):
     if hashlib.sha256(source.encode()).hexdigest() != SOURCE_SHA256:
         raise ValueError("production source differs from frozen 4470606 pin; no compatibility overlay applied")
+    # SNI slot policy shared with Android #119. Keep Win32 cache capacity,
+    # renewal age, context ownership and disk format exactly as before.
+    declaration = "struct sni_entry { char hostname[256]; SSL_CTX *ctx; uint64_t issued_at; };"
+    if source.count(declaration) != 1:
+        raise ValueError("SNI cache declaration changed")
+    source = source.replace(declaration, '#include "sni_cache_slot.h"', 1)
+    start, end = function_span(source, "static int sni_callback(")
+    callback = source[start:end]
+    left = callback.index("    /* Fast path: cache lookup under lock */")
+    right = callback.index("    /* Slow path: generate new cert outside the lock", left)
+    callback = callback[:left] + """    /* Restored hostname slots need a new context, not a TLS cache hit. */
+    pthread_mutex_lock(&s_sni_mutex);
+    struct sni_slot_match match = sni_match_slot(
+        s_sni_cache, SNI_CACHE_SIZE, host, mg_millis(), SNI_CERT_RENEW_MS);
+    if (match.reusable) {
+        SSL_set_SSL_CTX(ssl, s_sni_cache[match.slot].ctx);
+        pthread_mutex_unlock(&s_sni_mutex);
+        s_stats.sni_cache_hits++;
+        s_sni_hits++;
+        return SSL_TLSEXT_ERR_OK;
+    }
+    int expired_slot = match.slot;
+    pthread_mutex_unlock(&s_sni_mutex);
+
+""" + callback[right:]
+    source = source[:start] + callback + source[end:]
+    # Persisted metadata contains no TLS context or private key.
+    old_comment = """/* SNI cache persistence: dump hostnames + issued_at to sni_cache.dat so
+   a restart doesn't flush the whole cache (re-issue = slow EC keygen +
+   new TLS handshakes). On load, entries are re-keyed lazily: the SSL_CTX
+   is rebuilt only on the next hit that finds the entry expired, but the
+   hostname is remembered so a "miss" is not counted as a fresh issue. */"""
+    if source.count(old_comment) != 1:
+        raise ValueError("SNI metadata comment changed")
+    source = source.replace(old_comment, """/* Persist hostname slots, not certificates or private keys.
+   Restored slots are renewed in place; fresh contexts count as misses. */""", 1)
     start, end = function_span(source, "static void domain_rule_normalize(")
     source = source[:start] + '#include "rule_norm.h"\n' + source[end:]
     start, end = function_span(source, "static bool domain_is_allowed(")
