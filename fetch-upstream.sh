@@ -9,8 +9,8 @@
 set -euo pipefail
 
 PIN="4470606366e614abdb308fdfe94734d28167439c"
-# Independent vendor pin: only the two official amalgamation files change.
-MONGOOSE_PIN="4092fe54e2f08859223554cd3fb2f8ef78444d5a"
+# Independent vendor pin: Mongoose amalgamation plus its real TLS manager regression fixture.
+MONGOOSE_PIN="4cfab12d0c15ca0e813ab042ba42d712b415165d"
 UPSTREAM="https://github.com/wxcvm/AdAway.git"
 
 verify() {
@@ -53,7 +53,7 @@ else
   git -C "$stage" checkout FETCH_HEAD -- webserver/jni app/src/main/assets
   git -C "$stage" fetch --depth 1 origin "$MONGOOSE_PIN"
   test "$(git -C "$stage" rev-parse 'FETCH_HEAD^{commit}')" = "$MONGOOSE_PIN"
-  git -C "$stage" checkout FETCH_HEAD -- webserver/jni/mongoose/mongoose.c webserver/jni/mongoose/mongoose.h
+  git -C "$stage" checkout FETCH_HEAD -- webserver/jni/mongoose/mongoose.c webserver/jni/mongoose/mongoose.h webserver/jni/mongoose_tls_ctx_test.c
   mv "$stage/webserver/jni" jni
   mkdir -p app/src/main
   mv "$stage/app/src/main/assets" app/src/main/assets
@@ -70,7 +70,7 @@ PY
 fi
 
 # 取完必须自证：缺失就明确报错，而不是让后面的步骤莫名其妙地失败
-for f in jni/webserver.c jni/mongoose/mongoose.c jni/mongoose/mongoose.h app/src/main/assets/test.html; do
+for f in jni/webserver.c jni/mongoose/mongoose.c jni/mongoose/mongoose.h jni/mongoose_tls_ctx_test.c app/src/main/assets/test.html; do
   if [ ! -f "$f" ]; then
     echo "::error::上游文件缺失：$f"
     ls -la jni 2>/dev/null || true
