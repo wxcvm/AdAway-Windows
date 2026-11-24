@@ -31,6 +31,7 @@
 #include <time.h>
 #include <errno.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <wchar.h>
 
 #include <openssl/x509.h>
@@ -1018,18 +1019,34 @@ static bool snapshot_publish(struct snapshot *published, struct snapshot *incomi
     incoming->qlog_error = error;
     bool changed;
     if (incoming->valid || !published->has_data) {
-        changed = memcmp((const char *)published + sizeof(incoming->uptime_seconds),
-                         (const char *)incoming + sizeof(incoming->uptime_seconds),
-                         sizeof(*incoming) - sizeof(incoming->uptime_seconds)) != 0;
-        *published = *incoming;
+        /* Neither uptime nor the last successful sample timestamp is a
+         * content change. Keep both current, but let the existing periodic
+         * keep-alive update the clock when the rest of the view is idle. */
+        const size_t first = offsetof(struct snapshot, total_requests);
+        const size_t timestamp = offsetof(struct snapshot, updated_at);
+        const size_t log_state = offsetof(struct snapshot, qlog_ready);
+        const size_t rows = offsetof(struct snapshot, qlog);
+        const size_t tail = offsetof(struct snapshot, top_count);
+        const char *old = (const char *)published, *next = (const char *)incoming;
+        changed = memcmp(old + first, next + first, timestamp - first) != 0 ||
+            memcmp(old + log_state, next + log_state, rows - log_state) != 0 ||
+            memcmp(old + tail, next + tail, sizeof(*incoming) - tail) != 0 ||
+            memcmp(published->qlog, incoming->qlog,
+                   (size_t)incoming->qlog_count * sizeof(incoming->qlog[0])) != 0;
+        if (changed) *published = *incoming;
+        else {
+            published->uptime_seconds = incoming->uptime_seconds;
+            published->updated_at = incoming->updated_at;
+        }
     } else {
         changed = published->valid != 0 || published->qlog_error != error ||
             published->qlog_count != incoming->qlog_count ||
             published->qlog_ready != incoming->qlog_ready ||
             published->qlog_revision != incoming->qlog_revision ||
             memcmp(&published->qlog_page, &incoming->qlog_page, sizeof(incoming->qlog_page)) != 0 ||
-            memcmp(published->qlog, incoming->qlog, sizeof(incoming->qlog)) != 0;
-        snapshot_copy_log(published, incoming);
+            memcmp(published->qlog, incoming->qlog,
+                   (size_t)incoming->qlog_count * sizeof(incoming->qlog[0])) != 0;
+        if (changed) snapshot_copy_log(published, incoming);
         published->valid = 0;
         published->qlog_error = error;
     }
@@ -1119,9 +1136,8 @@ static void *stats_poll_thread(void *arg) {
         if (!query_pending) snapshot_read_page(&tmp, &request, revision);
         else tmp.qlog_error = 3;
         pthread_mutex_lock(&g_snap_mutex);
-        /* Compare every rendered field, excluding the uptime clock. A hand
-         * picked arithmetic signature missed TLS failures and log changes and
-         * could overflow signed counters. Both snapshots have zeroed padding. */
+        /* Compare rendered data, not the sample clock or unused log slots.
+         * Both snapshots have zeroed padding for the compared fields. */
         bool changed = snapshot_publish(&g_snap_next, &tmp, revision, g_log_nav.revision);
         pthread_mutex_unlock(&g_snap_mutex);
         /* Wake the UI only when something it draws actually changed
