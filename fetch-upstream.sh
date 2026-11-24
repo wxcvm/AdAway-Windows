@@ -9,14 +9,17 @@
 set -euo pipefail
 
 PIN="4470606366e614abdb308fdfe94734d28167439c"
+# Independent vendor pin: only the two official amalgamation files change.
+MONGOOSE_PIN="4092fe54e2f08859223554cd3fb2f8ef78444d5a"
 UPSTREAM="https://github.com/wxcvm/AdAway.git"
 
 verify() {
-  python3 - "$PIN" <<'PY'
+  python3 - "$PIN" "$MONGOOSE_PIN" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path('.')
 manifest=json.loads((root/'.adblock-upstream-manifest.json').read_text())
 assert manifest['commit']==sys.argv[1], 'cached source pin differs'
+assert manifest.get('mongoose_commit')==sys.argv[2], 'cached Mongoose pin differs; preserve cache before refreshing'
 actual={}
 for folder in ['jni','app/src/main/assets']:
     assert (root/folder).is_dir() and not (root/folder).is_symlink(), 'invalid source-cache directory'
@@ -48,23 +51,26 @@ else
     exit 1
   fi
   git -C "$stage" checkout FETCH_HEAD -- webserver/jni app/src/main/assets
+  git -C "$stage" fetch --depth 1 origin "$MONGOOSE_PIN"
+  test "$(git -C "$stage" rev-parse 'FETCH_HEAD^{commit}')" = "$MONGOOSE_PIN"
+  git -C "$stage" checkout FETCH_HEAD -- webserver/jni/mongoose/mongoose.c webserver/jni/mongoose/mongoose.h
   mv "$stage/webserver/jni" jni
   mkdir -p app/src/main
   mv "$stage/app/src/main/assets" app/src/main/assets
-  python3 - "$PIN" <<'PY'
+  python3 - "$PIN" "$MONGOOSE_PIN" <<'PY'
 import hashlib,json,pathlib,sys
 files={}
 for folder in ['jni','app/src/main/assets']:
     for p in sorted(pathlib.Path(folder).rglob('*')):
         assert not p.is_symlink(), 'symlink in source cache'
         if p.is_file(): files[p.as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
-pathlib.Path('.adblock-upstream-manifest.json').write_text(json.dumps({'commit':sys.argv[1],'files':files},sort_keys=True))
+pathlib.Path('.adblock-upstream-manifest.json').write_text(json.dumps({'commit':sys.argv[1],'mongoose_commit':sys.argv[2],'files':files},sort_keys=True))
 PY
   verify
 fi
 
 # 取完必须自证：缺失就明确报错，而不是让后面的步骤莫名其妙地失败
-for f in jni/webserver.c jni/mongoose/mongoose.c app/src/main/assets/test.html; do
+for f in jni/webserver.c jni/mongoose/mongoose.c jni/mongoose/mongoose.h app/src/main/assets/test.html; do
   if [ ! -f "$f" ]; then
     echo "::error::上游文件缺失：$f"
     ls -la jni 2>/dev/null || true

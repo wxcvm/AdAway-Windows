@@ -8,6 +8,8 @@ cp "$root/fetch-upstream.sh" "$scratch/repo/"
 cp "$root/fetch-core-contract.sh" "$scratch/repo/"
 export ADBLOCK_TEST_EXPECTED_PIN=$(sed -n 's/^PIN="\([a-f0-9]*\)"/\1/p' "$root/fetch-upstream.sh")
 test "${#ADBLOCK_TEST_EXPECTED_PIN}" -eq 40
+export ADBLOCK_TEST_MONGOOSE_PIN=$(sed -n 's/^MONGOOSE_PIN="\([a-f0-9]*\)"/\1/p' "$root/fetch-upstream.sh")
+test "${#ADBLOCK_TEST_MONGOOSE_PIN}" -eq 40
 export ADBLOCK_TEST_CONTRACT_PIN=$(sed -n 's/^PIN="\([a-f0-9]*\)"/\1/p' "$root/fetch-core-contract.sh")
 test "${#ADBLOCK_TEST_CONTRACT_PIN}" -eq 40
 cat > "$scratch/bin/git" <<'MOCK'
@@ -19,7 +21,7 @@ case "$1" in
  init|remote) ;;
  fetch)
   [ "$2" = '--depth' ] && [ "$3" = 1 ] && [ "$4" = origin ]
-  [ "$5" = "$ADBLOCK_TEST_EXPECTED_PIN" ] || [ "$5" = "$ADBLOCK_TEST_CONTRACT_PIN" ]
+  [ "$5" = "$ADBLOCK_TEST_EXPECTED_PIN" ] || [ "$5" = "$ADBLOCK_TEST_CONTRACT_PIN" ] || [ "$5" = "$ADBLOCK_TEST_MONGOOSE_PIN" ]
   printf '%s\n' "$5" > "$directory/.fetch-pin" ;;
  rev-parse) cat "$directory/.fetch-pin" ;;
  show)
@@ -30,9 +32,17 @@ case "$1" in
   esac ;;
  checkout)
   mkdir -p "$directory/webserver/jni/mongoose" "$directory/app/src/main/assets"
-  printf 'core\n' > "$directory/webserver/jni/webserver.c"
-  printf 'mongoose\n' > "$directory/webserver/jni/mongoose/mongoose.c"
-  printf 'test\n' > "$directory/app/src/main/assets/test.html" ;;
+  if [ "$(cat "$directory/.fetch-pin")" = "$ADBLOCK_TEST_MONGOOSE_PIN" ]; then
+    [ "$*" = 'checkout FETCH_HEAD -- webserver/jni/mongoose/mongoose.c webserver/jni/mongoose/mongoose.h' ]
+    printf 'mongoose 7.24\n' > "$directory/webserver/jni/mongoose/mongoose.c"
+    printf '#define MG_VERSION "7.24"\n' > "$directory/webserver/jni/mongoose/mongoose.h"
+  else
+    [ "$(cat "$directory/.fetch-pin")" = "$ADBLOCK_TEST_EXPECTED_PIN" ]
+    printf 'core\n' > "$directory/webserver/jni/webserver.c"
+    printf 'mongoose 7.23\n' > "$directory/webserver/jni/mongoose/mongoose.c"
+    printf '#define MG_VERSION "7.23"\n' > "$directory/webserver/jni/mongoose/mongoose.h"
+    printf 'test\n' > "$directory/app/src/main/assets/test.html"
+  fi ;;
  *) exit 99 ;;
 esac
 MOCK
@@ -41,6 +51,9 @@ export PATH="$scratch/bin:$PATH"
 cd "$scratch/repo"
 bash fetch-upstream.sh
 bash fetch-upstream.sh
+grep -Fx 'core' jni/webserver.c
+grep -Fx 'mongoose 7.24' jni/mongoose/mongoose.c
+grep -Fx '#define MG_VERSION "7.24"' jni/mongoose/mongoose.h
 printf 'local edit\n' >> jni/webserver.c
 if bash fetch-upstream.sh; then echo 'modified cache was accepted' >&2; exit 1; fi
 test "$(tail -1 jni/webserver.c)" = 'local edit'
