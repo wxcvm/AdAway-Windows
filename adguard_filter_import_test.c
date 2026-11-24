@@ -354,6 +354,63 @@ int main(void){
         "{\"AppPath\":\"C:/%s\"}",directory);
     CHECK(length>0 && (size_t)length<sizeof long_doc);
     CHECK(!ag_json_basename(mg_str(long_doc),"$.AppPath",decoded_basename,sizeof decoded_basename));
+    /* Full-size import with interleaved duplicates, unique hosts, a hot
+       domain and conflicting later rows. First occurrence wins even when
+       duplicate timestamps are newer. Timeline ties keep source order. */
+    size_t bulk_capacity=2u*1024u*1024u;
+    char *bulk_json=malloc(bulk_capacity);
+    CHECK(bulk_json);
+    size_t used=(size_t)snprintf(bulk_json,bulk_capacity,
+        "{\"ProtocolVersion\":\"1\",\"LogRecords\":[");
+    for(unsigned i=0;i<4000;i++) {
+        char host[64];
+        if(i<3000)snprintf(host,sizeof host,"h%04u.example.test",i);
+        else snprintf(host,sizeof host,"hot.example.test");
+        const char *protocol=i%3==0?"Dns":i%3==1?"Tcp":"Quic";
+        int written=snprintf(bulk_json+used,bulk_capacity-used,
+            "%s{\"RequestArgId\":\"00000000-0000-0000-0000-%012x\","
+            "\"Time\":\"2026-11-04T02:10:24Z\",\"Host\":\"%s\","
+            "\"ProtocolType\":\"%s\",\"LogRecordType\":0,"
+            "\"ProcessId\":1,\"FiredFilterId\":1,\"StatusCode\":0}",
+            i?",":"",i,host,protocol);
+        CHECK(written>0 && (size_t)written<bulk_capacity-used);
+        used+=(size_t)written;
+        if(i<1000) {
+            written=snprintf(bulk_json+used,bulk_capacity-used,
+                ",{\"RequestArgId\":\"00000000-0000-0000-0000-%012x\","
+                "\"Time\":\"2026-11-04T03:10:24Z\",\"Host\":\"duplicate.example.test\","
+                "\"ProtocolType\":\"Tcp\",\"LogRecordType\":3,"
+                "\"ProcessId\":1,\"FiredFilterId\":1,\"StatusCode\":200}",i);
+            CHECK(written>0 && (size_t)written<bulk_capacity-used);
+            used+=(size_t)written;
+        }
+    }
+    CHECK(bulk_capacity-used>2);
+    memcpy(bulk_json+used,"]}",3);
+    used+=2;
+    CHECK(ag_import_parse(bulk_json,used,&import)==AG_IMPORT_OK);
+    CHECK(import && import->scanned==5000 && import->count==4000);
+    CHECK(import->duplicates==1000 && import->blocked==4000 &&
+          import->dns_events==1334 && import->missing_host==0);
+    CHECK(import->top_count==AG_IMPORT_TOP);
+    CHECK(!strcmp(import->top[0].host,"hot.example.test") &&
+          import->top[0].count==1000 && import->top[0].dns_count==334 &&
+          import->top[0].tcp_count==333 && import->top[0].other_count==333);
+    CHECK(!strcmp(import->top[1].host,"h0000.example.test"));
+    CHECK(!strcmp(import->top[19].host,"h0018.example.test"));
+    for(unsigned i=0;i<4000;i++) {
+        char id[40];
+        snprintf(id,sizeof id,"00000000-0000-0000-0000-%012x",i);
+        CHECK(!strcmp(import->events[i].id,id));
+        CHECK(import->events[i].position==(i<1000?2*i:i+1000));
+        CHECK(import->events[i].log_type==0);
+    }
+    /* Compaction must erase the unused tail of the retained event storage. */
+    const unsigned char *tail=(const unsigned char *)(import->events+import->count);
+    for(size_t i=0;i<1000*sizeof(*import->events);i++)CHECK(tail[i]==0);
+    ag_import_free(import);
+    free(bulk_json);
+    import=NULL;
     puts("PASS: AdGuard v1 synthetic JSON, UTC offset, independent DNS/TCP events, dedup, privacy, ranking");
     return 0;
 }
