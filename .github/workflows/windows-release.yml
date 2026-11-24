@@ -551,6 +551,21 @@ jobs:
           cp README.txt dist/README.txt
           cp start.bat dist/start.bat
 
+      - name: Test Mongoose shared TLS manager context with pinned OpenSSL 3.5.9
+        shell: msys2 {0}
+        timeout-minutes: 3
+        run: |
+          gcc -std=c11 -O2 -Wall -Wextra -Wno-deprecated-declarations \
+            -D MG_ENABLE_IPV6 -DMG_TLS=MG_TLS_OPENSSL -DMG_ENABLE_POLL=1 \
+            -Ijni -Ijni/mongoose -I.openssl-build/install/include \
+            -o mongoose-tls-context-test.exe \
+            jni/mongoose_tls_ctx_test.c jni/mongoose/mongoose.c \
+            .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
+            -lws2_32 -lwinmm -lpthread -lgdi32 -luser32 -lcomdlg32 -lshell32 \
+            -ladvapi32 -lcrypt32 -liphlpapi -ldwmapi -luxtheme -lpsapi -lwinhttp \
+            -lbcrypt -lwintrust
+          ./mongoose-tls-context-test.exe
+
       - name: Test actual server history with production desktop page parser
         shell: pwsh
         timeout-minutes: 3
