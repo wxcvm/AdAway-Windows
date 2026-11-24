@@ -30,4 +30,13 @@ static inline bool qlv_same_view(const struct qlv_view *before,
                   sizeof(before->query_key)) == 0;
 }
 
+/* Imported snapshots are immutable until explicitly replaced or cleared.
+ * Do not hash the whole event array on unrelated live-stat updates. */
+static inline bool qlv_reuse_external(const struct qlv_view *before,
+                                     const struct qlv_view *after,
+                                     bool dirty, bool force) {
+    return !dirty && !force && after && after->external &&
+           qlv_same_view(before, after);
+}
+
 #endif

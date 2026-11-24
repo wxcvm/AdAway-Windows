@@ -38,6 +38,20 @@ int main(void) {
     second.external = true;
     CHECK(qlv_same_view(&first,&second));
     CHECK(!qlv_same_view(NULL, &second));
+    /* An immutable external snapshot is reused on unrelated refreshes,
+       but not on import, source/ranking switch, or explicit redraw. */
+    CHECK(qlv_reuse_external(&first,&second,false,false));
+    CHECK(!qlv_reuse_external(&first,&second,true,false));
+    CHECK(!qlv_reuse_external(&first,&second,false,true));
+    CHECK(!qlv_reuse_external(NULL,&second,false,false));
+    second.ranking=false;
+    CHECK(!qlv_reuse_external(&first,&second,false,false));
+    second.ranking=true;
+    second.external=false;
+    CHECK(!qlv_reuse_external(&first,&second,false,false));
+    first.external=false;
+    CHECK(!qlv_reuse_external(&first,&second,false,false));
+
     puts("PASS: scroll is retained on the same view, reset for different history/filter and tabs");
     return 0;
 }
