@@ -785,7 +785,7 @@ static void snapshot_fetch_any(struct snapshot *sn) {
     if (sn->valid) g_active_port = g_http_port;
 }
 
-/* One cheap self-measurement per timer tick. */
+/* Lightweight process counters; these are only written to diagnostics/heartbeat. */
 static void diag_sample(void) {
     FILETIME ct, et, kt, ut;
     if (GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut)) {
@@ -814,20 +814,23 @@ static void diag_sample(void) {
     g_user_obj = GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS);
     g_handle_count = 0;
     GetProcessHandleCount(GetCurrentProcess(), &g_handle_count);
+}
+
+/* The system-wide thread snapshot is more expensive; sample it only for a
+ * five-minute heartbeat or an explicit diagnostic export. */
+static void diag_sample_threads(void) {
     g_thread_count = 0;
-    {
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snap != INVALID_HANDLE_VALUE) {
-            THREADENTRY32 te;
-            memset(&te, 0, sizeof(te));
-            te.dwSize = sizeof(te);
-            DWORD pid = GetCurrentProcessId();
-            if (Thread32First(snap, &te)) {
-                do { if (te.th32OwnerProcessID == pid) g_thread_count++; } while (Thread32Next(snap, &te));
-            }
-            CloseHandle(snap);
-        }
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te;
+    memset(&te, 0, sizeof(te));
+    te.dwSize = sizeof(te);
+    DWORD pid = GetCurrentProcessId();
+    if (Thread32First(snap, &te)) {
+        do { if (te.th32OwnerProcessID == pid) g_thread_count++; }
+        while (Thread32Next(snap, &te));
     }
+    CloseHandle(snap);
 }
 
 /* Writes diagnose.txt (system + process + listener + log tail) so a user can
@@ -872,6 +875,7 @@ static void diag_write_file(HWND hwnd) {
                 (unsigned long long)ms.ullTotalPhys / 1048576ULL,
                 (unsigned long long)ms.ullAvailPhys / 1048576ULL);
     diag_sample();
+    diag_sample_threads();
     fprintf(f, "process: cpu=%.2f%% working_set=%llu MB gdi=%lu user=%lu threads=%lu handles=%lu alive=%d\n",
             g_cpu_pct, g_ws_kb / 1024ULL, (unsigned long)g_gdi_obj, (unsigned long)g_user_obj,
             (unsigned long)g_thread_count, (unsigned long)g_handle_count,
@@ -4676,10 +4680,13 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (wp == 3) { KillTimer(hwnd, 3); listener_validate(hwnd, false); return 0; }
         if (wp == 5) { KillTimer(hwnd, 5); log_filter_commit(hwnd); return 0; }
+        bool repaint = false;
         DWORD probe_now = GetTickCount();
         if (probe_now - g_adguard_probe_tick >= 30000) {
+            enum adguard_process_signal previous = g_adguard_signal;
             g_adguard_signal = adguard_process_probe();
             g_adguard_probe_tick = probe_now;
+            repaint = repaint || previous != g_adguard_signal;
         }
         bool vis = IsWindowVisible(hwnd) != 0;
         g_ui_visible = vis ? 1 : 0;
@@ -4694,12 +4701,19 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             g_hidden_trimmed = 0;
         }
 
+        long long previous_cert_days = g_cert_days;
+        int previous_cert_trust = g_cert_trust_state;
+        int previous_cert_trusted = g_cert_trusted_flag;
         cert_refresh(false);
+        repaint = repaint || previous_cert_days != g_cert_days ||
+                  previous_cert_trust != g_cert_trust_state ||
+                  previous_cert_trusted != g_cert_trusted_flag;
         diag_sample();
-        /* Heartbeat every 5 minutes: after a sudden death the tail of
-         * webserver.log then shows the last known CPU/memory/handle trend. */
+        /* Heartbeat every 5 minutes: the full system thread enumeration is
+         * reserved for this diagnostic checkpoint, not every 2 s UI tick. */
         if (++g_hb_ticks >= 150) {
             g_hb_ticks = 0;
+            diag_sample_threads();
             win32_log_line("hb cpu=%.1f%% mem=%lluMB handles=%lu threads=%lu gdi=%lu "
                            "visible=%d server=%d valid=%d bind_ok=%d listeners=%d uptime=%llds",
                            g_cpu_pct, g_ws_kb / 1024ULL, (unsigned long)g_handle_count,
@@ -4710,7 +4724,9 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                            g_sn ? (long long)g_sn->uptime_seconds : 0LL);
         }
         if (!g_tray_ok) tray_add(hwnd);   /* taskbar missing at logon -> retry */
-        if (vis) InvalidateRect(hwnd, NULL, FALSE);   /* never paint while hidden */
+        /* Stats changes arrive through WM_APP_STATS. The timer only redraws
+         * when its own 30 s certificate/AdGuard probes changed visible state. */
+        if (vis && repaint) InvalidateRect(hwnd, NULL, FALSE);
         return 0;
     }
     case WM_MOUSEWHEEL:
