@@ -258,8 +258,13 @@ static void ws_push_flush(struct settings *s, uint64_t now) {
     if (n <= 0) return;
     for (int i = 0; i < WS_PUSH_MAX; ++i) {
         uint32_t bit = UINT32_C(1) << i;
-        if ((ready & bit) && mg_ws_send(ws_clients[i], body, (size_t)n, WEBSOCKET_OP_TEXT))
-            s_ws_pending &= ~bit;
+        if (!(ready & bit)) continue;
+        struct mg_connection *cl = ws_clients[i];
+        size_t len = (size_t)n;
+        size_t expected = len + (len < 126 ? 2 : len <= 65535 ? 4 : 10);
+        size_t sent = mg_ws_send(cl, body, len, WEBSOCKET_OP_TEXT);
+        if (sent == expected) s_ws_pending &= ~bit;
+        else if (sent != 0) cl->is_closing = 1; /* incomplete frame */
     }
 }""" + source[right:]
     listener_hook("        mg_mgr_poll(mgr, 1000);\n        uint64_t now_ms = mg_millis();",
