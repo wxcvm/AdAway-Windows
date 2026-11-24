@@ -141,6 +141,20 @@ static void req_host_of(struct mg_http_message *hm, char *out, size_t cap) {
 #undef remove
 #undef fopen
 ''' + source[end:]
+    # Shared dirty-log contract: use the existing 15-second persistence cadence.
+    replace('        apps_save(st->resource_dir);\n        s_persist_last_ms = now;',
+            '        apps_save(st->resource_dir);\n'
+            '        if (force) qlog_save(st->resource_dir);\n'
+            '        else qlog_save_if_dirty(st->resource_dir);\n'
+            '        s_persist_last_ms = now;')
+    replace('        persist_dat_files(s, false);\n        qlog_save(s->resource_dir);',
+            '        persist_dat_files(s, false);')
+    replace('            persist_dat_files(s, true);   /* forced full flush */\n            qlog_save(s->resource_dir);',
+            '            persist_dat_files(s, true);   /* forced full flush */')
+    # Clear remains immediate; also retain the final dirty window on orderly exit.
+    replace('    apps_save(s->resource_dir);       /* persist per-app stats on exit */',
+            '    apps_save(s->resource_dir);       /* persist per-app stats on exit */\n'
+            '    qlog_save(s->resource_dir);')
     replace('bool internal = mg_match(hm->uri, mg_str("/internal-stats"), NULL) ||',
             'bool internal = mg_match(hm->uri, mg_str("/internal-qlog"), NULL) ||\n'
             '                        mg_match(hm->uri, mg_str("/internal-stats"), NULL) ||')
