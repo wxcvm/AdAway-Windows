@@ -2046,10 +2046,22 @@ static void draw_kpi(HDC hdc, int x, int y, int w, int h,
     SetBkMode(hdc, TRANSPARENT);
     HGDIOBJ original = SelectObject(hdc, title_font);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(x + 24), S(y + 12), label, (int)wcslen(label));
+    RECT label_rect = {S(x + 24), S(y + 12), S(x + w - 26), S(y + 30)};
+    DrawTextW(hdc, label, -1, &label_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, value_font);
     SetTextColor(hdc, g_pal.text);
-    TextOutW(hdc, S(x + 16), S(y + 32), value, (int)wcslen(value));
+    RECT value_rect = {S(x + 16), S(y + 32), S(x + w - 12), S(y + 63)};
+    SIZE extent;
+    if (GetTextExtentPoint32W(hdc, value, (int)wcslen(value), &extent) &&
+        extent.cx > value_rect.right - value_rect.left) {
+        HFONT compact = mfont(15, FW_SEMIBOLD);
+        if (compact != NULL) {
+            SelectObject(hdc, compact);
+            DeleteObject(value_font);
+            value_font = compact;
+        }
+    }
+    DrawTextW(hdc, value, -1, &value_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, original);
     DeleteObject(title_font);
     DeleteObject(value_font);
@@ -4516,6 +4528,135 @@ static void ui_navigate_to(HWND hwnd, int next_tab) {
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
+static void draw_overview_page(HDC hdc) {
+    /* Statistics page: compact AdGuard-inspired overview, but only for
+       data the local HTTP response server truly measures. */
+    const struct snapshot *sn = g_sn;
+    wchar_t val[64], txt[256];
+    bool show_data = sn && sn->has_data;
+    long long req = show_data ? sn->total_requests : 0;
+    long long blk = show_data ? sn->total_blocked : 0;
+    struct wbr_result web_rate = show_data ? wbr_compute(req, blk)
+                                          : (struct wbr_result){0};
+    HFONT page_font = mfont(19, FW_SEMIBOLD);
+    HGDIOBJ old_page_font = SelectObject(hdc, page_font);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, g_pal.text);
+    TextOutW(hdc, S(210), S(12), L"概览", 2);
+    SelectObject(hdc, old_page_font);
+    DeleteObject(page_font);
+    HFONT subtitle_font = mfont(11, FW_NORMAL);
+    HGDIOBJ old_subtitle = SelectObject(hdc, subtitle_font);
+    SetTextColor(hdc, g_pal.muted);
+    TextOutW(hdc, S(290), S(20), L"Web 响应服务 · 非整机 DNS 统计", (int)wcslen(L"Web 响应服务 · 非整机 DNS 统计"));
+    if (show_data) {
+        wchar_t extra[100];
+        swprintf(extra, 100, L"签发证书 %lld · 运行 %lldh %lldm",
+                 sn->sni_certs_issued, sn->uptime_seconds / 3600,
+                 (sn->uptime_seconds % 3600) / 60);
+        RECT header_info = {S(735), S(17), S(1006), S(37)};
+        DrawTextW(hdc, extra, -1, &header_info,
+                  DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    SelectObject(hdc, old_subtitle);
+    DeleteObject(subtitle_font);
+
+    const struct histogram *hourly = show_data ? sn->hist : NULL;
+    int hourly_count = show_data ? sn->hist_count : 0;
+    fmt_num(val, 64, req);
+    draw_kpi(hdc, 210, 54, 187, 94, L"Web 请求", show_data ? val : L"—",
+             RGB(40, 200, 126), hourly, hourly_count, 0);
+    fmt_num(val, 64, blk);
+    draw_kpi(hdc, 413, 54, 187, 94, L"本地已拦截", show_data ? val : L"—",
+             RGB(183, 103, 234), hourly, hourly_count, 1);
+    if (web_rate.valid)
+        swprintf(val, 64, L"%u.%u%%", web_rate.tenths_percent / 10,
+                 web_rate.tenths_percent % 10);
+    else
+        wcscpy(val, L"—");
+    draw_kpi(hdc, 616, 54, 187, 94, L"本地拦截占比", val,
+             RGB(246, 192, 69), hourly, hourly_count, 2);
+    fmt_num(val, 64, show_data ? sn->total_connections : 0);
+    draw_kpi(hdc, 819, 54, 187, 94, L"本地 Web 连接", show_data ? val : L"—",
+             RGB(74, 147, 246), NULL, 0, -1);
+
+    RECT trend_area = {210, 165, 600, 431};
+    draw_chart(hdc, trend_area, g_stats_show_month ? L"近 30 天趋势" : L"近 24 小时趋势",
+               show_data ? (g_stats_show_month ? sn->daily : sn->hist) : NULL,
+               show_data ? (g_stats_show_month ? sn->daily_count : sn->hist_count) : 0);
+    draw_legend(hdc, 226, 400);
+    draw_stats_type_panel(hdc, sn);
+
+    /* Make the unblocked portion visible; a non-100% local percentage
+       can include intentional allow/forward traffic and does not prove
+       an ad request escaped. Never change counters to target 100%. */
+    wchar_t coverage_note[256];
+    if (!show_data) {
+        wcscpy(coverage_note, L"等待本地 Web 请求统计；无法据此判断整机拦截覆盖率。");
+    } else if (req == 0 && blk == 0) {
+        wcscpy(coverage_note, L"暂无可统计请求，拦截比例不适用；此指标不代表整机流量覆盖率。");
+    } else if (!web_rate.valid) {
+        wcscpy(coverage_note, L"本地请求与拦截计数不一致；请导出诊断信息，勿据此判断拦截效果。");
+    } else {
+        swprintf(coverage_note, 256,
+                 L"未计为拦截的 Web 请求：%llu（含放行/转发等）；不代表漏拦或整机覆盖率。",
+                 (unsigned long long)web_rate.not_blocked);
+    }
+    HFONT coverage_font = mfont(12, FW_NORMAL);
+    HGDIOBJ coverage_old = SelectObject(hdc, coverage_font);
+    SetTextColor(hdc, g_pal.muted);
+    RECT coverage_rect = {S(210), S(438), S(1006), S(459)};
+    DrawTextW(hdc, coverage_note, -1, &coverage_rect,
+              DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(hdc, coverage_old);
+    DeleteObject(coverage_font);
+
+    char cert_path[1024];
+    snprintf(cert_path, sizeof(cert_path), "%s/localhost-2410.crt", g_res);
+    long long days = g_cert_days;          /* cached (30 s TTL) */
+    int trusted = g_cert_trusted_flag;
+    wchar_t trust_txt[64];
+    cert_trust_text(g_cert_trust_state, trust_txt, 64);
+    HFONT lf = mfont(13, FW_NORMAL);
+    HFONT old2 = (HFONT)SelectObject(hdc, lf);
+    if (days > 0 && days < 200000)
+        swprintf(txt, 256,
+                 trusted ? L"证书：剩余 %lld 天 · %ls"
+                         : L"证书：剩余 %lld 天 · %ls → 左侧\"设置\"→\"信任 CA\"",
+                 days, trust_txt);
+    else if (days == -100001)
+        swprintf(txt, 256, L"证书文件缺失：%hs（首次运行时会自动生成）", cert_path);
+    else if (days == -100002)
+        swprintf(txt, 256, L"证书文件解析失败：%hs", cert_path);
+    else
+        swprintf(txt, 256, L"证书已过期 - 请删除 %hs 后重启", cert_path);
+    SetTextColor(hdc, days > 0 && days < 200000 ? C_GREEN_TXT : RGB(190, 70, 70));
+    RECT cert_line = {S(210), S(464), S(1006), S(484)};
+    DrawTextW(hdc, txt, -1, &cert_line, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    {
+        wchar_t hint[300];
+        if (*g_bind_ip) {
+            swprintf(hint, 300, L"监听地址：%hs · HTTP %d / HTTPS %d", g_bind_ip, g_http_port, g_https_port);
+        } else if (g_bind_all) {
+            char lan[64] = "";
+            if (first_lan_ip(lan, sizeof(lan)) == 0)
+                swprintf(hint, 300, L"访问地址：本机 http://localhost:%d  ·  局域网 http://%hs:%d",
+                         g_http_port, lan, g_http_port);
+            else
+                swprintf(hint, 300, L"访问地址：本机 http://localhost:%d", g_http_port);
+        } else {
+            swprintf(hint, 300, L"访问地址：http://localhost:%d（其他设备：设置→\"监听所有网卡\"）", g_http_port);
+        }
+        SetTextColor(hdc, g_pal.muted);
+        RECT address_line = {S(210), S(486), S(1006), S(502)};
+        DrawTextW(hdc, hint, -1, &address_line, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+    SelectObject(hdc, old2);
+    DeleteObject(lf);
+
+    draw_listener_card(hdc, 210, 502, 796, 130, sn, 1);
+}
+
 static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (g_taskbar_created != 0 && msg == g_taskbar_created) {
         tray_add(hwnd);
@@ -5270,175 +5411,24 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 -1, &trust_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             SelectObject(hdc, old);
             DeleteObject(help_font);
-            draw_statusbar(hdc);
-            BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
-            SelectObject(mem, oldbmp);
-            DeleteObject(bmp);
-            DeleteDC(mem);
-            EndPaint(hwnd, &ps);
-            return 0;
         }
-
-        if (g_tab == 1) {
+        else if (g_tab == 1) {
             /* 应用日志 page */
             draw_activity_page(hdc);
-            BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
-            SelectObject(mem, oldbmp);
-            DeleteObject(bmp);
-            DeleteDC(mem);
-            EndPaint(hwnd, &ps);
-            return 0;
         }
 
-        if (g_tab == 5) {
+        else if (g_tab == 5) {
             /* Network integration roadmap with truthful capability states. */
             draw_network_center_page(hdc);
-            draw_statusbar(hdc);
-            BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
-            SelectObject(mem, oldbmp);
-            DeleteObject(bmp);
-            DeleteDC(mem);
-            EndPaint(hwnd, &ps);
-            return 0;
         }
 
-        if (g_tab == 4) {
+        else if (g_tab == 4) {
             /* 订阅 page */
             draw_subs_page(hdc);
-            draw_statusbar(hdc);
-            BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
-            SelectObject(mem, oldbmp);
-            DeleteObject(bmp);
-            DeleteDC(mem);
-            EndPaint(hwnd, &ps);
-            return 0;
         }
 
-        /* Statistics page: compact AdGuard-inspired overview, but only for
-           data the local HTTP response server truly measures. */
-        const struct snapshot *sn = g_sn;
-        wchar_t val[64], txt[256];
-        bool show_data = sn && sn->has_data;
-        long long req = show_data ? sn->total_requests : 0;
-        long long blk = show_data ? sn->total_blocked : 0;
-        struct wbr_result web_rate = show_data ? wbr_compute(req, blk)
-                                              : (struct wbr_result){0};
-        HFONT page_font = mfont(19, FW_SEMIBOLD);
-        HGDIOBJ old_page_font = SelectObject(hdc, page_font);
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, g_pal.text);
-        TextOutW(hdc, S(210), S(12), L"概览", 2);
-        SelectObject(hdc, old_page_font);
-        DeleteObject(page_font);
-        HFONT subtitle_font = mfont(11, FW_NORMAL);
-        HGDIOBJ old_subtitle = SelectObject(hdc, subtitle_font);
-        SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(290), S(20), L"Web 响应服务 · 非整机 DNS 统计", (int)wcslen(L"Web 响应服务 · 非整机 DNS 统计"));
-        if (show_data) {
-            wchar_t extra[100];
-            swprintf(extra, 100, L"签发证书 %lld · 运行 %lldh %lldm",
-                     sn->sni_certs_issued, sn->uptime_seconds / 3600,
-                     (sn->uptime_seconds % 3600) / 60);
-            RECT header_info = {S(735), S(17), S(1006), S(37)};
-            DrawTextW(hdc, extra, -1, &header_info,
-                      DT_RIGHT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-        }
-        SelectObject(hdc, old_subtitle);
-        DeleteObject(subtitle_font);
-
-        const struct histogram *hourly = show_data ? sn->hist : NULL;
-        int hourly_count = show_data ? sn->hist_count : 0;
-        fmt_num(val, 64, req);
-        draw_kpi(hdc, 210, 54, 187, 94, L"Web 请求", show_data ? val : L"—",
-                 RGB(40, 200, 126), hourly, hourly_count, 0);
-        fmt_num(val, 64, blk);
-        draw_kpi(hdc, 413, 54, 187, 94, L"本地已拦截", show_data ? val : L"—",
-                 RGB(183, 103, 234), hourly, hourly_count, 1);
-        if (web_rate.valid)
-            swprintf(val, 64, L"%u.%u%%", web_rate.tenths_percent / 10,
-                     web_rate.tenths_percent % 10);
-        else
-            wcscpy(val, L"—");
-        draw_kpi(hdc, 616, 54, 187, 94, L"本地拦截占比", val,
-                 RGB(246, 192, 69), hourly, hourly_count, 2);
-        fmt_num(val, 64, show_data ? sn->total_connections : 0);
-        draw_kpi(hdc, 819, 54, 187, 94, L"本地 Web 连接", show_data ? val : L"—",
-                 RGB(74, 147, 246), NULL, 0, -1);
-
-        RECT trend_area = {210, 165, 600, 431};
-        draw_chart(hdc, trend_area, g_stats_show_month ? L"近 30 天趋势" : L"近 24 小时趋势",
-                   show_data ? (g_stats_show_month ? sn->daily : sn->hist) : NULL,
-                   show_data ? (g_stats_show_month ? sn->daily_count : sn->hist_count) : 0);
-        draw_legend(hdc, 226, 400);
-        draw_stats_type_panel(hdc, sn);
-
-        /* Make the unblocked portion visible; a non-100% local percentage
-           can include intentional allow/forward traffic and does not prove
-           an ad request escaped. Never change counters to target 100%. */
-        wchar_t coverage_note[256];
-        if (!show_data) {
-            wcscpy(coverage_note, L"等待本地 Web 请求统计；无法据此判断整机拦截覆盖率。");
-        } else if (req == 0 && blk == 0) {
-            wcscpy(coverage_note, L"暂无可统计请求，拦截比例不适用；此指标不代表整机流量覆盖率。");
-        } else if (!web_rate.valid) {
-            wcscpy(coverage_note, L"本地请求与拦截计数不一致；请导出诊断信息，勿据此判断拦截效果。");
-        } else {
-            swprintf(coverage_note, 256,
-                     L"未计为拦截的 Web 请求：%llu（含放行/转发等）；不代表漏拦或整机覆盖率。",
-                     (unsigned long long)web_rate.not_blocked);
-        }
-        HFONT coverage_font = mfont(12, FW_NORMAL);
-        HGDIOBJ coverage_old = SelectObject(hdc, coverage_font);
-        SetTextColor(hdc, g_pal.muted);
-        RECT coverage_rect = {S(210), S(438), S(1006), S(459)};
-        DrawTextW(hdc, coverage_note, -1, &coverage_rect,
-                  DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
-        SelectObject(hdc, coverage_old);
-        DeleteObject(coverage_font);
-
-        char cert_path[1024];
-        snprintf(cert_path, sizeof(cert_path), "%s/localhost-2410.crt", g_res);
-        long long days = g_cert_days;          /* cached (30 s TTL) */
-        int trusted = g_cert_trusted_flag;
-        wchar_t trust_txt[64];
-        cert_trust_text(g_cert_trust_state, trust_txt, 64);
-        HFONT lf = mfont(13, FW_NORMAL);
-        HFONT old2 = (HFONT)SelectObject(hdc, lf);
-        if (days > 0 && days < 200000)
-            swprintf(txt, 256,
-                     trusted ? L"证书：剩余 %lld 天 · %ls"
-                             : L"证书：剩余 %lld 天 · %ls → 左侧\"设置\"→\"信任 CA\"",
-                     days, trust_txt);
-        else if (days == -100001)
-            swprintf(txt, 256, L"证书文件缺失：%hs（首次运行时会自动生成）", cert_path);
-        else if (days == -100002)
-            swprintf(txt, 256, L"证书文件解析失败：%hs", cert_path);
-        else
-            swprintf(txt, 256, L"证书已过期 - 请删除 %hs 后重启", cert_path);
-        SetTextColor(hdc, days > 0 && days < 200000 ? C_GREEN_TXT : RGB(190, 70, 70));
-        TextOutW(hdc, S(210), S(464), txt, (int)wcslen(txt));
-        {
-            wchar_t hint[300];
-            if (*g_bind_ip) {
-                swprintf(hint, 300, L"监听地址：%hs · HTTP %d / HTTPS %d", g_bind_ip, g_http_port, g_https_port);
-            } else if (g_bind_all) {
-                char lan[64] = "";
-                if (first_lan_ip(lan, sizeof(lan)) == 0)
-                    swprintf(hint, 300, L"访问地址：本机 http://localhost:%d  ·  局域网 http://%hs:%d",
-                             g_http_port, lan, g_http_port);
-                else
-                    swprintf(hint, 300, L"访问地址：本机 http://localhost:%d", g_http_port);
-            } else {
-                swprintf(hint, 300, L"访问地址：http://localhost:%d（其他设备：设置→\"监听所有网卡\"）", g_http_port);
-            }
-            SetTextColor(hdc, g_pal.muted);
-            TextOutW(hdc, S(210), S(486), hint, (int)wcslen(hint));
-        }
-        SelectObject(hdc, old2);
-        DeleteObject(lf);
-
-        draw_listener_card(hdc, 210, 502, 796, 130, sn, 1);
-        draw_statusbar(hdc);
+        else draw_overview_page(hdc);
+        if (g_tab != 1) draw_statusbar(hdc);
         BitBlt(real, 0, 0, cw, chh, mem, 0, 0, SRCCOPY);
         SelectObject(mem, oldbmp);
         DeleteObject(bmp);
