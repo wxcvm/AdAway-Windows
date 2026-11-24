@@ -599,6 +599,10 @@ jobs:
             .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
             -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -lcrypt32 -o listener-arrival-probe.exe
           ./listener-arrival-probe.exe
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -I.openssl-build/install/include \
+            tls_context_cost_test.c .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
+            -lws2_32 -liphlpapi -ladvapi32 -lbcrypt -lcrypt32 -o tls-context-cost-test.exe
+          ./tls-context-cost-test.exe
           gcc -std=c11 -Wall -Wextra -Werror -pedantic -I.openssl-build/install/include \
             listener_arrival_win32.c listener_tls_win32.c listener_arrival_task_win32.c listener_arrival_cancel_test.c traffic_observer_win32.c \
             .openssl-build/install/lib/libssl.a .openssl-build/install/lib/libcrypto.a \
