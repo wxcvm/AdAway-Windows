@@ -22,6 +22,7 @@ assert 'snapshot_read_page(&tmp, &request, revision);' in poll
 result = r'''
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,6 +105,30 @@ int main(void) {
     initial(); fresh_log(); incoming.qlog_error=2;
     CHECK(snapshot_publish(&previous,&incoming,5,5));
     CHECK(previous.qlog_error==2 && previous.total_requests==101);
+
+    /* A successful poll can advance both clocks without changing content.
+       Garbage in an unused row is not visible and must not wake the UI. */
+    initial(); incoming = previous;
+    incoming.updated_at = 62; incoming.uptime_seconds = 2;
+    incoming.qlog[GUI_QLOG_MAX - 1].ts = 999;
+    CHECK(!snapshot_publish(&previous,&incoming,5,5));
+    CHECK(previous.updated_at==62 && previous.uptime_seconds==2);
+    CHECK(previous.qlog[GUI_QLOG_MAX - 1].ts==0);
+
+    /* The newest successful timestamp must survive the next failed poll. */
+    memset(&incoming,0,sizeof(incoming)); incoming.qlog_error=1;
+    CHECK(snapshot_publish(&previous,&incoming,5,5));
+    CHECK(!previous.valid && previous.updated_at==62);
+
+    /* Counters, last active row, and count changes still publish promptly. */
+    initial(); incoming=previous; incoming.tls_failures++;
+    CHECK(snapshot_publish(&previous,&incoming,5,5));
+    initial(); incoming=previous; incoming.qlog[0].status=204;
+    CHECK(snapshot_publish(&previous,&incoming,5,5));
+    CHECK(previous.qlog[0].status==204);
+    initial(); incoming=previous; incoming.qlog_count=0;
+    CHECK(snapshot_publish(&previous,&incoming,5,5));
+    CHECK(previous.qlog_count==0);
 
     json_qlog("{\"query_log\":[{\"host\":\"ipv6.example\",\"family\":6},{\"host\":\"::1\",\"family\":4},{\"host\":\"legacy.example\"},{\"host\":\"bad.example\",\"family\":5}]}",&incoming);
     CHECK(incoming.qlog_count==3 && incoming.qlog[0].family==6 && incoming.qlog[1].family==4 && incoming.qlog[2].family==0);
