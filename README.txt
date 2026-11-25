@@ -136,7 +136,7 @@ Windows SmartScreen / 智能应用控制：
 
 
 许可证与第三方依赖：
-  * 本仓库维护者原创代码拟按 GPL-3.0-or-later 发布，许可证正文见 LICENSE.md。
+  * 本仓库原创 Windows 代码的独立授权条款仍待权利人确认；本文不授予新的许可。
   * AdAway 上游代码及第三方组件各自保留原有版权与授权条件，详情见 THIRD_PARTY_LICENSES.md。
   * 目前 Mongoose GPL-2.0-only 与 GPLv3 派生服务端的组合存在待解决兼容风险；
     文档补齐并不代表已具备发行该组合程序的全部权利，发布前应完成许可复核或替换。
