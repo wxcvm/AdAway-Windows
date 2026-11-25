@@ -182,6 +182,11 @@ static void block_set_load(const char *resource_dir) {
         if source.count(old) != 1:
             raise ValueError("listener activity hook changed: " + old[:80])
         source = source.replace(old, new, 1)
+    # Preserve raw lifetime counts, as in Android #140. The GUI already
+    # handles an invalid denominator; clamping the count hides that evidence.
+    listener_hook("    if (blk > req) blk = req;   /* lifetime counters can be inconsistent */\n"
+                  "    double block_rate = req > 0 ? (double)blk * 100.0 / (double)req : 0.0;",
+                  "    double block_rate = req > 0 && blk <= req ? (double)blk * 100.0 / (double)req : 0.0;")
     listener_hook('#include "mongoose/mongoose.h"',
                   '#include "mongoose/mongoose.h"\n#include "listener_activity.h"')
     listener_hook("""        uint64_t t = mg_millis();
