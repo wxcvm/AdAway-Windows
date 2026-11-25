@@ -2490,6 +2490,7 @@ static void draw_sidebar(HDC hdc) {
     wchar_t ver[64];
     swprintf(ver, 64, L"拦截服务器 v" ADBLOCK_APP_VERSION_W);
     TextOutW(hdc, S(22), S(48), ver, (int)wcslen(ver));
+    rounded_card(hdc, 12, 63, 166, 24, 8, g_pal.nav_active, g_pal.nav_active);
     {
         bool connected=g_sn != NULL && g_sn->valid;
         bool live=connected && g_sn->bind_ok;
@@ -2534,21 +2535,15 @@ static void draw_sidebar(HDC hdc) {
         HFONT info = mfont(11, FW_NORMAL);
         HFONT prev = (HFONT)SelectObject(hdc, info);
         SetBkMode(hdc, TRANSPARENT);
+        rounded_card(hdc, 12, 346, 166, 120, 10, g_pal.nav_active, g_pal.nav_active);
+        SetTextColor(hdc, g_pal.nav_text);
+        TextOutW(hdc, S(22), S(354), L"本地响应服务", 6);
         SetTextColor(hdc, RGB(143, 163, 192));
-        TextOutW(hdc, S(22), S(371), L"过滤范围：本地监听", (int)wcslen(L"过滤范围：本地监听"));
+        TextOutW(hdc, S(22), S(375), L"过滤范围：本地监听", (int)wcslen(L"过滤范围：本地监听"));
         TextOutW(hdc, S(22), S(392), coverage, (int)wcslen(coverage));
         TextOutW(hdc, S(22), S(423), adguard, (int)wcslen(adguard));
         if (g_adguard_signal == ADGUARD_PROCESS_PRESENT)
             TextOutW(hdc, S(22), S(444), L"不代表已发生拦截冲突", (int)wcslen(L"不代表已发生拦截冲突"));
-        const wchar_t *tun_hint =
-            g_wintun_probe.status == WINTUN_PROBE_MISSING
-                ? L"Wintun：尚未提供 DLL"
-                : (g_wintun_probe.status == WINTUN_PROBE_API_INCOMPLETE
-                    ? L"Wintun：DLL 接口不完整"
-                    : (g_wintun_probe.status == WINTUN_PROBE_DRIVER_RUNNING
-                        ? L"Wintun：驱动存在（未接管）"
-                        : L"Wintun：接口可见（未验证/未接管）"));
-        TextOutW(hdc, S(22), S(478), tun_hint, (int)wcslen(tun_hint));
         SelectObject(hdc, prev);
         DeleteObject(info);
     }
@@ -2649,10 +2644,10 @@ static void draw_sidebar(HDC hdc) {
         SelectObject(hdc, nf);
         SetTextColor(hdc, active ? RGB(255, 255, 255) : g_pal.nav_text);
         {
-            const wchar_t *label = t == 0 ? L"统计"
-                                 : (t == 1 ? L"日志中心"
-                                 : (t == 2 ? L"设置"
-                                 : (t == 4 ? L"订阅" : L"网络中心")));
+            const wchar_t *label = t == 0 ? L"拦截总览"
+                                 : (t == 1 ? L"请求日志"
+                                 : (t == 2 ? L"服务设置"
+                                 : (t == 4 ? L"规则订阅" : L"联动诊断")));
             TextOutW(hdc, S(70), S(ny + 10), label, (int) wcslen(label));
         }
         SelectObject(hdc, old);
@@ -3915,7 +3910,7 @@ static void draw_network_center_page(HDC hdc) {
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, g_pal.text);
     RECT title = {S(224), S(28), S(984), S(58)};
-    DrawTextW(hdc, L"网络中心", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
+    DrawTextW(hdc, L"AdGuard 联动与诊断", -1, &title, DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(hdc, body);
     SetTextColor(hdc, g_pal.muted);
     const wchar_t *note =
@@ -3933,9 +3928,19 @@ static void draw_network_center_page(HDC hdc) {
               DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     const wchar_t *capture =
         L"全局接管：未接入 TUN/WFP    ·    自动协同切换：尚未启用";
-    RECT capture_rect = {S(224), S(151), S(990), S(182)};
+    RECT capture_rect = {S(224), S(140), S(990), S(162)};
     DrawTextW(hdc, capture, -1, &capture_rect,
               DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        const wchar_t *tun_hint =
+            g_wintun_probe.status == WINTUN_PROBE_MISSING
+                ? L"Wintun：尚未提供 DLL"
+                : (g_wintun_probe.status == WINTUN_PROBE_API_INCOMPLETE
+                    ? L"Wintun：DLL 接口不完整"
+                    : (g_wintun_probe.status == WINTUN_PROBE_DRIVER_RUNNING
+                        ? L"Wintun：驱动存在（未接管）"
+                        : L"Wintun：接口可见（未验证/未接管）"));
+    RECT tun_rect = {S(224), S(165), S(990), S(186)};
+    DrawTextW(hdc, tun_hint, -1, &tun_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, old);
     DeleteObject(heading);
     DeleteObject(body);
@@ -5387,8 +5392,8 @@ static LRESULT CALLBACK gui_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             rounded_card(hdc, 202, 442, 812, 182, 16, g_pal.card, g_pal.border);
             draw_settings_section_header(hdc, 218, 20, L"网络监听",
                 L"IPv4 / IPv6 独立 · 端口修改后按需重启", RGB(40, 200, 126));
-            draw_settings_section_header(hdc, 218, 266, L"内容拦截",
-                L"按类别选择本地响应策略 · 点击即应用", RGB(183, 103, 234));
+            draw_settings_section_header(hdc, 218, 266, L"内容响应",
+                L"仅处理到达本地监听的请求 · 点击切换响应方式", RGB(40, 200, 126));
             draw_settings_section_header(hdc, 218, 450, L"证书与维护",
                 L"证书信任、规则同步、更新与诊断", RGB(74, 147, 246));
 
