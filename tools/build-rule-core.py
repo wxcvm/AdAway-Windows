@@ -182,6 +182,52 @@ static void block_set_load(const char *resource_dir) {
         if source.count(old) != 1:
             raise ValueError("listener activity hook changed: " + old[:80])
         source = source.replace(old, new, 1)
+    # Preserve raw lifetime counts, as in Android #140. The GUI already
+    # handles an invalid denominator; clamping the count hides that evidence.
+    listener_hook("    if (blk > req) blk = req;   /* lifetime counters can be inconsistent */\n"
+                  "    double block_rate = req > 0 ? (double)blk * 100.0 / (double)req : 0.0;",
+                  "    double block_rate = req > 0 && blk <= req ? (double)blk * 100.0 / (double)req : 0.0;")
+    # Sync the existing opt-in CONNECT refusal lifecycle, not Android-only
+    # response-shedding features. A missing policy means disabled.
+    listener_hook('    FILE *fp = fopen(path, "r");\n    if (!fp) return;\n    char line[64];',
+                  '    FILE *fp = fopen(path, "r");\n'
+                  '    if (!fp) {\n'
+                  '        if (errno == ENOENT) { strcpy(s_pin_mode, "off"); s_pin_bypass_count = 0; }\n'
+                  '        return;\n'
+                  '    }\n    char line[64];')
+    listener_hook('    fclose(fp);\n}\n\nstatic bool pin_mode_deny(void)',
+                  '    fclose(fp);\n    if (strcmp(s_pin_mode, "deny") != 0) s_pin_bypass_count = 0;\n}\n\nstatic bool pin_mode_deny(void)')
+    listener_hook('static bool pin_uid_bypassed(uid_t uid) {\n    if (uid == (uid_t)-1) return false;',
+                  'static bool pin_uid_bypassed(uid_t uid) {\n    if (!pin_mode_deny() || uid == (uid_t)-1 || uid == 0) return false;')
+    listener_hook('/* 每次 TLS 握手失败都会走到这里：按 uid 记数，窗口内累积到阈值即视为固定证书。 */',
+                  '''/* Reuse expired cooldown slots, never evict an active one. */
+static bool pin_record_cooldown(uid_t uid, uint64_t now) {
+    int slot = -1;
+    for (int i = 0; i < s_pin_bypass_count; i++) {
+        if (s_pin_bypass[i].uid == uid) { slot = i; break; }
+        if (slot < 0 && s_pin_bypass[i].until_ms <= now) slot = i;
+    }
+    if (slot < 0) {
+        if (s_pin_bypass_count >= APP_STATS_MAX) return false;
+        slot = s_pin_bypass_count++;
+    }
+    s_pin_bypass[slot].uid = uid;
+    s_pin_bypass[slot].until_ms = now + PIN_BYPASS_MS;
+    return true;
+}
+
+/* Repeated TLS failures do not establish certificate pinning. */''')
+    listener_hook('''    if (s_pin_bypass_count < APP_STATS_MAX) {
+        s_pin_bypass[s_pin_bypass_count].uid = uid;
+        s_pin_bypass[s_pin_bypass_count].until_ms = now + PIN_BYPASS_MS;
+        s_pin_bypass_count++;
+    }''', '    if (!pin_record_cooldown(uid, now)) return;')
+    listener_hook('''    if (pin_mode_deny() && pin_uid_bypassed(chk_uid) && hm->method.len == 7 &&
+        memcmp(hm->method.buf, "CONNECT", 7) == 0) {''',
+                  '''    if (hm->method.len == 7 && memcmp(hm->method.buf, "CONNECT", 7) == 0)
+        pin_policy_reload(s->resource_dir);
+    if (pin_uid_bypassed(chk_uid) && hm->method.len == 7 &&
+        memcmp(hm->method.buf, "CONNECT", 7) == 0) {''')
     listener_hook('#include "mongoose/mongoose.h"',
                   '#include "mongoose/mongoose.h"\n#include "listener_activity.h"')
     listener_hook("""        uint64_t t = mg_millis();
