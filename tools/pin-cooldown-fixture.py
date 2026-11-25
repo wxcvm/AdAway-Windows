@@ -20,7 +20,9 @@ out = r'''
 #include <string.h>
 #include <errno.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#x); exit(1); } } while(0)
+#ifndef PATH_MAX
 #define PATH_MAX 4096
+#endif
 #define APP_STATS_MAX 2
 #define PIN_POLICY_FILE "pin_policy.txt"
 #define PIN_BYPASS_MS 600000u
