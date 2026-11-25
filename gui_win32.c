@@ -2026,31 +2026,20 @@ static bool stats_history_has_requests(const struct histogram *history, int coun
 /* Compact AdGuard-inspired KPI: a genuine sparkline is drawn only for metrics
  * with an actual time series. Connections have no per-bucket series in this
  * server contract, so do not invent one. */
-static void draw_kpi(HDC hdc, int x, int y, int w, int h,
+static void draw_overview_metric(HDC hdc, int x, int y, int w, int h,
                      const wchar_t *label, const wchar_t *value,
                      COLORREF accent, const struct histogram *history,
-                     int history_count, int series) {
-    rounded_card(hdc, x + 1, y + 2, w, h, 12, g_pal.gridline, g_pal.gridline);
-    rounded_card(hdc, x, y, w, h, 12, g_pal.card, g_pal.border);
-    HBRUSH brush = CreateSolidBrush(accent);
-    HGDIOBJ old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-    HGDIOBJ old_brush = SelectObject(hdc, brush);
-    RoundRect(hdc, S(x + 10), S(y + 12), S(x + 15), S(y + 27), S(4), S(4));
-    Ellipse(hdc, S(x + w - 20), S(y + 14), S(x + w - 11), S(y + 23));
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
-    DeleteObject(brush);
-
+                     int history_count, int series, bool primary, int share_tenths) {
     HFONT title_font = mfont(12, FW_NORMAL);
-    HFONT value_font = mfont(21, FW_SEMIBOLD);
+    HFONT value_font = mfont(primary ? 29 : 23, FW_SEMIBOLD);
     SetBkMode(hdc, TRANSPARENT);
     HGDIOBJ original = SelectObject(hdc, title_font);
     SetTextColor(hdc, g_pal.muted);
-    RECT label_rect = {S(x + 24), S(y + 12), S(x + w - 26), S(y + 30)};
+    RECT label_rect = {S(x + 16), S(y + 10), S(x + w - 12), S(y + 30)};
     DrawTextW(hdc, label, -1, &label_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     SelectObject(hdc, value_font);
-    SetTextColor(hdc, g_pal.text);
-    RECT value_rect = {S(x + 16), S(y + 32), S(x + w - 12), S(y + 63)};
+    SetTextColor(hdc, primary ? accent : g_pal.text);
+    RECT value_rect = {S(x + 16), S(y + 27), S(x + w - 12), S(y + 64)};
     SIZE extent;
     if (GetTextExtentPoint32W(hdc, value, (int)wcslen(value), &extent) &&
         extent.cx > value_rect.right - value_rect.left) {
@@ -2066,7 +2055,13 @@ static void draw_kpi(HDC hdc, int x, int y, int w, int h,
     DeleteObject(title_font);
     DeleteObject(value_font);
 
-    if (history_count > 1 && series >= 0 &&
+    if (series == 2 && share_tenths >= 0 && share_tenths <= 1000) {
+        const int track = w - 32;
+        rounded_card(hdc, x + 16, y + h - 19, track, 7, 4, g_pal.gridline, g_pal.gridline);
+        int filled = track * share_tenths / 1000;
+        if (filled > 0)
+            rounded_card(hdc, x + 16, y + h - 19, filled, 7, 4, accent, accent);
+    } else if (series != 2 && history_count > 1 && series >= 0 &&
         stats_history_has_requests(history, history_count)) {
         int count = history_count < HIST_MAX ? history_count : HIST_MAX;
         double peak = series == 2 ? 100.0 : 1.0;
@@ -2089,7 +2084,7 @@ static void draw_kpi(HDC hdc, int x, int y, int w, int h,
         HFONT hint_font = mfont(10, FW_NORMAL);
         HGDIOBJ old = SelectObject(hdc, hint_font);
         SetTextColor(hdc, g_pal.muted);
-        TextOutW(hdc, S(x + 16), S(y + h - 22), L"本地累计", 4);
+        TextOutW(hdc, S(x + 16), S(y + h - 22), series == 2 ? L"比例不适用" : L"本地累计", series == 2 ? 5 : 4);
         SelectObject(hdc, old);
         DeleteObject(hint_font);
     }
@@ -4542,13 +4537,13 @@ static void draw_overview_page(HDC hdc) {
     HGDIOBJ old_page_font = SelectObject(hdc, page_font);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, g_pal.text);
-    TextOutW(hdc, S(210), S(12), L"概览", 2);
+    TextOutW(hdc, S(210), S(12), L"广告拦截总览", 6);
     SelectObject(hdc, old_page_font);
     DeleteObject(page_font);
     HFONT subtitle_font = mfont(11, FW_NORMAL);
     HGDIOBJ old_subtitle = SelectObject(hdc, subtitle_font);
     SetTextColor(hdc, g_pal.muted);
-    TextOutW(hdc, S(290), S(20), L"Web 响应服务 · 非整机 DNS 统计", (int)wcslen(L"Web 响应服务 · 非整机 DNS 统计"));
+    TextOutW(hdc, S(355), S(20), L"Web 响应服务 · 非整机 DNS 统计", (int)wcslen(L"Web 响应服务 · 非整机 DNS 统计"));
     if (show_data) {
         wchar_t extra[100];
         swprintf(extra, 100, L"签发证书 %lld · 运行 %lldh %lldm",
@@ -4563,22 +4558,33 @@ static void draw_overview_page(HDC hdc) {
 
     const struct histogram *hourly = show_data ? sn->hist : NULL;
     int hourly_count = show_data ? sn->hist_count : 0;
-    fmt_num(val, 64, req);
-    draw_kpi(hdc, 210, 54, 187, 94, L"Web 请求", show_data ? val : L"—",
-             RGB(40, 200, 126), hourly, hourly_count, 0);
+    /* One grouped overview instead of four independently framed cards.
+       Lead with the observed blocked responses; no global coverage claim. */
+    rounded_card(hdc, 210, 54, 796, 94, 14, g_pal.card, g_pal.border);
+    const int metric_x[] = {210, 409, 608, 807};
+    for (int i = 1; i < 4; ++i) {
+        RECT divider = {S(metric_x[i]), S(67), S(metric_x[i]) + 1, S(135)};
+        HBRUSH brush = CreateSolidBrush(g_pal.border);
+        FillRect(hdc, &divider, brush);
+        DeleteObject(brush);
+    }
     fmt_num(val, 64, blk);
-    draw_kpi(hdc, 413, 54, 187, 94, L"本地已拦截", show_data ? val : L"—",
-             RGB(183, 103, 234), hourly, hourly_count, 1);
+    draw_overview_metric(hdc, metric_x[0], 54, 199, 94, L"本地已拦截", show_data ? val : L"—",
+                         C_GREEN_TXT, hourly, hourly_count, 1, true, -1);
+    fmt_num(val, 64, req);
+    draw_overview_metric(hdc, metric_x[1], 54, 199, 94, L"Web 请求", show_data ? val : L"—",
+                         C_GREEN_TXT, hourly, hourly_count, 0, false, -1);
     if (web_rate.valid)
         swprintf(val, 64, L"%u.%u%%", web_rate.tenths_percent / 10,
                  web_rate.tenths_percent % 10);
     else
         wcscpy(val, L"—");
-    draw_kpi(hdc, 616, 54, 187, 94, L"本地拦截占比", val,
-             RGB(246, 192, 69), hourly, hourly_count, 2);
+    draw_overview_metric(hdc, metric_x[2], 54, 199, 94, L"本地拦截比例", val,
+                         C_GREEN_TXT, NULL, 0, 2, false,
+                         web_rate.valid ? (int)web_rate.tenths_percent : -1);
     fmt_num(val, 64, show_data ? sn->total_connections : 0);
-    draw_kpi(hdc, 819, 54, 187, 94, L"本地 Web 连接", show_data ? val : L"—",
-             RGB(74, 147, 246), NULL, 0, -1);
+    draw_overview_metric(hdc, metric_x[3], 54, 199, 94, L"本地 Web 连接", show_data ? val : L"—",
+                         C_GREEN_TXT, NULL, 0, -1, false, -1);
 
     RECT trend_area = {210, 165, 600, 431};
     draw_chart(hdc, trend_area, g_stats_show_month ? L"近 30 天趋势" : L"近 24 小时趋势",
