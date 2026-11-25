@@ -2830,7 +2830,7 @@ static const struct ctl_desc g_sublayout[] = {
     { IDC_SUB_URL,   218,  70, 560, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
     { IDC_SUB_ADD,   790,  70, 100, 26, L"BUTTON", L"添加", BS_PUSHBUTTON },
     { IDC_SUB_DEL,   898,  70, 104, 26, L"BUTTON", L"删除选中", BS_PUSHBUTTON },
-    { IDC_SUB_LIST,  218, 110, 784, 230, L"LISTBOX", L"",
+    { IDC_SUB_LIST,  218, 132, 784, 208, L"LISTBOX", L"",
       WS_BORDER | WS_VSCROLL | WS_HSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
     { IDC_SUB_SELECTED, 218, 370, 580, 26, L"EDIT", L"", WS_BORDER | ES_READONLY | ES_AUTOHSCROLL },
     { IDC_SUB_FULL_URL, 808, 370, 194, 26, L"BUTTON", L"显示完整地址", BS_PUSHBUTTON },
@@ -2851,7 +2851,7 @@ static const struct ctl_desc g_loglayout[] = {
     { IDC_QLOG_UID, 878, 584, 124, 26, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
     { IDC_QLOG_SEARCH, 218, 90, 480, 28, L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL },
     { IDC_QLOG_FILTER, 710, 90, 158, 200, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL },
-    { IDC_QLOG_LIST, 218, 132, 784, 290, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
+    { IDC_QLOG_LIST, 218, 145, 784, 259, L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT },
     { IDC_QLOG_DETAILS, 218, 466, 784, 96, L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL },
     { IDC_QLOG_REQUESTS, 502, 24, 110, 28, L"BUTTON", L"✓ 请求记录", BS_PUSHBUTTON },
     { IDC_QLOG_APPS, 618, 24, 110, 28, L"BUTTON", L"应用活动", BS_PUSHBUTTON },
@@ -4077,8 +4077,15 @@ static void draw_activity_page(HDC hdc) {
     else if(!(g_log_external && !g_log_apps) && phase==QLX_CLEANUP_FAILED)swprintf(count,240,L"导出未发布，但暂存清理失败（%lu）；文件位置见 webserver.log，请处理后重试。",(unsigned long)cleanup_error);
     else if(!(g_log_external && !g_log_apps) && phase==QLX_DIALOG_FAILED)swprintf(count,240,L"系统文件对话框失败（0x%08lx），未开始导出。",(unsigned long)export_error);
     else if(!(g_log_external && !g_log_apps) && phase==QLX_FAILED)swprintf(count,240,export_error==ERROR_RETRY?L"点击导出时的历史已过期，未改用新历史、未发布部分文件；请刷新后重试。":L"导出失败（%lu），原目标未替换、本次暂存文件已清理。",(unsigned long)export_error);
-    RECT count_rect = {S(218), S(430), S(1002), S(453)};
-    DrawTextW(hdc, count, -1, &count_rect, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    COLORREF count_color = GetTextColor(hdc);
+    rounded_card(hdc, 218, 411, 784, 26, 6, g_pal.content_bg, g_pal.border);
+    SetTextColor(hdc, count_color);
+    RECT count_rect = {S(228), S(412), S(992), S(436)};
+    DrawTextW(hdc, count, -1, &count_rect, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SetTextColor(hdc, g_pal.muted);
+    const wchar_t *list_label = g_log_apps ? L"应用活动" : g_log_ranking ? L"拦截排行" : L"请求记录";
+    TextOutW(hdc, S(218), S(126), list_label, (int)wcslen(list_label));
+    TextOutW(hdc, S(218), S(447), L"选中项详情", 5);
     SelectObject(hdc, old);
     DeleteObject(title_font);
     DeleteObject(body_font);
@@ -4429,11 +4436,15 @@ static void draw_subs_page(HDC hdc) {
     rounded_card(hdc, 202, 12, 812, 620, 12, g_pal.card, g_pal.border);
     old = (HFONT) SelectObject(hdc, hf);
     SetTextColor(hdc, g_pal.text);
-    TextOutW(hdc, S(218), S(20), L"订阅源", 3);
+    TextOutW(hdc, S(218), S(20), L"规则订阅中心", 6);
     SelectObject(hdc, lf);
     SetTextColor(hdc, g_pal.muted);
     const wchar_t *address_label = L"订阅地址（默认隐藏凭据与参数）";
     const wchar_t *name_label = L"本地名称 · 留空使用自动名称";
+    rounded_card(hdc, 210, 104, 800, 240, 8, g_pal.content_bg, g_pal.border);
+    SetTextColor(hdc, g_pal.text);
+    TextOutW(hdc, S(224), S(111), L"已配置的订阅源", 7);
+    SetTextColor(hdc, g_pal.muted);
     TextOutW(hdc, S(218), S(348), address_label, (int)wcslen(address_label));
     TextOutW(hdc, S(218), S(403), name_label, (int)wcslen(name_label));
     {
@@ -4456,8 +4467,9 @@ static void draw_subs_page(HDC hdc) {
                      L"%d 个订阅源 · 本次会话最近保存 %d 条规则",
                      s_sub_count, s_sub_written);
         else swprintf(sum, 400, L"%d 个订阅源 · 本次会话尚未更新；已有规则继续保留", s_sub_count);
-        SetTextColor(hdc, g_pal.text);
-        RECT summary_rect = {S(218), S(532), S(992), S(554)};
+        rounded_card(hdc, 218, 530, 784, 26, 6, g_pal.content_bg, g_pal.border);
+        SetTextColor(hdc, s_sub_read_failed ? C_RED : g_pal.text);
+        RECT summary_rect = {S(228), S(532), S(992), S(554)};
         DrawTextW(hdc, sum, -1, &summary_rect,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
