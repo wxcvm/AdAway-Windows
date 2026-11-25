@@ -10,7 +10,7 @@ set -euo pipefail
 
 PIN="4470606366e614abdb308fdfe94734d28167439c"
 # Independent vendor pin: Mongoose amalgamation plus its real TLS manager regression fixture.
-MONGOOSE_PIN="4cfab12d0c15ca0e813ab042ba42d712b415165d"
+MONGOOSE_PIN="b885198a34d95a9e30f1534ba11a3a2a01d961b7"
 UPSTREAM="https://github.com/wxcvm/AdAway.git"
 
 verify() {
