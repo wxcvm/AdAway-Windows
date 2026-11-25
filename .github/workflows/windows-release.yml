@@ -469,6 +469,10 @@ jobs:
           python3 tools/stats-counter-fixture.py .build-core/stats-bounds-core.c .build-core/stats-counter-test.c
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic .build-core/stats-counter-test.c -o stats-counter-test.exe
           ./stats-counter-test.exe
+          mkdir -p .build-core/pin-policy-test
+          python3 tools/pin-cooldown-fixture.py .build-core/stats-bounds-core.c .build-core/pin-cooldown-test.c
+          gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic .build-core/pin-cooldown-test.c -o pin-cooldown-test.exe
+          ./pin-cooldown-test.exe .build-core/pin-policy-test
           python3 tools/ws-push-fixture.py .build-core/stats-bounds-core.c .build-core/ws-push-test.c
           gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic .build-core/ws-push-test.c -o ws-push-test.exe
           ./ws-push-test.exe
